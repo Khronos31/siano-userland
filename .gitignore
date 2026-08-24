@@ -1,0 +1,7 @@
+*.o
+*.a
+*.ts
+*.inp
+/siano-ts
+/build/
+/firmware/
