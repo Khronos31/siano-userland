@@ -3,6 +3,7 @@
 *.ts
 *.inp
 /siano-ts
+/test-protocol
 /build/
 /firmware/
 /ref/
