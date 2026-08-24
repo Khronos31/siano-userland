@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <libusb-1.0/libusb.h>
+#include <libusb.h>
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
@@ -1253,6 +1253,23 @@ int main(int argc, char **argv)
         usage(stderr, argv[0]);
         return 2;
     }
+    if (options.have_channel) {
+        rc = sms_channel_frequency(options.channel, &frequency);
+        if (rc < 0) {
+            usage(stderr, argv[0]);
+            return 2;
+        }
+        fprintf(stderr, "channel %u -> %u Hz\n", options.channel, frequency);
+    } else {
+        frequency = options.frequency;
+    }
+    if (!options.list) {
+        rc = resolve_firmware(options.firmware, &firmware_path);
+        if (rc < 0) {
+            usage(stderr, argv[0]);
+            return 2;
+        }
+    }
 #ifdef SIANO_HAVE_WRAP_SYS_DEVICE
     if (options.device_fd >= 0) {
         /* Skip udev/usbfs scans so Android/Termux can pass a Host API fd. */
@@ -1265,29 +1282,13 @@ int main(int argc, char **argv)
     rc = libusb_init(&usb);
     if (rc < 0) {
         fprintf(stderr, "libusb_init: %s\n", libusb_error_name(rc));
+        free(firmware_path);
         return 1;
     }
     if (options.list) {
         rc = list_devices(usb);
         libusb_exit(usb);
         return rc;
-    }
-    if (options.have_channel) {
-        rc = sms_channel_frequency(options.channel, &frequency);
-        if (rc < 0) {
-            usage(stderr, argv[0]);
-            libusb_exit(usb);
-            return 2;
-        }
-        fprintf(stderr, "channel %u -> %u Hz\n", options.channel, frequency);
-    } else {
-        frequency = options.frequency;
-    }
-    rc = resolve_firmware(options.firmware, &firmware_path);
-    if (rc < 0) {
-        usage(stderr, argv[0]);
-        libusb_exit(usb);
-        return 2;
     }
     if (init_device_state(&device, usb, options.verbose) < 0) {
         fprintf(stderr, "failed to initialize device state\n");
