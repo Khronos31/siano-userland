@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux (musl)
+    runs-on: ubuntu-latest
+    container: alpine:3.21
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          apk add --no-cache gcc make pkgconf musl-dev libusb-dev
+          make
+          ldd siano-ts || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-x86_64
+          path: siano-ts
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          brew install libusb pkgconf
+          export PKG_CONFIG_PATH="$(brew --prefix libusb)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make
+          otool -L siano-ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-darwin-arm64
+          path: siano-ts
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+      - name: libusb
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z -OutFile libusb.7z
+          7z x libusb.7z -olibusb-src
+          New-Item -ItemType Directory -Force -Path libusb\include\libusb-1.0 | Out-Null
+          Copy-Item libusb-src\include\libusb.h libusb\include\libusb-1.0\
+          Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.lib libusb\
+          Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.dll .
+      - name: Build
+        shell: cmd
+        run: nmake /f Makefile.win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows-x64
+          path: |
+            siano-ts.exe
+            libusb-1.0.dll
+
+  publish:
+    name: Pack and publish
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Firmware
+        run: |
+          mkdir -p firmware
+          curl -fsSL -o firmware/isdbt_rio.inp \
+            https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp
+          echo "9b762c1808fd8da81bbec3e24ddb04a3  firmware/isdbt_rio.inp" | md5sum -c
+      - name: Pack
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VER="${TAG#v}"
+          pack() {
+            local name="$1" srcbin="$2" binname="$3"
+            local dir="siano-ts-${VER}-${name}"
+            mkdir -p "$dir/firmware"
+            cp "$srcbin" "$dir/$binname"
+            chmod +x "$dir/$binname" || true
+            cp COPYING LICENCE.siano README.md "$dir/"
+            cp firmware/isdbt_rio.inp "$dir/firmware/"
+            if [ "$name" = "windows-x64" ]; then
+              cp dist/bin-windows-x64/libusb-1.0.dll "$dir/"
+              zip -r "${dir}.zip" "$dir"
+            else
+              tar -czf "${dir}.tar.gz" "$dir"
+            fi
+          }
+          pack linux-x86_64 dist/bin-linux-x86_64/siano-ts siano-ts
+          pack darwin-arm64 dist/bin-darwin-arm64/siano-ts siano-ts
+          pack windows-x64 dist/bin-windows-x64/siano-ts.exe siano-ts.exe
+          ls -l siano-ts-*.tar.gz siano-ts-*.zip
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            siano-ts-*.tar.gz siano-ts-*.zip

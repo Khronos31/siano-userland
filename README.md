@@ -41,10 +41,15 @@ at normal priority. The in-flight USB ring is 32 × 16KiB.
 
 The firmware is not part of this repository. Obtain `isdbt_rio.inp` from the
 linux-firmware collection and pass it with `--firmware`, or place it at
-`./firmware/isdbt_rio.inp` or `/lib/firmware/isdbt_rio.inp`. The Siano firmware
-license in `ref/LICENCE.siano` permits binary redistribution with its copyright
-notice and disclaimer; it prohibits reverse engineering, decompilation, and
-disassembly. Do not add the firmware to git.
+`./firmware/isdbt_rio.inp` or `/lib/firmware/isdbt_rio.inp`. GitHub Releases
+ship the binary next to `firmware/isdbt_rio.inp` (not embedded in the ELF).
+The Siano firmware license in [LICENCE.siano](LICENCE.siano) permits binary
+redistribution with its copyright notice and disclaimer; it prohibits reverse
+engineering, decompilation, and disassembly. Do not add the firmware to git.
+
+Tagged builds publish Linux (musl), macOS, and Windows zip/tar archives.
+Windows needs WinUSB (Zadig) once; the zip includes `libusb-1.0.dll`. macOS
+needs Homebrew `libusb`.
 
 ## Usage
 

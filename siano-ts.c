@@ -1127,10 +1127,50 @@ static int write_all(int fd, const uint8_t *data, size_t length)
     return 0;
 }
 
+/* URB payloads are not a multiple of 188. Emit only aligned TS packets. */
+static int write_aligned_ts(int fd, uint8_t *hold, size_t *hold_len,
+                            const uint8_t *data, size_t length)
+{
+    uint8_t scratch[USB_TRANSFER_SIZE + 188U];
+    size_t n = 0;
+    const uint8_t *p;
+
+    if (*hold_len != 0) {
+        memcpy(scratch, hold, *hold_len);
+        memcpy(scratch + *hold_len, data, length);
+        n = *hold_len + length;
+        p = scratch;
+        *hold_len = 0;
+    } else {
+        p = data;
+        n = length;
+    }
+
+    while (n >= 188U) {
+        if (p[0] == 0x47 && (n < 376U || p[188] == 0x47)) {
+            int rc = write_all(fd, p, 188U);
+            if (rc < 0)
+                return rc;
+            p += 188U;
+            n -= 188U;
+        } else {
+            p++;
+            n--;
+        }
+    }
+    if (n != 0) {
+        memcpy(hold, p, n);
+        *hold_len = n;
+    }
+    return 0;
+}
+
 static int stream_ts(struct siano_device *device, int output_fd, int duration)
 {
     struct timespec deadline;
     uint8_t data[USB_TRANSFER_SIZE];
+    uint8_t hold[188];
+    size_t hold_len = 0;
 
     if (duration > 0) {
         clock_gettime(CLOCK_MONOTONIC, &deadline);
@@ -1140,7 +1180,7 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
         size_t length;
         int rc = ts_pop(&device->ts, data, &length);
         if (rc == 0) {
-            rc = write_all(output_fd, data, length);
+            rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
             if (rc < 0) {
                 fprintf(stderr, "TS output: %s\n", strerror(-rc));
                 return rc;
