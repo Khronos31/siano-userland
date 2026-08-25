@@ -22,12 +22,12 @@ make test
 ```
 
 CI (GitHub Actions) builds and tests on Ubuntu, macOS, and Alpine (musl),
-and cross-compiles an aarch64 Termux ELF with the Android NDK. There is
-no tuner in CI; Linux/macOS jobs are compile/link plus offline protocol
-tests. The Android job cannot run the binary on the runner (Bionic is
-not the host libc); it checks that the interpreter is
-`/system/bin/linker64`, that libusb is linked statically, and that no
-host `RPATH`/`RUNPATH` leaked in.
+and cross-compiles Termux ELFs (aarch64 and armv7a) with the Android NDK.
+There is no tuner in CI; Linux/macOS jobs are compile/link plus offline
+protocol tests. The Android jobs cannot run the binary on the runner
+(Bionic is not the host libc); they check the Bionic interpreter
+(`/system/bin/linker64` or `/system/bin/linker`), that libusb is linked
+statically, and that no host `RPATH`/`RUNPATH` leaked in.
 
 On Alpine:
 
