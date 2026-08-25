@@ -158,9 +158,13 @@ jobs:
           path: siano-ts
 
   android:
-    name: Android (Termux aarch64)
+    name: Android (Termux ${{ matrix.abi }})
     needs: prepare
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [aarch64, armv7a]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -175,11 +179,12 @@ jobs:
       - name: Build
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_ABI: ${{ matrix.abi }}
         run: ./scripts/build-android.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: bin-android-aarch64
-          path: build/android-aarch64/siano-ts
+          name: bin-android-${{ matrix.abi }}
+          path: build/android-${{ matrix.abi }}/siano-ts
 
   windows:
     name: Windows
@@ -253,6 +258,7 @@ jobs:
           pack linux-x86_64 dist/bin-linux-x86_64/siano-ts siano-ts
           pack darwin-arm64 dist/bin-darwin-arm64/siano-ts siano-ts
           pack android-aarch64 dist/bin-android-aarch64/siano-ts siano-ts
+          pack android-armv7a dist/bin-android-armv7a/siano-ts siano-ts
           pack windows-x64 dist/bin-windows-x64/siano-ts.exe siano-ts.exe
           ls -l siano-ts-*.tar.gz siano-ts-*.zip
       - name: Create GitHub Release

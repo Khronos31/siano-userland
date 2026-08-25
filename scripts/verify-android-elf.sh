@@ -4,12 +4,33 @@
 # linked against libusb, or carrying a host RPATH/RUNPATH.
 set -eu
 
-if [ "$#" -ne 1 ]; then
-	echo "usage: $0 <siano-ts>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+	echo "usage: $0 <siano-ts> [linker64|linker]" >&2
 	exit 2
 fi
 
 bin=$1
+want_interp=${2:-}
+abi=${ANDROID_ABI:-aarch64}
+case "$want_interp" in
+'' )
+	case "$abi" in
+	aarch64) want_interp=/system/bin/linker64 ;;
+	armv7a|armeabi-v7a|arm) want_interp=/system/bin/linker ;;
+	*)
+		echo "unknown ANDROID_ABI=$abi (expected aarch64 or armv7a)" >&2
+		exit 2
+		;;
+	esac
+	;;
+linker64|/system/bin/linker64) want_interp=/system/bin/linker64 ;;
+linker|/system/bin/linker) want_interp=/system/bin/linker ;;
+*)
+	echo "interpreter must be linker64 or linker, got: $want_interp" >&2
+	exit 2
+	;;
+esac
+
 if [ ! -f "$bin" ]; then
 	echo "missing binary: $bin" >&2
 	exit 1
@@ -34,14 +55,25 @@ echo "$dump_prog"
 echo "$dump_dyn"
 
 machine=$(printf '%s\n' "$dump_hdr" | awk -F: '/Machine:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
-case "$machine" in
-AArch64|AARCH64|"ARM aarch64")
-	;;
-*)
-	echo "expected AArch64, got: $machine" >&2
-	exit 1
-	;;
-esac
+if [ "$want_interp" = "/system/bin/linker64" ]; then
+	case "$machine" in
+	AArch64|AARCH64|"ARM aarch64")
+		;;
+	*)
+		echo "expected AArch64, got: $machine" >&2
+		exit 1
+		;;
+	esac
+else
+	case "$machine" in
+	ARM|Arm)
+		;;
+	*)
+		echo "expected 32-bit ARM, got: $machine" >&2
+		exit 1
+		;;
+	esac
+fi
 
 type=$(printf '%s\n' "$dump_hdr" | awk -F: '/Type:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
 case "$type" in
@@ -58,8 +90,8 @@ if [ -z "$interp" ]; then
 	echo "no PT_INTERP; a static musl/glibc binary will not load on Android" >&2
 	exit 1
 fi
-if [ "$interp" != "/system/bin/linker64" ]; then
-	echo "interpreter must be /system/bin/linker64, got: $interp" >&2
+if [ "$interp" != "$want_interp" ]; then
+	echo "interpreter must be $want_interp, got: $interp" >&2
 	exit 1
 fi
 

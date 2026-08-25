@@ -1,16 +1,31 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Cross-compile siano-ts for Termux (Android aarch64 / Bionic).
-#
-# This is not a musl/glibc aarch64 Linux binary. Termux loads ELF with
-# /system/bin/linker64 and Bionic (libc.so, not libc.so.6). Host
-# pkg-config, LIBRARY_PATH, LD_RUN_PATH, and shared libusb are kept out
-# of the link so /usr and the NDK sysroot never become DT_NEEDED/RPATH.
+# Cross-compile siano-ts for Termux (Bionic). ANDROID_ABI is aarch64
+# (linker64) or armv7a (linker). This is not a musl/glibc Linux binary.
+# Host pkg-config, LIBRARY_PATH, LD_RUN_PATH, and shared libusb are kept
+# out of the link so /usr and the NDK sysroot never become DT_NEEDED/RPATH.
 set -eu
 
 api=${ANDROID_API:-24}
 abi=${ANDROID_ABI:-aarch64}
+case "$abi" in
+aarch64)
+	clang_triple=aarch64-linux-android${api}
+	autotools_host=aarch64-linux-android
+	want_interp=/system/bin/linker64
+	;;
+armv7a|armeabi-v7a|arm)
+	abi=armv7a
+	clang_triple=armv7a-linux-androideabi${api}
+	autotools_host=armv7a-linux-androideabi
+	want_interp=/system/bin/linker
+	;;
+*)
+	echo "ANDROID_ABI must be aarch64 or armv7a, got: $abi" >&2
+	exit 1
+	;;
+esac
 libusb_ver=${LIBUSB_VERSION:-1.0.28}
 libusb_sha256=966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29
 libusb_url="https://github.com/libusb/libusb/releases/download/v${libusb_ver}/libusb-${libusb_ver}.tar.bz2"
@@ -39,8 +54,8 @@ Darwin-x86_64) prebuilt=darwin-x86_64 ;;
 esac
 
 toolchain=$ndk/toolchains/llvm/prebuilt/$prebuilt
-cc=$toolchain/bin/${abi}-linux-android${api}-clang
-cxx=$toolchain/bin/${abi}-linux-android${api}-clang++
+cc=$toolchain/bin/${clang_triple}-clang
+cxx=$toolchain/bin/${clang_triple}-clang++
 ar=$toolchain/bin/llvm-ar
 ranlib=$toolchain/bin/llvm-ranlib
 nm=$toolchain/bin/llvm-nm
@@ -124,7 +139,7 @@ env -i \
 		set -eu
 		cd \"$libusb_src\"
 		./configure \
-			--host=${abi}-linux-android \
+			--host=${autotools_host} \
 			--prefix=\"$prefix\" \
 			--libdir=\"$prefix/lib\" \
 			--disable-shared \
@@ -170,6 +185,7 @@ make -C "$root" clean
 # Host GNU readelf, not NDK llvm-readelf: the interpreter/RPATH parser
 # is written against binutils output.
 PATH="$host_path" \
-	"$root/scripts/verify-android-elf.sh" "$out/siano-ts"
+	ANDROID_ABI="$abi" \
+	"$root/scripts/verify-android-elf.sh" "$out/siano-ts" "$want_interp"
 
 echo "built $out/siano-ts"

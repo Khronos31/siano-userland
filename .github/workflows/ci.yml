@@ -39,8 +39,12 @@ jobs:
         run: make test
 
   android:
-    name: Android (Termux aarch64)
+    name: Android (Termux ${{ matrix.abi }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [aarch64, armv7a]
     steps:
       - uses: actions/checkout@v4
       - uses: nttld/setup-ndk@v1
@@ -53,6 +57,11 @@ jobs:
       - name: Build
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_ABI: ${{ matrix.abi }}
         run: ./scripts/build-android.sh
       - name: File type
-        run: file build/android-aarch64/siano-ts
+        run: file build/android-${{ matrix.abi }}/siano-ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-android-${{ matrix.abi }}
+          path: build/android-${{ matrix.abi }}/siano-ts
