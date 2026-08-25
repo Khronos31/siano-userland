@@ -2,7 +2,9 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
 CFLAGS ?= -O2
-CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -D_POSIX_C_SOURCE=200809L
+# _FILE_OFFSET_BITS=64: 32-bit glibc open()+write() past 2GiB (EFBIG) without
+# O_LARGEFILE. No-op on LP64, musl, and Bionic (which already sets O_LARGEFILE).
+CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 CFLAGS += $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
