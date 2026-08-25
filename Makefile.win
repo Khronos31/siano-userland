@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# nmake /f Makefile.win  (from VS DevShell)
+# LIBUSB_DIR = extracted libusb (include\libusb-1.0 and MS64 dll import lib)
+
+LIBUSB_DIR = libusb
+CC = cl
+CFLAGS = /nologo /O2 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I$(LIBUSB_DIR)\include\libusb-1.0
+LIBS = $(LIBUSB_DIR)\libusb-1.0.lib
+
+all: siano-ts.exe
+
+siano-ts.exe: siano-ts.obj protocol.obj
+	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj /link $(LIBS)
+
+siano-ts.obj: siano-ts.c protocol.h siano-os.h
+	$(CC) $(CFLAGS) /c siano-ts.c
+
+protocol.obj: protocol.c protocol.h
+	$(CC) $(CFLAGS) /c protocol.c
+
+clean:
+	del /q siano-ts.exe siano-ts.obj protocol.obj 2>nul

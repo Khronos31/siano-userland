@@ -7,30 +7,43 @@
 #if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
 #endif
+#if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #include "protocol.h"
 
+#ifdef _WIN32
+#include "siano-os.h"
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
-#include <getopt.h>
 #include <libusb.h>
 #include <limits.h>
-#include <pthread.h>
-#include <sched.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#ifndef _WIN32
+#include <getopt.h>
+#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
+#endif
 
-#if defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000107)
+#if !defined(_WIN32) && defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000107)
 #define SIANO_HAVE_WRAP_SYS_DEVICE 1
+#endif
+
+#ifndef O_BINARY
+#define O_BINARY 0
 #endif
 
 /* 32 x 16KiB ≈ 250ms of 17Mbps in flight. Kernel smsusb uses 10 x 8KiB. */
@@ -43,13 +56,19 @@
 #define WRITER_THREAD_PRIORITY 10
 
 /* Darwin condvars are CLOCK_REALTIME and lack pthread_condattr_setclock. */
+#ifndef SIANO_COND_CLOCK
 #if defined(__APPLE__)
 #define SIANO_COND_CLOCK CLOCK_REALTIME
 #else
 #define SIANO_COND_CLOCK CLOCK_MONOTONIC
 #endif
+#endif
 
+#ifdef _WIN32
+static volatile int stop_requested;
+#else
 static volatile sig_atomic_t stop_requested;
+#endif
 
 struct ts_chunk {
     size_t length;
@@ -155,6 +174,89 @@ static int parse_unsigned(const char *text, unsigned long max, unsigned long *va
     return 0;
 }
 
+static int apply_option(int option, const char *value_text, struct options *options,
+                        const char *program)
+{
+    unsigned long value;
+
+    switch (option) {
+    case 'c':
+        if (parse_unsigned(value_text, 62, &value) < 0 || value < 13)
+            return -EINVAL;
+        options->channel = (unsigned)value;
+        options->have_channel = true;
+        return 0;
+    case 'f':
+        if (parse_unsigned(value_text, UINT32_MAX, &value) < 0 || value == 0)
+            return -EINVAL;
+        options->frequency = (uint32_t)value;
+        options->have_frequency = true;
+        return 0;
+    case 't':
+        if (parse_unsigned(value_text, INT_MAX, &value) < 0)
+            return -EINVAL;
+        options->duration = (int)value;
+        return 0;
+    case 'F':
+        options->firmware = (char *)value_text;
+        return 0;
+    case 'd':
+        if (parse_unsigned(value_text, INT_MAX, &value) < 0)
+            return -EINVAL;
+        options->device_index = (int)value;
+        return 0;
+    case 1:
+        if (parse_unsigned(value_text, INT_MAX, &value) < 0)
+            return -EINVAL;
+        options->device_fd = (int)value;
+        return 0;
+    case 'p':
+        if (options->pid_count == sizeof(options->pids) / sizeof(options->pids[0]) ||
+            parse_unsigned(value_text, 0x2000, &value) < 0)
+            return -EINVAL;
+        options->pids[options->pid_count++] = (uint16_t)value;
+        return 0;
+    case 'o':
+        options->output = (char *)value_text;
+        return 0;
+    case 'v':
+        options->verbose = true;
+        return 0;
+    case 'l':
+        options->list = true;
+        return 0;
+    case 'h':
+        usage(stdout, program);
+        fflush(stdout);
+        exit(0);
+    default:
+        return -EINVAL;
+    }
+}
+
+static int finish_options(int argc, char **argv, int leftover, struct options *options)
+{
+    if (leftover < argc) {
+        unsigned long fd_value;
+
+        if (leftover + 1 != argc ||
+            parse_unsigned(argv[leftover], INT_MAX, &fd_value) < 0)
+            return -EINVAL;
+        if (options->device_fd >= 0 && options->device_fd != (int)fd_value)
+            return -EINVAL;
+        options->device_fd = (int)fd_value;
+    }
+    if (options->have_channel && options->have_frequency)
+        return -EINVAL;
+    if (options->list && options->device_fd >= 0)
+        return -EINVAL;
+    if (options->device_fd >= 0 && options->device_index != 0)
+        return -EINVAL;
+    if (!options->list && !options->have_channel && !options->have_frequency)
+        return -EINVAL;
+    return 0;
+}
+
 static int parse_options(int argc, char **argv, struct options *options)
 {
     static const struct option long_options[] = {
@@ -171,88 +273,80 @@ static int parse_options(int argc, char **argv, struct options *options)
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
-    int option;
 
     memset(options, 0, sizeof(*options));
     options->device_index = 0;
     options->device_fd = -1;
-    while ((option = getopt_long(argc, argv, "c:f:t:F:d:p:o:vlh", long_options,
-                                 NULL)) != -1) {
-        unsigned long value;
+#ifdef _WIN32
+    {
+        int i = 1;
 
-        switch (option) {
-        case 'c':
-            if (parse_unsigned(optarg, 62, &value) < 0 || value < 13)
+        while (i < argc) {
+            const char *a = argv[i];
+            const char *value = NULL;
+            int option = 0;
+            int needs_value = 0;
+            size_t n;
+
+            if (a[0] != '-')
+                break;
+            i++;
+            if (a[1] == '-' && a[2] == '\0')
+                break;
+            if (a[1] == '-') {
+                const char *name = a + 2;
+                const char *eq = strchr(name, '=');
+                size_t namelen = eq ? (size_t)(eq - name) : strlen(name);
+
+                for (n = 0; long_options[n].name; n++) {
+                    if (strncmp(long_options[n].name, name, namelen) != 0 ||
+                        long_options[n].name[namelen] != '\0')
+                        continue;
+                    option = long_options[n].val;
+                    needs_value = long_options[n].has_arg == required_argument;
+                    break;
+                }
+                if (!option)
+                    return -EINVAL;
+                if (needs_value) {
+                    if (eq)
+                        value = eq + 1;
+                    else if (i < argc)
+                        value = argv[i++];
+                    else
+                        return -EINVAL;
+                }
+            } else {
+                option = a[1];
+                needs_value = (option == 'c' || option == 'f' || option == 't' ||
+                               option == 'F' || option == 'd' || option == 'p' ||
+                               option == 'o');
+                if (a[2] != '\0' && needs_value)
+                    value = a + 2;
+                else if (needs_value) {
+                    if (i < argc)
+                        value = argv[i++];
+                    else
+                        return -EINVAL;
+                }
+            }
+            if (apply_option(option, value, options, argv[0]) < 0)
                 return -EINVAL;
-            options->channel = (unsigned)value;
-            options->have_channel = true;
-            break;
-        case 'f':
-            if (parse_unsigned(optarg, UINT32_MAX, &value) < 0 || value == 0)
-                return -EINVAL;
-            options->frequency = (uint32_t)value;
-            options->have_frequency = true;
-            break;
-        case 't':
-            if (parse_unsigned(optarg, INT_MAX, &value) < 0)
-                return -EINVAL;
-            options->duration = (int)value;
-            break;
-        case 'F':
-            options->firmware = optarg;
-            break;
-        case 'd':
-            if (parse_unsigned(optarg, INT_MAX, &value) < 0)
-                return -EINVAL;
-            options->device_index = (int)value;
-            break;
-        case 1:
-            if (parse_unsigned(optarg, INT_MAX, &value) < 0)
-                return -EINVAL;
-            options->device_fd = (int)value;
-            break;
-        case 'p':
-            if (options->pid_count == sizeof(options->pids) / sizeof(options->pids[0]) ||
-                parse_unsigned(optarg, 0x2000, &value) < 0)
-                return -EINVAL;
-            options->pids[options->pid_count++] = (uint16_t)value;
-            break;
-        case 'o':
-            options->output = optarg;
-            break;
-        case 'v':
-            options->verbose = true;
-            break;
-        case 'l':
-            options->list = true;
-            break;
-        case 'h':
-            usage(stdout, argv[0]);
-            exit(0);
-        default:
-            return -EINVAL;
         }
+        return finish_options(argc, argv, i, options);
     }
-    if (optind < argc) {
-        unsigned long fd_value;
+#else
+    {
+        int option;
 
-        /* termux-usb -e puts the USB fd as the last argument. */
-        if (optind + 1 != argc ||
-            parse_unsigned(argv[optind], INT_MAX, &fd_value) < 0)
-            return -EINVAL;
-        if (options->device_fd >= 0 && options->device_fd != (int)fd_value)
-            return -EINVAL;
-        options->device_fd = (int)fd_value;
+        while ((option = getopt_long(argc, argv, "c:f:t:F:d:p:o:vlh", long_options,
+                                     NULL)) != -1) {
+            if (apply_option(option, optarg, options, argv[0]) < 0)
+                return -EINVAL;
+        }
+        return finish_options(argc, argv, optind, options);
     }
-    if (options->have_channel && options->have_frequency)
-        return -EINVAL;
-    if (options->list && options->device_fd >= 0)
-        return -EINVAL;
-    if (options->device_fd >= 0 && options->device_index != 0)
-        return -EINVAL;
-    if (!options->list && !options->have_channel && !options->have_frequency)
-        return -EINVAL;
-    return 0;
+#endif
 }
 
 static bool is_rio_id(uint16_t vendor, uint16_t product)
@@ -330,7 +424,10 @@ static int resolve_firmware(const char *requested, char **path)
 {
     static const char *const defaults[] = {
         "./firmware/isdbt_rio.inp",
+        "isdbt_rio.inp",
+#ifndef _WIN32
         "/lib/firmware/isdbt_rio.inp",
+#endif
     };
 
     if (requested) {
@@ -353,6 +450,9 @@ static int resolve_firmware(const char *requested, char **path)
 
 static int cond_init_waitable(pthread_cond_t *cond)
 {
+#ifdef _WIN32
+    return pthread_cond_init(cond, NULL) == 0 ? 0 : -1;
+#else
     pthread_condattr_t attr;
 
     if (pthread_condattr_init(&attr) != 0)
@@ -369,6 +469,7 @@ static int cond_init_waitable(pthread_cond_t *cond)
     }
     pthread_condattr_destroy(&attr);
     return 0;
+#endif
 }
 
 static void cond_deadline_from_now(struct timespec *deadline, unsigned extra_ms)
@@ -1176,7 +1277,12 @@ static int open_rio(struct siano_device *device, int requested_index)
 
 static int open_from_fd(struct siano_device *device, int fd)
 {
-#ifdef SIANO_HAVE_WRAP_SYS_DEVICE
+#if defined(_WIN32)
+    (void)device;
+    (void)fd;
+    fprintf(stderr, "--fd is not supported on Windows\n");
+    return -ENOTSUP;
+#elif defined(SIANO_HAVE_WRAP_SYS_DEVICE)
     int rc;
 
     if (fd < 0 || fcntl(fd, F_GETFD) < 0) {
@@ -1233,10 +1339,21 @@ static int init_device_state(struct siano_device *device, libusb_context *usb,
     return 0;
 }
 
+#ifdef _WIN32
+static BOOL WINAPI on_console(DWORD type)
+{
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) {
+        stop_requested = 1;
+        return TRUE;
+    }
+    return FALSE;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     struct options options;
-    struct siano_device device;
+    struct siano_device *device;
     libusb_context *usb = NULL;
     char *firmware_path = NULL;
     uint32_t frequency;
@@ -1244,10 +1361,15 @@ int main(int argc, char **argv)
     bool close_output = false;
     int rc;
 
+#ifdef _WIN32
+    SetConsoleCtrlHandler(on_console, TRUE);
+    _setmode(fileno(stdout), O_BINARY);
+#else
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stderr, NULL, _IOLBF, 0);
+#endif
     rc = parse_options(argc, argv, &options);
     if (rc < 0) {
         usage(stderr, argv[0]);
@@ -1290,8 +1412,15 @@ int main(int argc, char **argv)
         libusb_exit(usb);
         return rc;
     }
-    if (init_device_state(&device, usb, options.verbose) < 0) {
+    device = calloc(1, sizeof(*device));
+    if (!device) {
+        free(firmware_path);
+        libusb_exit(usb);
+        return 1;
+    }
+    if (init_device_state(device, usb, options.verbose) < 0) {
         fprintf(stderr, "failed to initialize device state\n");
+        free(device);
         free(firmware_path);
         libusb_exit(usb);
         return 1;
@@ -1299,19 +1428,19 @@ int main(int argc, char **argv)
     try_lock_pages();
     try_realtime(pthread_self(), WRITER_THREAD_PRIORITY, "writer");
     if (options.device_fd >= 0)
-        rc = open_from_fd(&device, options.device_fd);
+        rc = open_from_fd(device, options.device_fd);
     else
-        rc = open_rio(&device, options.device_index);
+        rc = open_rio(device, options.device_index);
     if (rc < 0)
         goto out;
-    rc = start_streaming(&device);
+    rc = start_streaming(device);
     if (rc < 0)
         goto out;
-    rc = set_device_mode(&device, firmware_path);
+    rc = set_device_mode(device, firmware_path);
     if (rc < 0)
         goto out;
     /* smsdvb tunes first (set_frontend), then ADD_PID on start_feed. */
-    rc = tune(&device, frequency);
+    rc = tune(device, frequency);
     if (rc < 0)
         goto out;
     fprintf(stderr, "ISDB-T lock acquired\n");
@@ -1322,17 +1451,17 @@ int main(int argc, char **argv)
         sms_pack_header(message, MSG_SMS_ADD_PID_FILTER_REQ,
                         SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
         sms_put_le32(message + SMS_HEADER_SIZE, 0x2000);
-        (void)send_message(&device, message, sizeof(message));
+        (void)send_message(device, message, sizeof(message));
     } else {
         for (size_t i = 0; i < options.pid_count; i++) {
-            rc = add_pid(&device, options.pids[i]);
+            rc = add_pid(device, options.pids[i]);
             if (rc < 0)
                 goto out;
         }
     }
     rc = 0;
     if (options.output) {
-        output_fd = open(options.output, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        output_fd = open(options.output, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0666);
         if (output_fd < 0) {
             fprintf(stderr, "output '%s': %s\n", options.output, strerror(errno));
             rc = -errno;
@@ -1340,14 +1469,15 @@ int main(int argc, char **argv)
         }
         close_output = true;
     }
-    rc = stream_ts(&device, output_fd, options.duration);
+    rc = stream_ts(device, output_fd, options.duration);
 out:
-    if (device.ts.drops != 0)
+    if (device->ts.drops != 0)
         fprintf(stderr, "TS queue dropped %llu chunk(s)\n",
-                (unsigned long long)device.ts.drops);
+                (unsigned long long)device->ts.drops);
     if (close_output)
         close(output_fd);
-    close_device(&device);
+    close_device(device);
+    free(device);
     free(firmware_path);
     libusb_exit(usb);
     if (rc < 0 && !stop_requested)

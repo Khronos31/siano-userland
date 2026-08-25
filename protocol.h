@@ -53,13 +53,21 @@ enum {
     SMS_DVBT_BDA_CONTROL_MSG_ID = 201,
 };
 
+#ifdef _MSC_VER
+#pragma pack(push, 1)
+#endif
 struct sms_msg_hdr_wire {
     uint16_t msg_type;
     uint8_t msg_src_id;
     uint8_t msg_dst_id;
     uint16_t msg_length;
     uint16_t msg_flags;
+#ifdef _MSC_VER
+};
+#pragma pack(pop)
+#else
 } __attribute__((packed));
+#endif
 
 struct sms_firmware_header {
     uint32_t check_sum;
