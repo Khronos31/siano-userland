@@ -11,13 +11,13 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 all: siano-ts
 
 siano-ts: siano-ts.o protocol.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 siano-ts.o: siano-ts.c protocol.h
 protocol.o: protocol.c protocol.h
 
 test-protocol: tests/test_protocol.o protocol.o
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 tests/test_protocol.o: tests/test_protocol.c protocol.h
 

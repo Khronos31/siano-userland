@@ -21,8 +21,13 @@ make
 make test
 ```
 
-CI (GitHub Actions) builds and tests on Ubuntu, macOS, and Alpine (musl).
-There is no tuner in CI; that job is compile/link plus offline protocol tests.
+CI (GitHub Actions) builds and tests on Ubuntu, macOS, and Alpine (musl),
+and cross-compiles an aarch64 Termux ELF with the Android NDK. There is
+no tuner in CI; Linux/macOS jobs are compile/link plus offline protocol
+tests. The Android job cannot run the binary on the runner (Bionic is
+not the host libc); it checks that the interpreter is
+`/system/bin/linker64`, that libusb is linked statically, and that no
+host `RPATH`/`RUNPATH` leaked in.
 
 On Alpine:
 
@@ -49,8 +54,23 @@ engineering, decompilation, and disassembly. Do not add the firmware to git.
 
 Releases are cut from **Actions → Release** on `main` (`workflow_dispatch`,
 version without a `v` prefix). That job tags, builds Linux (musl) / macOS /
-Windows, and publishes the archives. Windows needs WinUSB (Zadig) once; the
-zip includes `libusb-1.0.dll`. macOS needs Homebrew `libusb`.
+Windows / Android (Termux aarch64), and publishes the archives. Windows
+needs WinUSB (Zadig) once; the zip includes `libusb-1.0.dll`. macOS needs
+Homebrew `libusb`. The Android archive is a Bionic ELF for Termux, not a
+Play Store APK and not the Linux musl tarball.
+
+## Termux
+
+GitHub Releases include `siano-ts-*-android-aarch64.tar.gz`: NDK clang,
+API 24, `aarch64-linux-android`, interpreter `/system/bin/linker64`.
+libusb 1.0.28 is built `--disable-udev --enable-static --disable-shared`
+and linked as `libusb-1.0.a -llog`, so Termux's `$PREFIX/lib` is not
+required at runtime. Do not copy the Linux musl archive onto a phone; it
+requests `ld-musl` and will not load.
+
+USB access is `termux-usb` handing an fd to `--fd` (or a leftover integer
+argument). `--list` enumerates `/dev/bus/usb` and cannot be combined with
+`--fd`. Place `firmware/isdbt_rio.inp` next to the binary.
 
 ## Usage
 
