@@ -1,25 +1,139 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version without a v prefix (for example, 0.1.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: siano-userland-release
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    name: Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      publish: ${{ steps.prepare.outputs.publish }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the dispatch source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Release must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          git fetch --force origin main --tags
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "origin/main changed after this workflow was dispatched" >&2
+            exit 1
+          fi
+
+      - name: Build and test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libusb-1.0-0-dev
+          make test
+
+      - name: Prepare or recover the release tag
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Version must be N.N.N without a v prefix" >&2
+            exit 1
+          fi
+          tag="v$RELEASE_VERSION"
+
+          if [[ -f VERSION ]]; then
+            current="$(tr -d '[:space:]' < VERSION)"
+            if [[ "$current" != "$RELEASE_VERSION" ]]; then
+              printf '%s\n' "$RELEASE_VERSION" > VERSION
+            fi
+          else
+            printf '%s\n' "$RELEASE_VERSION" > VERSION
+          fi
+
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+            --sort=-version:refname \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | head -n 1 || true)"
+
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            tag_commit="$(git rev-list -n 1 "$tag")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "$tag already exists on a different commit" >&2
+              exit 1
+            fi
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$latest_tag" ]]; then
+            newest="$(printf '%s\n%s\n' "${latest_tag#v}" "$RELEASE_VERSION" | sort -V | tail -n 1)"
+            if [[ "$newest" != "$RELEASE_VERSION" || "${latest_tag#v}" == "$RELEASE_VERSION" ]]; then
+              echo "$RELEASE_VERSION is not newer than ${latest_tag#v}" >&2
+              exit 1
+            fi
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release exists without a fetched matching tag: $tag" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- VERSION; then
+            git add VERSION
+            git commit -m "Release $tag"
+          fi
+          git tag -a "$tag" -m "Release $tag"
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "origin/main changed during release validation" >&2
+            exit 1
+          fi
+          gh auth setup-git --hostname github.com
+          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   linux:
     name: Linux (musl)
+    needs: prepare
     runs-on: ubuntu-latest
     container: alpine:3.21
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - name: Build
         run: |
           apk add --no-cache gcc make pkgconf musl-dev libusb-dev
           make
-          ldd siano-ts || true
       - uses: actions/upload-artifact@v4
         with:
           name: bin-linux-x86_64
@@ -27,15 +141,17 @@ jobs:
 
   macos:
     name: macOS
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - name: Build
         run: |
           brew install libusb pkgconf
           export PKG_CONFIG_PATH="$(brew --prefix libusb)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make
-          otool -L siano-ts
       - uses: actions/upload-artifact@v4
         with:
           name: bin-darwin-arm64
@@ -43,9 +159,12 @@ jobs:
 
   windows:
     name: Windows
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
@@ -70,10 +189,13 @@ jobs:
 
   publish:
     name: Pack and publish
-    needs: [linux, macos, windows]
+    needs: [prepare, linux, macos, windows]
+    if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -85,7 +207,7 @@ jobs:
           echo "9b762c1808fd8da81bbec3e24ddb04a3  firmware/isdbt_rio.inp" | md5sum -c
       - name: Pack
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -eu
           VER="${TAG#v}"
@@ -111,8 +233,11 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --generate-notes \
+            --title "$RELEASE_TAG" \
             siano-ts-*.tar.gz siano-ts-*.zip

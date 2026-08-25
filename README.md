@@ -47,9 +47,10 @@ The Siano firmware license in [LICENCE.siano](LICENCE.siano) permits binary
 redistribution with its copyright notice and disclaimer; it prohibits reverse
 engineering, decompilation, and disassembly. Do not add the firmware to git.
 
-Tagged builds publish Linux (musl), macOS, and Windows zip/tar archives.
-Windows needs WinUSB (Zadig) once; the zip includes `libusb-1.0.dll`. macOS
-needs Homebrew `libusb`.
+Releases are cut from **Actions → Release** on `main` (`workflow_dispatch`,
+version without a `v` prefix). That job tags, builds Linux (musl) / macOS /
+Windows, and publishes the archives. Windows needs WinUSB (Zadig) once; the
+zip includes `libusb-1.0.dll`. macOS needs Homebrew `libusb`.
 
 ## Usage
 
