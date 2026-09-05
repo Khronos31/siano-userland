@@ -50,12 +50,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def copy_regular(source: Path, destination: Path) -> None:
+def copy_regular(source: Path, destination: Path, *, mode: int | None = None) -> None:
     if source.is_symlink() or not source.is_file():
         fail(f"package input must be an ordinary file: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    shutil.copymode(source, destination)
+    if mode is None:
+        shutil.copymode(source, destination)
+    else:
+        destination.chmod(mode)
 
 
 def write_text(path: Path, text: str) -> None:
@@ -254,7 +257,12 @@ def main() -> int:
         for name in ("COPYING", "LICENCE.siano", "README.md", "REBUILD.md"):
             source = repo_root / ("packaging/REBUILD.md" if name == "REBUILD.md" else name)
             copy_regular(source, stage / name)
-        copy_regular(binary, stage / binary_name)
+        # Artifact downloads may normalize executable files to 0644.  Tar
+        # consumers execute the native and Android binaries directly, so set
+        # their canonical mode explicitly.  Windows remains a ZIP package and
+        # keeps the existing source-mode behavior for its .exe.
+        copy_regular(binary, stage / binary_name,
+                     mode=None if args.platform == "windows-x64" else 0o755)
         copy_regular(evidence_path, stage / "evidence/binary-audit.json")
         copy_regular(firmware, stage / "firmware/isdbt_rio.inp")
         source_archive = None

@@ -98,7 +98,7 @@ def safe_member(name: str) -> None:
         fail(f"unsafe archive member: {name!r}")
 
 
-def archive_payloads(path: Path) -> dict[str, bytes]:
+def archive_payloads(path: Path, modes: dict[str, int] | None = None) -> dict[str, bytes]:
     if not path.is_file() or path.is_symlink():
         fail(f"archive is not an ordinary file: {path}")
     payloads: dict[str, bytes] = {}
@@ -113,6 +113,8 @@ def archive_payloads(path: Path) -> dict[str, bytes]:
                     if info.filename in payloads:
                         fail(f"duplicate archive member: {info.filename}")
                     payloads[info.filename] = archive.read(info)
+                    if modes is not None:
+                        modes[info.filename] = mode
         else:
             with tarfile.open(path, "r:*") as archive:
                 for info in archive.getmembers():
@@ -123,6 +125,8 @@ def archive_payloads(path: Path) -> dict[str, bytes]:
                     if payload is None:
                         fail(f"cannot read archive member: {info.name}")
                     payloads[info.name] = payload.read()
+                    if modes is not None:
+                        modes[info.name] = info.mode
     except (OSError, tarfile.TarError, zipfile.BadZipFile) as error:
         fail(f"cannot read archive {path}: {error}")
     return payloads
@@ -277,6 +281,14 @@ def verify_binary_evidence(payloads: dict[str, bytes], manifest: dict) -> None:
         fail("binary audit evidence is not bound to the archived binary/platform")
 
 
+def verify_binary_archive_mode(modes: dict[str, int], binary_name: str, platform: str) -> None:
+    if platform == "windows-x64":
+        return
+    mode = modes.get(binary_name)
+    if mode is None or not mode & 0o111:
+        fail(f"{platform} archive binary is not executable: {binary_name}")
+
+
 def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str], platform: str) -> None:
     inventory = payloads["evidence/static-link-inventory.tsv"].decode("utf-8")
     rows = inventory.splitlines()
@@ -323,7 +335,8 @@ def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str]
 
 
 def audit_binary_archive(path: Path, platform: str) -> dict:
-    payloads = archive_payloads(path)
+    modes: dict[str, int] = {}
+    payloads = archive_payloads(path, modes)
     expected = expected_members(platform)
     if set(payloads) != expected:
         fail(f"archive member allowlist mismatch; unexpected={sorted(set(payloads)-expected)}, missing={sorted(expected-set(payloads))}")
@@ -332,6 +345,7 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
     if path.name != expected_name:
         fail(f"archive name does not match platform/version: {path.name}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
+    verify_binary_archive_mode(modes, binary_name, platform)
     if sha256_bytes(payloads["firmware/isdbt_rio.inp"]) != FIRMWARE_SHA256:
         fail("firmware SHA256 does not match the pinned input")
     if sha256_bytes(payloads["LICENCE.siano"]) != FIRMWARE_LICENSE_SHA256:
@@ -550,6 +564,23 @@ def self_test() -> None:
             pass
         else:
             fail("non-regular member self-test did not fail")
+        mode_archive = root / "mode.tar"
+        with tarfile.open(mode_archive, "w") as archive:
+            info = tarfile.TarInfo("siano-ts")
+            info.mode = 0o644
+            info.size = 1
+            archive.addfile(info, __import__("io").BytesIO(b"x"))
+        modes: dict[str, int] = {}
+        archive_payloads(mode_archive, modes)
+        for platform in sorted(PACKAGE_PLATFORMS - {"windows-x64"}):
+            try:
+                verify_binary_archive_mode(modes, "siano-ts", platform)
+            except AuditError:
+                pass
+            else:
+                fail(f"non-executable binary archive self-test did not fail: {platform}")
+            verify_binary_archive_mode({"siano-ts": 0o755}, "siano-ts", platform)
+        verify_binary_archive_mode({"siano-ts.exe": 0o644}, "siano-ts.exe", "windows-x64")
     try:
         parse_json(b'{"a":1,"a":2}', "duplicate-json")
     except AuditError:
