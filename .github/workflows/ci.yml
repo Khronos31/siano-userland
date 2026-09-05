@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install libusb
-        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils
+        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git
       - name: Build and test
         run: |
           make test
