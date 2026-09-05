@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Fail if a "Termux" binary is actually a glibc/musl ELF, dynamically
-# linked against libusb, or carrying a host RPATH/RUNPATH.
+# linked against libusb, carrying a host RPATH/RUNPATH, or retaining an
+# absolute build/source/NDK path in any string-bearing ELF section.
 set -eu
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
@@ -36,13 +37,26 @@ if [ ! -f "$bin" ]; then
 	exit 1
 fi
 
-# GNU readelf first: DT_RPATH tags are `(RPATH)` there, not `RPATH` as in llvm-readelf.
-if command -v readelf >/dev/null 2>&1; then
+
+# GNU readelf first: DT_RPATH tags are `(RPATH)` there, not `RPATH` as in
+# llvm-readelf. Callers building with an NDK on BSD/macOS may provide the
+# NDK's llvm-readelf explicitly because those systems do not ship readelf.
+if [ -n "${READELF:-}" ]; then
+	readelf_bin=$READELF
+elif command -v readelf >/dev/null 2>&1; then
 	readelf_bin=$(command -v readelf)
 elif command -v llvm-readelf >/dev/null 2>&1; then
 	readelf_bin=$(command -v llvm-readelf)
 else
 	echo "readelf not found" >&2
+	exit 1
+fi
+if [ ! -x "$readelf_bin" ]; then
+	echo "readelf is not executable: $readelf_bin" >&2
+	exit 1
+fi
+if ! command -v strings >/dev/null 2>&1; then
+	echo "strings not found" >&2
 	exit 1
 fi
 
@@ -157,6 +171,20 @@ fi
 
 if printf '%s\n' "$dump_dyn" | grep -E '/usr/|/home/|/opt/|data/data/com.termux'; then
 	echo "host or Termux prefix path found in dynamic section" >&2
+	exit 1
+fi
+
+# The build script supplies every absolute input path it used. This catches
+# paths in .debug_*, .comment, string literals, and other non-dynamic sections
+# even after the dynamic-section checks above pass.
+for marker in ${ANDROID_PATH_MARKERS:-}; do
+	if strings -a "$bin" | grep -F -- "$marker" >/dev/null; then
+		echo "absolute build/source/NDK path found in ELF: $marker" >&2
+		exit 1
+	fi
+done
+if strings -a "$bin" | grep -E '(^|[[:space:]])/(home|root|tmp|opt|config|workspace|usr/src|var/tmp)/' >/dev/null; then
+	echo "absolute host path found in ELF string data" >&2
 	exit 1
 fi
 

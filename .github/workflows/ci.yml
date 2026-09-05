@@ -4,39 +4,63 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   linux:
     name: Linux (glibc)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Install libusb
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libusb-1.0-0-dev
       - name: Build and test
-        run: make test
+        run: |
+          make test
+          scripts/audit-artifact.sh --platform linux-glibc-x86_64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+          make packaging-test
 
   macos:
-    name: macOS
-    runs-on: macos-latest
+    name: macOS arm64
+    runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Install libusb
         run: brew install libusb pkgconf
       - name: Build and test
         run: |
-          export PKG_CONFIG_PATH="$(brew --prefix libusb)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          libusb_prefix=$(brew --prefix libusb)
+          export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make test
+          scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+          make packaging-test
 
   alpine:
     name: Linux (musl / Alpine)
     runs-on: ubuntu-latest
     container: alpine:3.21
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Install libusb
-        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev
+        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils
       - name: Build and test
-        run: make test
+        run: |
+          make test
+          scripts/audit-artifact.sh --platform linux-x86_64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+          make packaging-test
 
   android:
     name: Android (Termux ${{ matrix.abi }})
@@ -46,22 +70,29 @@ jobs:
       matrix:
         abi: [aarch64, armv7a]
     steps:
-      - uses: actions/checkout@v4
-      - uses: nttld/setup-ndk@v1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: nttld/setup-ndk@afb4c9964b521afb97c864b7d40b11e6911bd410 # v1.5.0
         id: setup-ndk
         with:
           ndk-version: r27d
           add-to-path: false
       - name: Host tools
-        run: sudo apt-get update && sudo apt-get install -y make file binutils curl
-      - name: Build
+        run: sudo apt-get update && sudo apt-get install -y make file binutils curl python3
+      - name: Build and test
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_ABI: ${{ matrix.abi }}
-        run: ./scripts/build-android.sh
-      - name: File type
-        run: file build/android-${{ matrix.abi }}/siano-ts
-      - uses: actions/upload-artifact@v4
+        run: |
+          ./scripts/build-android.sh
+          scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+            --binary build/android-${{ matrix.abi }}/siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
+          make packaging-test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-android-${{ matrix.abi }}
-          path: build/android-${{ matrix.abi }}/siano-ts
+          path: build/android-${{ matrix.abi }}
+          if-no-files-found: error

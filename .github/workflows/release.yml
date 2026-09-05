@@ -1,274 +1,263 @@
-name: Release
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Release candidate
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Stable version without a v prefix (for example, 0.1.0)
-        required: true
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: siano-userland-release
+  group: siano-userland-release-candidate
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Tag
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.prepare.outputs.tag }}
-      publish: ${{ steps.prepare.outputs.publish }}
-    env:
-      RELEASE_VERSION: ${{ inputs.version }}
+  preflight:
+    name: Verify main dispatch
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify the dispatch source
-        shell: bash
+      - name: Refuse non-main dispatch
         run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Release must be dispatched from main, not $GITHUB_REF" >&2
-            exit 1
-          fi
-          git fetch --force origin main --tags
-          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
-            echo "origin/main changed after this workflow was dispatched" >&2
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Release candidate must be dispatched from main, not $GITHUB_REF" >&2
             exit 1
           fi
 
-      - name: Build and test
+  # glibc is build/audit supported, but is deliberately not a candidate asset.
+  linux-glibc:
+    name: Linux glibc audit (not packaged)
+    needs: preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and audit
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libusb-1.0-0-dev
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config libusb-1.0-0-dev
           make test
+          mkdir -p evidence
+          scripts/audit-artifact.sh --platform linux-glibc-x86_64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
 
-      - name: Prepare or recover the release tag
-        id: prepare
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Version must be N.N.N without a v prefix" >&2
-            exit 1
-          fi
-          tag="v$RELEASE_VERSION"
-
-          if [[ -f VERSION ]]; then
-            current="$(tr -d '[:space:]' < VERSION)"
-            if [[ "$current" != "$RELEASE_VERSION" ]]; then
-              printf '%s\n' "$RELEASE_VERSION" > VERSION
-            fi
-          else
-            printf '%s\n' "$RELEASE_VERSION" > VERSION
-          fi
-
-          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
-            --sort=-version:refname \
-            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
-            | head -n 1 || true)"
-
-          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
-            tag_commit="$(git rev-list -n 1 "$tag")"
-            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
-              echo "$tag already exists on a different commit" >&2
-              exit 1
-            fi
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "publish=true" >> "$GITHUB_OUTPUT"
-            fi
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ -n "$latest_tag" ]]; then
-            newest="$(printf '%s\n%s\n' "${latest_tag#v}" "$RELEASE_VERSION" | sort -V | tail -n 1)"
-            if [[ "$newest" != "$RELEASE_VERSION" || "${latest_tag#v}" == "$RELEASE_VERSION" ]]; then
-              echo "$RELEASE_VERSION is not newer than ${latest_tag#v}" >&2
-              exit 1
-            fi
-          fi
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "A release exists without a fetched matching tag: $tag" >&2
-            exit 1
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- VERSION; then
-            git add VERSION
-            git commit -m "Release $tag"
-          fi
-          git tag -a "$tag" -m "Release $tag"
-          git fetch origin main
-          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
-            echo "origin/main changed during release validation" >&2
-            exit 1
-          fi
-          gh auth setup-git --hostname github.com
-          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-  linux:
-    name: Linux (musl)
-    needs: prepare
-    runs-on: ubuntu-latest
+  linux-musl:
+    name: Linux musl x86_64
+    needs: preflight
+    runs-on: ubuntu-24.04
     container: alpine:3.21
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - name: Build
+          persist-credentials: false
+      - name: Build and audit
         run: |
-          apk add --no-cache gcc make pkgconf musl-dev libusb-dev
-          make
-      - uses: actions/upload-artifact@v4
+          apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils
+          make test
+          mkdir -p evidence
+          scripts/audit-artifact.sh --platform linux-x86_64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-linux-x86_64
-          path: siano-ts
+          path: |
+            siano-ts
+            evidence/binary-audit.json
+          if-no-files-found: error
 
   macos:
-    name: macOS
-    needs: prepare
-    runs-on: macos-latest
+    name: macOS arm64
+    needs: preflight
+    runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - name: Build
+          persist-credentials: false
+      - name: Build and audit
         run: |
           brew install libusb pkgconf
-          export PKG_CONFIG_PATH="$(brew --prefix libusb)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          make
-      - uses: actions/upload-artifact@v4
+          libusb_prefix=$(brew --prefix libusb)
+          export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make test
+          mkdir -p evidence
+          scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-darwin-arm64
-          path: siano-ts
+          path: |
+            siano-ts
+            evidence/binary-audit.json
+          if-no-files-found: error
 
   android:
-    name: Android (Termux ${{ matrix.abi }})
-    needs: prepare
-    runs-on: ubuntu-latest
+    name: Android Termux ${{ matrix.abi }}
+    needs: preflight
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         abi: [aarch64, armv7a]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - uses: nttld/setup-ndk@v1
+          persist-credentials: false
+      - uses: nttld/setup-ndk@afb4c9964b521afb97c864b7d40b11e6911bd410 # v1.5.0
         id: setup-ndk
         with:
           ndk-version: r27d
           add-to-path: false
       - name: Host tools
-        run: sudo apt-get update && sudo apt-get install -y make file binutils curl
-      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y make file binutils curl python3
+      - name: Build and audit
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_ABI: ${{ matrix.abi }}
-        run: ./scripts/build-android.sh
-      - uses: actions/upload-artifact@v4
+        run: |
+          ./scripts/build-android.sh
+          scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+            --binary build/android-${{ matrix.abi }}/siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-android-${{ matrix.abi }}
-          path: build/android-${{ matrix.abi }}/siano-ts
+          path: build/android-${{ matrix.abi }}
+          if-no-files-found: error
 
   windows:
-    name: Windows
-    needs: prepare
-    runs-on: windows-latest
+    name: Windows WinUSB x64
+    needs: preflight
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - uses: ilammy/msvc-dev-cmd@v1
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: amd64
-      - name: libusb
+      - name: Fetch pinned libusb package
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z -OutFile libusb.7z
+          Invoke-WebRequest -Uri 'https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z' -OutFile libusb.7z
+          if ((Get-FileHash libusb.7z -Algorithm SHA256).Hash.ToLower() -ne 'ce633f98c3ce6aec82be3c0d273ab8bdd160642174faba4eb47d8dcd92af7f05') { throw 'libusb package checksum mismatch' }
           7z x libusb.7z -olibusb-src
           New-Item -ItemType Directory -Force -Path libusb\include\libusb-1.0 | Out-Null
           Copy-Item libusb-src\include\libusb.h libusb\include\libusb-1.0\
           Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.lib libusb\
           Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.dll .
-      - name: Build
-        shell: cmd
-        run: nmake /f Makefile.win
-      - uses: actions/upload-artifact@v4
+      - name: Build and audit
+        shell: pwsh
+        run: |
+          nmake /f Makefile.win
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          python scripts/audit-artifact.py --platform windows-x64 --binary siano-ts.exe --source-ref $env:GITHUB_SHA --evidence-output evidence\binary-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-windows-x64
           path: |
             siano-ts.exe
             libusb-1.0.dll
+            evidence/binary-audit.json
+          if-no-files-found: error
 
-  publish:
-    name: Pack and publish
-    needs: [prepare, linux, macos, android, windows]
-    if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+  source:
+    name: Corresponding source archive
+    needs: preflight
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-      - name: Firmware
+          persist-credentials: false
+      - name: Fetch pinned libusb source
         run: |
-          mkdir -p firmware
-          curl -fsSL -o firmware/isdbt_rio.inp \
-            https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp
-          echo "9b762c1808fd8da81bbec3e24ddb04a3  firmware/isdbt_rio.inp" | md5sum -c
-      - name: Pack
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.tar.bz2
+          echo '966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29  '"$RUNNER_TEMP/libusb-1.0.28.tar.bz2" | sha256sum -c -
+      - name: Package and audit
+        run: |
+          version=$(tr -d '\n' < VERSION)
+          archive="siano-ts-$version-source.tar.gz"
+          scripts/package-source.sh --version "$version" --source-ref "$GITHUB_SHA" \
+            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            --output-dir "$RUNNER_TEMP/source-a"
+          scripts/package-source.sh --version "$version" --source-ref "$GITHUB_SHA" \
+            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            --output-dir "$RUNNER_TEMP/source-b"
+          cmp "$RUNNER_TEMP/source-a/$archive" "$RUNNER_TEMP/source-b/$archive"
+          scripts/audit-artifact.sh --source-archive --archive "$RUNNER_TEMP/source-a/$archive"
+          mkdir -p "$RUNNER_TEMP/source"
+          cp "$RUNNER_TEMP/source-a/$archive" "$RUNNER_TEMP/source/$archive"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-source
+          path: ${{ runner.temp }}/source/*.tar.gz
+          if-no-files-found: error
+
+  package:
+    name: Package candidate archives
+    needs: [linux-glibc, linux-musl, macos, android, windows, source]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bin-*
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc-source
+          path: dist/rc-source
+      - name: Fetch and verify pinned release inputs
+        run: |
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/isdbt_rio.inp" \
+            'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp?id=e981caea6ed33c48d25b7dbf473327dbd01df163'
+          echo '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818  '"$RUNNER_TEMP/isdbt_rio.inp" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.tar.bz2
+          echo '966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29  '"$RUNNER_TEMP/libusb-1.0.28.tar.bz2" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.7z" \
+            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z
+          echo 'ce633f98c3ce6aec82be3c0d273ab8bdd160642174faba4eb47d8dcd92af7f05  '"$RUNNER_TEMP/libusb-1.0.28.7z" | sha256sum -c -
+      - name: Package, audit, and compare deterministic archives
         run: |
           set -eu
-          VER="${TAG#v}"
-          pack() {
-            local name="$1" srcbin="$2" binname="$3"
-            local dir="siano-ts-${VER}-${name}"
-            mkdir -p "$dir/firmware"
-            cp "$srcbin" "$dir/$binname"
-            chmod +x "$dir/$binname" || true
-            cp COPYING LICENCE.siano README.md "$dir/"
-            cp firmware/isdbt_rio.inp "$dir/firmware/"
-            if [ "$name" = "windows-x64" ]; then
-              cp dist/bin-windows-x64/libusb-1.0.dll "$dir/"
-              zip -r "${dir}.zip" "$dir"
-            else
-              tar -czf "${dir}.tar.gz" "$dir"
-            fi
+          version=$(tr -d '\n' < VERSION)
+          mkdir -p candidate reproducibility
+          package_all() {
+            out="$1"
+            scripts/package-artifact.sh --platform linux-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
+            scripts/package-artifact.sh --platform darwin-arm64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-darwin-arm64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
+            scripts/package-artifact.sh --platform android-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform android-armv7a --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-armv7a --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform windows-x64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-windows-x64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --windows-package "$RUNNER_TEMP/libusb-1.0.28.7z" --output-dir "$out"
           }
-          pack linux-x86_64 dist/bin-linux-x86_64/siano-ts siano-ts
-          pack darwin-arm64 dist/bin-darwin-arm64/siano-ts siano-ts
-          pack android-aarch64 dist/bin-android-aarch64/siano-ts siano-ts
-          pack android-armv7a dist/bin-android-armv7a/siano-ts siano-ts
-          pack windows-x64 dist/bin-windows-x64/siano-ts.exe siano-ts.exe
-          ls -l siano-ts-*.tar.gz siano-ts-*.zip
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          gh release create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "$RELEASE_TAG" \
-            siano-ts-*.tar.gz siano-ts-*.zip
+          package_all candidate
+          package_all reproducibility
+          for archive in candidate/*; do
+            name=$(basename "$archive")
+            cmp -s "$archive" "reproducibility/$name"
+          done
+          source_archive="dist/rc-source/siano-ts-$version-source.tar.gz"
+          cp "$source_archive" candidate/
+          scripts/audit-artifact.sh --source-archive --archive "candidate/$(basename "$source_archive")"
+          expected="siano-ts-$version-linux-x86_64.tar.gz siano-ts-$version-darwin-arm64.tar.gz siano-ts-$version-android-aarch64.tar.gz siano-ts-$version-android-armv7a.tar.gz siano-ts-$version-windows-x64.zip siano-ts-$version-source.tar.gz"
+          read -r -a expected_names <<< "$expected"
+          for name in "${expected_names[@]}"; do
+            test -f "candidate/$name"
+          done
+          test "$(find candidate -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 6
+          (cd candidate && sha256sum "${expected_names[@]}" > SHA256SUMS && sha256sum -c SHA256SUMS)
+          test "$(wc -l < candidate/SHA256SUMS)" -eq 6
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate
+          path: candidate
+          if-no-files-found: error

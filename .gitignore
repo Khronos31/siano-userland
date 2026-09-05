@@ -7,3 +7,7 @@
 /build/
 /firmware/
 /ref/
+/release-candidate/
+/scripts/__pycache__/
+*.tar.bz2
+*.7z

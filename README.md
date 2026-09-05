@@ -21,13 +21,13 @@ make
 make test
 ```
 
-CI (GitHub Actions) builds and tests on Ubuntu, macOS, and Alpine (musl),
+CI (GitHub Actions) builds and tests on Ubuntu/glibc, Alpine/musl, macOS,
 and cross-compiles Termux ELFs (aarch64 and armv7a) with the Android NDK.
 There is no tuner in CI; Linux/macOS jobs are compile/link plus offline
 protocol tests. The Android jobs cannot run the binary on the runner
 (Bionic is not the host libc); they check the Bionic interpreter
-(`/system/bin/linker64` or `/system/bin/linker`), that libusb is linked
-statically, and that no host `RPATH`/`RUNPATH` leaked in.
+(`/system/bin/linker64` or `/system/bin/linker`), static libusb, empty
+`RPATH`/`RUNPATH`, and the whole ELF for absolute build/source/NDK paths.
 
 On Alpine:
 
@@ -45,27 +45,43 @@ are optional; without `CAP_SYS_NICE` / `CAP_IPC_LOCK` the process continues
 at normal priority. The in-flight USB ring is 32 × 16KiB.
 
 The firmware is not part of this repository. Obtain `isdbt_rio.inp` from the
-linux-firmware collection and pass it with `--firmware`, or place it at
-`./firmware/isdbt_rio.inp` or `/lib/firmware/isdbt_rio.inp`. GitHub Releases
-ship the binary next to `firmware/isdbt_rio.inp` (not embedded in the ELF).
+pinned linux-firmware commit URL recorded in `scripts/provenance.py`, verify
+SHA256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`,
+and pass it with `--firmware`, or place it at `./firmware/isdbt_rio.inp` or
+`/lib/firmware/isdbt_rio.inp`. Candidate binary archives ship the binary next
+to `firmware/isdbt_rio.inp` (not embedded in the ELF); source archives never
+contain firmware or vendor blobs.
 The Siano firmware license in [LICENCE.siano](LICENCE.siano) permits binary
 redistribution with its copyright notice and disclaimer; it prohibits reverse
 engineering, decompilation, and disassembly. Do not add the firmware to git.
 
-Releases are cut from **Actions → Release** on `main` (`workflow_dispatch`,
-version without a `v` prefix). That job tags, builds Linux (musl) / macOS /
-Windows / Android (Termux aarch64 and armv7a), and publishes the archives.
-Windows needs WinUSB (Zadig) once; the zip includes `libusb-1.0.dll`.
-macOS needs Homebrew `libusb`. The Android archives are Bionic ELFs for
-Termux, not a Play Store APK and not the Linux musl tarball.
+**Actions → Release candidate** on `main` builds, audits, and uploads one
+candidate set. It never changes `main`, creates tags, or alters a published
+release. The candidate preserves the published five binary asset names:
+Linux x86_64 (Alpine/musl), macOS arm64, Windows WinUSB x64, and both Android
+ABIs. It also contains one corresponding source archive and an outer
+`SHA256SUMS`. glibc is build-supported and CI-audited, but is not packaged.
+Promotion, if later authorized, must use these exact audited bytes without
+rebuilding. Windows needs WinUSB (Zadig) once; the zip includes
+`libusb-1.0.dll` and concise provenance, while the downloaded 7z is verified
+during the build and is not embedded. macOS needs Homebrew `libusb`. The
+Android archives are Bionic ELFs for Termux, not a Play Store APK and not the
+Linux musl tarball.
+
+Each build-host binary audit records the exact GitHub Actions source commit;
+packaging and archive audits require that evidence to match the archive
+manifest.
 
 ## Termux
 
-GitHub Releases include two Android tarballs. libusb 1.0.28 is built
-`--disable-udev --enable-static --disable-shared` and linked as
-`libusb-1.0.a -llog`, so Termux's `$PREFIX/lib` is not required at
-runtime. Do not copy the Linux musl archive onto a phone; it requests
-`ld-musl` and will not load.
+Android candidate tarballs include the LGPL-2.1 license text, the exact
+libusb 1.0.28 source archive, `REBUILD.md`, NDK notices, and an auditable
+static-link inventory. libusb is built `--disable-udev --enable-static
+--disable-shared` and linked as `libusb-1.0.a -llog`, so Termux's
+`$PREFIX/lib` is not required at runtime. Do not copy the Linux musl archive
+onto a phone; it requests `ld-musl` and will not load. Windows packages
+identify the exact libusb 1.0.28 package and corresponding source archive by
+URL and SHA256.
 
 | archive | ABI | interpreter | typical device |
 |---|---|---|---|

@@ -1,0 +1,9 @@
+Siano userland dependency notice
+version=@VERSION@
+platform=@PLATFORM@
+
+@DEPENDENCY_TEXT@
+
+The application source is GPL-2.0-or-later; see COPYING.
+The Siano firmware is separately licensed; see LICENCE.siano.
+Firmware provenance is recorded in the archive manifest and SHA256SUMS.
