@@ -12,19 +12,26 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 all: siano-ts
 
-siano-ts: siano-ts.o protocol.o
+siano-ts: siano-ts.o protocol.o stream-state.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h
 protocol.o: protocol.c protocol.h
+stream-state.o: stream-state.c stream-state.h
 
 test-protocol: tests/test_protocol.o protocol.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 tests/test_protocol.o: tests/test_protocol.c protocol.h
 
-test: siano-ts test-protocol
+test-stream-state: tests/test_stream_state.o stream-state.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_stream_state.o: tests/test_stream_state.c stream-state.h
+
+test: siano-ts test-protocol test-stream-state
 	./test-protocol
+	./test-stream-state
 	./tests/test_cli.sh
 
 packaging-test:
@@ -32,4 +39,4 @@ packaging-test:
 	python3 scripts/package-source.py --self-test
 
 clean:
-	rm -f siano-ts test-protocol *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-stream-state *.o tests/*.o tests/.cli-error

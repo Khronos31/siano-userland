@@ -17,6 +17,8 @@
 #include "siano-os.h"
 #endif
 
+#include "stream-state.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <libusb.h>
@@ -103,11 +105,8 @@ struct siano_device {
 
     pthread_t event_thread;
     bool event_thread_started;
-    pthread_mutex_t state_mutex;
-    pthread_cond_t state_changed;
-    bool stopping;
+    struct siano_stream_state state;
     int active_transfers;
-    int event_error;
     struct libusb_transfer *transfers[MAX_URBS];
     uint8_t *transfer_buffers[MAX_URBS];
 
@@ -638,38 +637,68 @@ static void handle_received_buffer(struct siano_device *device,
     }
 }
 
+static void cancel_transfers(struct siano_device *device)
+{
+    struct libusb_transfer *transfers[MAX_URBS];
+
+    pthread_mutex_lock(&device->state.mutex);
+    memcpy(transfers, device->transfers, sizeof(transfers));
+    pthread_mutex_unlock(&device->state.mutex);
+    for (size_t i = 0; i < MAX_URBS; i++) {
+        if (transfers[i])
+            (void)libusb_cancel_transfer(transfers[i]);
+    }
+}
+
+static void fail_streaming(struct siano_device *device, int error)
+{
+    if (!siano_stream_state_fail(&device->state, error))
+        return;
+
+    fprintf(stderr, "USB streaming stopped: %s\n", libusb_error_name(error));
+    /* Wake stream_ts before waiting for the event thread to drain peers. */
+    ts_queue_close(&device->ts);
+    pthread_mutex_lock(&device->response_mutex);
+    pthread_cond_broadcast(&device->response_changed);
+    pthread_mutex_unlock(&device->response_mutex);
+    cancel_transfers(device);
+}
+
 static void transfer_callback(struct libusb_transfer *transfer)
 {
     struct siano_device *device = transfer->user_data;
-    bool resubmit;
+    bool stopping;
+    enum siano_transfer_action action;
 
-    pthread_mutex_lock(&device->state_mutex);
+    pthread_mutex_lock(&device->state.mutex);
     if (device->active_transfers > 0)
         device->active_transfers--;
-    resubmit = !device->stopping;
-    pthread_mutex_unlock(&device->state_mutex);
+    stopping = device->state.stopping;
+    pthread_mutex_unlock(&device->state.mutex);
 
-    if (transfer->status == LIBUSB_TRANSFER_COMPLETED && transfer->actual_length > 0)
+    action = siano_transfer_classify_status(transfer->status, stopping);
+    if (action == SIANO_TRANSFER_FATAL) {
+        fail_streaming(device, siano_transfer_status_error(transfer->status));
+        return;
+    }
+    if (action == SIANO_TRANSFER_DRAIN)
+        return;
+    if (action == SIANO_TRANSFER_COMPLETE && transfer->actual_length > 0)
         handle_received_buffer(device, transfer->buffer,
                                (size_t)transfer->actual_length);
-    else if (resubmit && transfer->status != LIBUSB_TRANSFER_TIMED_OUT)
-        fprintf(stderr, "bulk IN transfer status %d\n", transfer->status);
 
-    if (!resubmit)
-        return;
-
-    pthread_mutex_lock(&device->state_mutex);
-    if (!device->stopping) {
+    pthread_mutex_lock(&device->state.mutex);
+    if (!device->state.stopping) {
         int rc = libusb_submit_transfer(transfer);
-        if (rc == 0)
+        if (rc == 0) {
             device->active_transfers++;
-        else {
-            fprintf(stderr, "libusb_submit_transfer: %s\n", libusb_error_name(rc));
-            device->stopping = true;
-            device->event_error = rc;
+        } else {
+            pthread_mutex_unlock(&device->state.mutex);
+            fail_streaming(device, rc);
+            return;
         }
     }
-    pthread_mutex_unlock(&device->state_mutex);
+    pthread_mutex_unlock(&device->state.mutex);
 }
 
 static void *event_thread_main(void *arg)
@@ -681,22 +710,15 @@ static void *event_thread_main(void *arg)
         struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
         int rc;
 
-        pthread_mutex_lock(&device->state_mutex);
-        done = device->stopping && device->active_transfers == 0;
-        pthread_mutex_unlock(&device->state_mutex);
+        pthread_mutex_lock(&device->state.mutex);
+        done = device->state.stopping && device->active_transfers == 0;
+        pthread_mutex_unlock(&device->state.mutex);
         if (done)
             break;
 
         rc = libusb_handle_events_timeout(device->usb, &timeout);
         if (rc < 0 && rc != LIBUSB_ERROR_INTERRUPTED) {
-            fprintf(stderr, "libusb_handle_events: %s\n", libusb_error_name(rc));
-            pthread_mutex_lock(&device->state_mutex);
-            device->event_error = rc;
-            device->stopping = true;
-            for (size_t i = 0; i < MAX_URBS; i++)
-                if (device->transfers[i])
-                    libusb_cancel_transfer(device->transfers[i]);
-            pthread_mutex_unlock(&device->state_mutex);
+            fail_streaming(device, rc);
         }
     }
     return NULL;
@@ -713,18 +735,31 @@ static int start_streaming(struct siano_device *device)
     try_realtime(device->event_thread, EVENT_THREAD_PRIORITY, "usb-event");
     fprintf(stderr, "USB ring %u x %u bytes\n", MAX_URBS, USB_TRANSFER_SIZE);
     for (size_t i = 0; i < MAX_URBS; i++) {
-        device->transfer_buffers[i] = malloc(USB_TRANSFER_SIZE);
-        device->transfers[i] = libusb_alloc_transfer(0);
-        if (!device->transfer_buffers[i] || !device->transfers[i])
+        uint8_t *buffer = malloc(USB_TRANSFER_SIZE);
+        struct libusb_transfer *transfer = libusb_alloc_transfer(0);
+
+        if (!buffer || !transfer) {
+            free(buffer);
+            libusb_free_transfer(transfer);
             return -ENOMEM;
-        libusb_fill_bulk_transfer(device->transfers[i], device->handle, device->in_ep,
-                                  device->transfer_buffers[i], USB_TRANSFER_SIZE,
+        }
+        libusb_fill_bulk_transfer(transfer, device->handle, device->in_ep,
+                                  buffer, USB_TRANSFER_SIZE,
                                   transfer_callback, device, 0);
-        pthread_mutex_lock(&device->state_mutex);
-        rc = libusb_submit_transfer(device->transfers[i]);
+        pthread_mutex_lock(&device->state.mutex);
+        if (device->state.stopping) {
+            rc = device->state.error != 0 ? device->state.error : -ECANCELED;
+            pthread_mutex_unlock(&device->state.mutex);
+            free(buffer);
+            libusb_free_transfer(transfer);
+            return rc;
+        }
+        device->transfer_buffers[i] = buffer;
+        device->transfers[i] = transfer;
+        rc = libusb_submit_transfer(transfer);
         if (rc == 0)
             device->active_transfers++;
-        pthread_mutex_unlock(&device->state_mutex);
+        pthread_mutex_unlock(&device->state.mutex);
         if (rc < 0) {
             fprintf(stderr, "libusb_submit_transfer: %s\n", libusb_error_name(rc));
             return rc;
@@ -735,12 +770,8 @@ static int start_streaming(struct siano_device *device)
 
 static void stop_streaming(struct siano_device *device)
 {
-    pthread_mutex_lock(&device->state_mutex);
-    device->stopping = true;
-    for (size_t i = 0; i < MAX_URBS; i++)
-        if (device->transfers[i])
-            libusb_cancel_transfer(device->transfers[i]);
-    pthread_mutex_unlock(&device->state_mutex);
+    siano_stream_state_stop(&device->state);
+    cancel_transfers(device);
 
     if (device->event_thread_started)
         pthread_join(device->event_thread, NULL);
@@ -756,11 +787,13 @@ static int wait_response(struct siano_device *device, uint16_t type,
                          unsigned timeout_ms)
 {
     struct timespec deadline;
+    int event_error;
     int rc = 0;
 
     cond_deadline_from_now(&deadline, timeout_ms);
     pthread_mutex_lock(&device->response_mutex);
-    while (device->response_count[type] == 0 && !stop_requested) {
+    while (device->response_count[type] == 0 && !stop_requested &&
+           siano_stream_state_error(&device->state) == 0) {
         rc = pthread_cond_timedwait(&device->response_changed,
                                     &device->response_mutex, &deadline);
         if (rc == ETIMEDOUT)
@@ -771,6 +804,8 @@ static int wait_response(struct siano_device *device, uint16_t type,
         rc = 0;
     } else if (stop_requested) {
         rc = EINTR;
+    } else if ((event_error = siano_stream_state_error(&device->state)) < 0) {
+        rc = -event_error;
     } else if (rc == ETIMEDOUT) {
         rc = ETIMEDOUT;
     } else {
@@ -817,9 +852,14 @@ static int send_and_wait(struct siano_device *device, const uint8_t *message,
     if (rc < 0)
         return rc;
     rc = wait_response(device, response_type, CONTROL_TIMEOUT_MS);
-    if (rc < 0)
-        fprintf(stderr, "waiting for %s: %s\n", sms_message_type_name(response_type),
-                strerror(-rc));
+    if (rc < 0) {
+        if (siano_stream_state_error(&device->state) == rc)
+            fprintf(stderr, "waiting for %s: %s\n",
+                    sms_message_type_name(response_type), libusb_error_name(rc));
+        else
+            fprintf(stderr, "waiting for %s: %s\n",
+                    sms_message_type_name(response_type), strerror(-rc));
+    }
     return rc;
 }
 
@@ -1179,6 +1219,10 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
     while (!stop_requested) {
         size_t length;
         int rc = ts_pop(&device->ts, data, &length);
+
+        rc = siano_stream_state_stream_result(&device->state, rc);
+        if (rc < 0 && rc != -EAGAIN)
+            return rc;
         if (rc == 0) {
             rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
             if (rc < 0) {
@@ -1357,8 +1401,7 @@ static void close_device(struct siano_device *device)
     }
     pthread_cond_destroy(&device->response_changed);
     pthread_mutex_destroy(&device->response_mutex);
-    pthread_cond_destroy(&device->state_changed);
-    pthread_mutex_destroy(&device->state_mutex);
+    siano_stream_state_destroy(&device->state);
     ts_queue_destroy(&device->ts);
 }
 
@@ -1368,8 +1411,7 @@ static int init_device_state(struct siano_device *device, libusb_context *usb,
     memset(device, 0, sizeof(*device));
     device->usb = usb;
     device->verbose = verbose;
-    if (pthread_mutex_init(&device->state_mutex, NULL) != 0 ||
-        pthread_cond_init(&device->state_changed, NULL) != 0 ||
+    if (siano_stream_state_init(&device->state) != 0 ||
         pthread_mutex_init(&device->response_mutex, NULL) != 0)
         return -1;
     if (cond_init_waitable(&device->response_changed) != 0)
@@ -1399,6 +1441,7 @@ int main(int argc, char **argv)
     uint32_t frequency;
     int output_fd = STDOUT_FILENO;
     bool close_output = false;
+    int state_error;
     int rc;
 
 #ifdef _WIN32
@@ -1511,6 +1554,7 @@ int main(int argc, char **argv)
     }
     rc = stream_ts(device, output_fd, options.duration);
 out:
+    state_error = siano_stream_state_error(&device->state);
     if (device->ts.drops != 0)
         fprintf(stderr, "TS queue dropped %llu chunk(s)\n",
                 (unsigned long long)device->ts.drops);
@@ -1520,7 +1564,7 @@ out:
     free(device);
     free(firmware_path);
     libusb_exit(usb);
-    if (rc < 0 && !stop_requested)
+    if (rc < 0 && !stop_requested && state_error == 0)
         fprintf(stderr, "siano-ts: %s\n", strerror(-rc));
     return stop_requested ? 0 : (rc < 0 ? 1 : 0);
 }
