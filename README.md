@@ -1,139 +1,133 @@
 # siano-ts
 
-[![CI](https://github.com/Khronos31/siano-userland/actions/workflows/ci.yml/badge.svg)](https://github.com/Khronos31/siano-userland/actions/workflows/ci.yml)
+PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユーザー空間で動作する ISDB-T 選局・MPEG-TS 出力ツールです。
 
-`siano-ts`は、PLEX PX-S1UDなどのSiano RIOファミリーUSBチューナー向けの
-スタンドアロンなユーザー空間ドライバです。libusb-1.0だけを使用し、ISDB-T
-ファームウェアをロードし、日本のISDB-T物理チャンネルを1つチューニングして、
-MPEG-TSを標準出力（または`--output`）へ書き出します。診断出力は標準エラー出力へ
-送られます。
+## 概要
 
-USBとの通信にはlibusb-1.0だけを使用し（usbfs ioctlは使用しません）、musl、
-glibc、Bionicでビルドできます。また、開かれたUSBファイルディスクリプタを
-受け取れるため、Android/Termuxで`/dev/bus/usb`を列挙する必要がありません。
+`siano-ts` は、単一の実行ファイルとして USB デバイスを直接制御し、ファームウェア転送と ISDB-T チャンネル選局を行い、受信した MPEG-TS を標準出力または指定ファイルへ出力します。常駐デーモンやカードリーダー機能は備えていません。
 
-## ビルドとテスト
+## 対応機種・対応OS
 
-依存するものは、C11コンパイラ、`make`、`pkg-config`、およびlibusb-1.0の
-開発用ファイル（`--fd`には>= 1.0.23）です。glibc固有のAPIは使用していません。
+### 対応機種
+
+主対象は PLEX PX-S1UD です。以下の USB ID を持つ Siano RIO 系デバイスを ISDB-T 機器として扱います。
+
+- `3275:0080`
+- `187f:0600`
+- `187f:0302`
+
+### 対応OS
+
+- **Linux** (glibc / musl)
+- **macOS**
+- **Android (Termux)** (aarch64 / armv7a)
+  - Termux 用のコマンドライン実行ファイルです（Android 向け APK アプリケーションではありません）。
+- **Windows** (x64, WinUSB)
+
+## 必要物
+
+### ファームウェア
+
+動作には ISDB-T ファームウェア (`isdbt_rio.inp`) が必要です。
+
+- **ファイル名**: `isdbt_rio.inp`
+- **SHA-256**: `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`
+- **探索順序**:
+  1. `--firmware PATH` で指定されたパス
+  2. `./firmware/isdbt_rio.inp`
+  3. `./isdbt_rio.inp`
+  4. `/lib/firmware/isdbt_rio.inp` (Linux / macOS)
+
+配布用バイナリアーカイブにはライセンスに従い同梱されています。ソースツリーには含まれません。
+
+### ランタイム
+
+- **Linux / macOS**: `libusb` (libusb-1.0 共有ライブラリ)
+- **Android (Termux)**: 追加ランタイム不要 (Bionic 向けに libusb を静的リンク済み)
+- **Windows**: WinUSB ドライバ、`libusb-1.0.dll` (配布アーカイブに同梱)
+
+## 導入
+
+- **Linux / macOS**: パッケージマネージャ等で `libusb` を導入し、実行ファイルとファームウェアを配置します。
+- **Windows**: Zadig などを用いて対象チューナーのドライバを WinUSB に設定します。配布 zip ではルートに `siano-ts.exe` と `libusb-1.0.dll`、`firmware/` 配下に `isdbt_rio.inp` が配置されています。アーカイブの構成を保ったままルートをカレントディレクトリとして実行するか、`--firmware` でファームウェアのパスを明示します。
+- **Android (Termux)**: Termux 環境に実行ファイルとファームウェアを配置します。USB デバイスのオープンには `termux-usb` コマンドを使用します。
+
+## 最短の使用例
+
+```sh
+# 認識されている Siano デバイスの一覧表示
+./siano-ts --list
+
+# 地上波 27ch を選局し、MPEG-TS を標準出力へ出力
+./siano-ts --channel 27
+
+# 地上波 27ch を 30 秒間受信し、ファイルへ保存
+./siano-ts -c 27 -t 30 -o /tmp/output.ts
+
+# Android (Termux) で termux-usb を介して受信
+termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
+```
+
+## CLI仕様
+
+```
+使用法: siano-ts [オプション]
+```
+
+`--list` による一覧表示を除き、受信処理には `-c, --channel` または `-f, --freq` のどちらか一方の指定が必須です（両方の同時指定は不可）。
+
+### オプション一覧
+
+| オプション | 引数 | 説明 |
+|---|---|---|
+| `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。`-f` と排他。受信時はどちらか一方が必須。 |
+| `-f, --freq` | `HZ` | 受信周波数を Hz 単位で指定。`-c` と排他。受信時はどちらか一方が必須。 |
+| `-t, --time` | `SECONDS` | 指定秒数の受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
+| `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
+| `--device` | `N` | 列挙された対応 RIO デバイスの N 番目を使用 (0 起算、既定値: 0)。 |
+| `-l, --list` | なし | デバイスを開かずに一覧表示。 |
+| `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
+| `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。 |
+| `--firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
+| `-v, --verbose` | なし | 制御メッセージ種別を標準エラー出力へ表示。 |
+| `-h, --help` | なし | ヘルプを表示して終了。 |
+
+MPEG-TS ストリームデータは標準出力または `-o` で指定したファイルへ出力されます。診断やログはすべて標準エラー出力 (stderr) へ出力されるため、標準出力をパイプ等で安全に中継できます。
+
+## 注意事項
+
+### Linux でのスレッド優先度とメモリロック
+
+Linux では、USB イベントスレッドで `SCHED_FIFO` リアルタイムスケジューリングおよび `mlockall` によるメモリロックを試みます。実行ユーザーに権限 (`CAP_SYS_NICE` / `CAP_IPC_LOCK`) がない場合は標準エラー出力に警告が出力されますが、通常優先度で処理を継続します。警告が出力された場合でも致命的なエラーではありません。
+
+### PID フィルタの ACK 応答
+
+`--pid` 未指定時に設定されるキャッチオール PID (`0x2000`) に対し、ファームウェアから ACK 応答が返らない場合がありますが、ストリーム受信は正常に継続します。
+
+## ビルド
+
+### Linux / macOS / Android (Termux)
+
+要件: C11 コンパイラ、`make`、`pkg-config`、libusb-1.0 開発用パッケージ (`--fd` サポートには libusb 1.0.23 以上)。
 
 ```sh
 make
 make test
 ```
 
-CI（GitHub Actions）では、Ubuntu/glibc、Alpine/musl、macOS上でビルドとテストを
-行い、Android NDKを使ってTermux用ELF（aarch64およびarmv7a）をクロスコンパイル
-します。CIにはチューナーがないため、Linux/macOSジョブはコンパイル・リンクと
-オフラインのプロトコルテストを行います。Androidジョブではランナー上でバイナリを
-実行できません（Bionicはホストのlibcではないため）。Bionicインタープリター
-（`/system/bin/linker64`または`/system/bin/linker`）、静的libusb、空の
-`RPATH`/`RUNPATH`、およびELF全体にビルド/ソース/NDKの絶対パスが含まれていない
-ことを検査します。
+### Windows
 
-Alpineの場合：
+要件:
+- Visual Studio (MSVC)
+- libusb のヘッダおよび x64 インポートライブラリ。`Makefile.win` の既定では `./libusb/include/libusb-1.0/libusb.h` と `./libusb/libusb-1.0.lib` を要求するため、この2ファイルを既定位置へ配置するか、同じ相対構造を持つディレクトリを `LIBUSB_DIR` で指定します（例: `nmake /f Makefile.win LIBUSB_DIR=...`）。実行時には `siano-ts.exe` と同じ場所に `libusb-1.0.dll` が必要です。
 
-```sh
-apk add gcc make pkgconf musl-dev libusb-dev
-make
+Visual Studio の Developer Command Prompt から実行します。
+
+```cmd
+nmake /f Makefile.win
 ```
 
-実行時には`libusb`（`libusb-1.0.so.0`）が必要です。`make test`の`--list`ステップ
-には`/dev/bus/usb`が必要です。これがないコンテナでは、muslバイナリ自体に問題が
-なくても`libusb_init`が失敗することがあります。
+## ライセンス
 
-Linuxでは、USBイベントスレッドが`SCHED_FIFO`と`mlockall`を要求します。いずれも
-任意であり、`CAP_SYS_NICE` / `CAP_IPC_LOCK`がなくてもプロセスは通常の優先度で
-継続します。処理中のUSBリングは32 × 16KiBです。
-
-ファームウェアはこのリポジトリには含まれていません。`scripts/provenance.py`に
-記録された固定済みlinux-firmwareコミットのURLから`isdbt_rio.inp`を取得し、
-SHA256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`を
-検証して`--firmware`で渡すか、`./firmware/isdbt_rio.inp`または
-`/lib/firmware/isdbt_rio.inp`に置いてください。候補バイナリアーカイブには、
-`firmware/isdbt_rio.inp`の隣にバイナリが含まれます（ELFには埋め込まれていません）。
-ソースアーカイブにはファームウェアやベンダーのバイナリは一切含まれません。
-[LICENCE.siano](LICENCE.siano)にあるSianoファームウェアのライセンスは、著作権表示と
-免責事項を付けたバイナリの再配布を許可していますが、リバースエンジニアリング、
-逆コンパイル、逆アセンブルを禁止しています。ファームウェアをgitに追加しないで
-ください。
-
-`main`上の**Actions → Release candidate**は、1組の候補セットをビルド、監査、
-アップロードします。`main`を変更したり、タグを作成したり、公開済みリリースを
-変更したりすることはありません。候補版では、公開済みの5つのバイナリアセット名を
-維持します：Linux x86_64（Alpine/musl）、macOS arm64、Windows WinUSB x64、および
-Androidの両ABIです。また、対応するソースアーカイブを1つと、外側の
-`SHA256SUMS`も含みます。glibcはビルド対応かつCI監査対象ですが、パッケージには
-含まれません。後で許可された場合の昇格には、再ビルドせず、監査済みのこれらの
-バイト列をそのまま使用しなければなりません。Windowsでは一度だけWinUSB（Zadig）が
-必要です。zipには`libusb-1.0.dll`と簡潔な出所情報が含まれますが、ダウンロード
-した7zはビルド中に検証され、埋め込まれません。macOSではHomebrewの`libusb`が
-必要です。AndroidアーカイブはTermux用のBionic ELFであり、Play Store APKでも
-Linux muslアーカイブでもありません。
-
-各ビルドホストのバイナリ監査には、正確なGitHub Actionsソースコミットが記録されます。
-パッケージおよびアーカイブの監査では、その証拠がアーカイブマニフェストと一致する
-ことが必要です。
-
-## Termux
-
-Android候補アーカイブには、LGPL-2.1のライセンステキスト、正確なlibusb 1.0.28の
-ソースアーカイブ、`REBUILD.md`、NDKの注意事項、および監査可能な静的リンクの
-一覧が含まれます。libusbは`--disable-udev --enable-static
---disable-shared`でビルドされ、`libusb-1.0.a -llog`としてリンクされるため、
-実行時にTermuxの`$PREFIX/lib`は必要ありません。Linux muslアーカイブをスマート
-フォンにコピーしないでください。`ld-musl`を要求するためロードできません。
-Windowsパッケージでは、正確なlibusb 1.0.28パッケージと対応するソースアーカイブを
-URLとSHA256で特定しています。
-
-| アーカイブ | ABI | インタープリター | 一般的なデバイス |
-|---|---|---|---|
-| `siano-ts-*-android-aarch64.tar.gz` | `aarch64-linux-android` API 24 | `/system/bin/linker64` | 64ビット版Termux（Pixel） |
-| `siano-ts-*-android-armv7a.tar.gz` | `armv7a-linux-androideabi` API 24 | `/system/bin/linker` | Google TV Streamer（`armeabi-v7a`のみ） |
-
-USBアクセスは、`termux-usb`が`--fd`（または末尾の整数引数）にfdを渡す方式です。
-`--list`は`/dev/bus/usb`を列挙し、`--fd`と同時には使用できません。
-`firmware/isdbt_rio.inp`をバイナリの隣に置いてください。
-
-## 使い方
-
-ISDB-Tとして扱われるRIOのUSB IDは、`3275:0080`、`187f:0600`、および
-`187f:0302`です。最後のIDはここでは意図的にRIOとして扱っています。そのカーネル
-テーブル上のVenice/CMMBファームウェアを使用しないでください。
-
-```sh
-./siano-ts --list
-./siano-ts --channel 27
-./siano-ts -c 27 -t 30 -o /tmp/x.ts
-./siano-ts --freq 557142857 --firmware /path/to/isdbt_rio.inp
-./siano-ts -c 27 --pid 0 --pid 0x1fff
-./siano-ts --channel 27 --fd 3
-termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
-```
-
-`--fd`は`libusb_wrap_sys_device`でそのディスクリプタをラップし、デバイスを
-スキャンしません。末尾の整数引数は`--fd`と同じです（`termux-usb -e`はfdを
-追加します）。`--device N`は列挙時に一致するRIOデバイスのN番目を選択します。
-`--list`はUSBデバイスを開かずにディスクリプタを列挙します。
-
-デフォルトのPIDフィルターは`0x2000`（Siano/DVBのキャッチオール）です。すべての
-`--pid`値はこれに加えて追加されます。このファームウェアは`0x2000`にACKを返さない
-ことがありますが、多重化ストリームは流れ続けます。
-
-mirakcのチューナーコマンドは次のように設定できます：
-
-```toml
-command = ['/usr/local/bin/siano-ts', '--channel', '{{channel}}']
-```
-
-## 範囲、ライセンス、出所情報
-
-ソースはGPL-2.0-or-laterです。[COPYING](COPYING)を参照してください。通信プロトコルは、
-提供されたLinux v6.18リファレンススナップショットに含まれるGPLのLinux
-`smsusb`、`smscoreapi`、`smsdvb`のソースをもとに、ユーザー空間向けに書き直されて
-います。カーネルのDVBコア、usbfs ioctl、libudev、IR、debugfs、sysfsのコードは使用
-していません。Android/Termuxのfd経路を含め、USBアクセスはlibusbだけです。
-
-実際のチューナーを頼りにする前に、5分間のキャプチャを3回行い、ffmpegの
-`corrupt`報告を数えてください。目標は、カーネル側の軽減策のベースラインと一致する
-0.33報告/分です。この測定は、このオフライン実装工程では意図的に行っていません。
+- **本体プログラム**: GPL-2.0-or-later ([COPYING](COPYING))
+- **ファームウェア (`isdbt_rio.inp`)**: Siano 社の再配布許諾ライセンス ([LICENCE.siano](LICENCE.siano))。リバースエンジニアリング、逆コンパイル、逆アセンブルは禁止されています。
