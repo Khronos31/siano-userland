@@ -65,20 +65,29 @@ jobs:
   alpine-arm64:
     name: Linux aarch64 (musl / Alpine)
     runs-on: ubuntu-24.04-arm
-    container: alpine:3.21
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install libusb
-        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git
-      - name: Build and test
+      - name: Build and test in native arm64 Alpine
         run: |
-          make test
-          scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
-          make packaging-test
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" \
+            -w /src \
+            alpine:3.21 \
+            sh -euxc '
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
+                --source-ref "$GITHUB_SHA" \
+                --evidence-output evidence/binary-audit.json
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
 
   android:
     name: Android (Termux ${{ matrix.abi }})

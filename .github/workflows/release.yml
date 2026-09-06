@@ -71,19 +71,29 @@ jobs:
     name: Linux musl aarch64
     needs: preflight
     runs-on: ubuntu-24.04-arm
-    container: alpine:3.21
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Build and audit
+      - name: Build and audit in native arm64 Alpine
         run: |
-          apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils
-          make test
-          mkdir -p evidence
-          scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" \
+            -w /src \
+            alpine:3.21 \
+            sh -euxc '
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home mkdir -p evidence
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
+                --source-ref "$GITHUB_SHA" \
+                --evidence-output evidence/binary-audit.json
+            '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-linux-aarch64
