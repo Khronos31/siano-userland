@@ -4,6 +4,7 @@
 *.inp
 /siano-ts
 /test-protocol
+/test-stream-state
 /build/
 /firmware/
 /ref/

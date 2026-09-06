@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   linux:
-    name: Linux (glibc)
+    name: Linux x86_64 (glibc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -45,7 +45,7 @@ jobs:
           make packaging-test
 
   alpine:
-    name: Linux (musl / Alpine)
+    name: Linux x86_64 (musl / Alpine)
     runs-on: ubuntu-latest
     container: alpine:3.21
     steps:
@@ -58,6 +58,24 @@ jobs:
         run: |
           make test
           scripts/audit-artifact.sh --platform linux-x86_64 --binary ./siano-ts \
+            --source-ref "$GITHUB_SHA" \
+            --evidence-output evidence/binary-audit.json
+          make packaging-test
+
+  alpine-arm64:
+    name: Linux aarch64 (musl / Alpine)
+    runs-on: ubuntu-24.04-arm
+    container: alpine:3.21
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install libusb
+        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git
+      - name: Build and test
+        run: |
+          make test
+          scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
             --source-ref "$GITHUB_SHA" \
             --evidence-output evidence/binary-audit.json
           make packaging-test

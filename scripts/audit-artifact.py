@@ -36,13 +36,15 @@ PLATFORMS = {
     # The glibc name is an audit-only CI target; it is never a candidate archive.
     "linux-glibc-x86_64": "linux-glibc",
     "linux-x86_64": "linux-musl",
+    "linux-aarch64": "linux-musl",
     "darwin-arm64": "darwin",
     "android-aarch64": "android",
     "android-armv7a": "android",
     "windows-x64": "windows",
 }
 PACKAGE_PLATFORMS = {
-    "linux-x86_64", "darwin-arm64", "android-aarch64", "android-armv7a", "windows-x64"
+    "linux-x86_64", "linux-aarch64", "darwin-arm64", "android-aarch64",
+    "android-armv7a", "windows-x64"
 }
 COMMON = {
     "COPYING", "LICENCE.siano", "README.md", "REBUILD.md", "DEPENDENCY-NOTICE.txt",
@@ -420,6 +422,31 @@ def audit_pe_x64(path: Path) -> None:
     audit_pe_x64_bytes(path.read_bytes(), str(path))
 
 
+def audit_linux_elf_text(header: str, dynamic: str, program_headers: str,
+                         platform: str, label: str) -> None:
+    machine_patterns = {
+        "linux-glibc-x86_64": r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)",
+        "linux-x86_64": r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)",
+        "linux-aarch64": r"Machine:\s+AArch64",
+    }
+    musl_interpreters = {
+        "linux-x86_64": "/lib/ld-musl-x86_64.so.1",
+        "linux-aarch64": "/lib/ld-musl-aarch64.so.1",
+    }
+    if platform not in machine_patterns:
+        fail(f"unsupported Linux platform: {platform}")
+    if "ELF" not in header or "libusb-1.0.so.0" not in dynamic:
+        fail(f"Linux binary is not a dynamic libusb ELF: {label}")
+    if not re.search(r"Class:\s+ELF64", header) or not re.search(machine_patterns[platform], header):
+        architecture = "aarch64" if platform == "linux-aarch64" else "x86-64"
+        fail(f"Linux binary is not {architecture} ELF: {label}")
+    expected_interpreter = musl_interpreters.get(platform)
+    if expected_interpreter and expected_interpreter not in program_headers:
+        fail(f"Linux musl interpreter missing: {label}")
+    if platform == "linux-glibc-x86_64" and "libc.so.6" not in dynamic:
+        fail(f"Linux glibc dependency missing: {label}")
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
@@ -445,15 +472,8 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
             fail("readelf or llvm-readelf is required")
         header = run([readelf, "-h", str(path)])
         dynamic = run([readelf, "-d", str(path)])
-        if "ELF" not in header or "libusb-1.0.so.0" not in dynamic:
-            fail(f"Linux binary is not a dynamic libusb ELF: {path}")
-        if not re.search(r"Class:\s+ELF64", header) or not re.search(
-                r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)", header):
-            fail(f"Linux binary is not x86-64 ELF: {path}")
-        if platform == "linux-x86_64" and "/lib/ld-musl-x86_64.so.1" not in run([readelf, "-lW", str(path)]):
-            fail(f"Linux musl interpreter missing: {path}")
-        if platform == "linux-glibc-x86_64" and "libc.so.6" not in dynamic:
-            fail(f"Linux glibc dependency missing: {path}")
+        program_headers = run([readelf, "-lW", str(path)])
+        audit_linux_elf_text(header, dynamic, program_headers, platform, str(path))
     elif platform == "darwin-arm64":
         otool = shutil.which("otool")
         if not otool or "libusb-1.0" not in run([otool, "-L", str(path)]):
@@ -593,6 +613,28 @@ def self_test() -> None:
         pass
     else:
         fail("non-finite JSON self-test did not fail")
+
+    aarch64_header = "ELF Header:\n  Class: ELF64\n  Machine: AArch64\n"
+    dynamic_libusb = "Shared library: [libusb-1.0.so.0]\n"
+    aarch64_program_headers = "Requesting program interpreter: /lib/ld-musl-aarch64.so.1\n"
+    audit_linux_elf_text(aarch64_header, dynamic_libusb, aarch64_program_headers,
+                         "linux-aarch64", "synthetic-aarch64")
+    try:
+        audit_linux_elf_text(aarch64_header, dynamic_libusb,
+                             "Requesting program interpreter: /lib/ld-musl-x86_64.so.1\n",
+                             "linux-aarch64", "synthetic-wrong-interpreter")
+    except AuditError:
+        pass
+    else:
+        fail("aarch64 musl interpreter mismatch self-test did not fail")
+    try:
+        audit_linux_elf_text(
+            "ELF Header:\n  Class: ELF64\n  Machine: Advanced Micro Devices X86-64\n",
+            dynamic_libusb, aarch64_program_headers, "linux-aarch64", "synthetic-wrong-arch")
+    except AuditError:
+        pass
+    else:
+        fail("aarch64 machine mismatch self-test did not fail")
 
     binary_payloads = {"siano-ts": b"binary"}
     binary_manifest = {"platform": "linux-x86_64", "source_ref": "a" * 40}
