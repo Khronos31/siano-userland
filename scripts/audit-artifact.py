@@ -33,8 +33,6 @@ from provenance import (
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SOURCE_REF_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 PLATFORMS = {
-    # The glibc name is an audit-only CI target; it is never a candidate archive.
-    "linux-glibc-x86_64": "linux-glibc",
     "linux-x86_64": "linux-musl",
     "linux-aarch64": "linux-musl",
     "darwin-arm64": "darwin",
@@ -50,10 +48,15 @@ COMMON = {
     "COPYING", "LICENCE.siano", "README.md", "REBUILD.md", "DEPENDENCY-NOTICE.txt",
     "firmware/isdbt_rio.inp", "manifest.json", "SHA256SUMS", "evidence/binary-audit.json",
 }
+LINUX_ARCHITECTURES = {"linux-x86_64": "x86_64", "linux-aarch64": "aarch64"}
 SOURCE_REQUIRED = {
     "BUILD-RELINK.md", "DEPENDENCY-NOTICE.txt", "README.md", "COPYING",
     "LICENCE.siano", "source-manifest.json", "SHA256SUMS",
-    "third_party/libusb-1.0.28.tar.bz2",
+    "third_party/libusb-1.0.30.tar.bz2",
+    "repository/Makefile",
+    "repository/scripts/build-linux-static.sh",
+    "repository/scripts/test-static-relink.sh",
+    "repository/packaging/REBUILD.md",
 }
 SOURCE_FORBIDDEN = re.compile(
     r"(^|/)(?:\.git|build(?:-[^/.]+)?|out|dist|firmware|windows|win32|vendor|drivers?|"
@@ -221,6 +224,16 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
     if not isinstance(manifest.get("source_ref"), str):
         fail("manifest source_ref is missing")
     validate_source_ref(manifest["source_ref"])
+    if platform in LINUX_ARCHITECTURES:
+        expected_metadata = {
+            "architecture": LINUX_ARCHITECTURES[platform],
+            "libc": "none",
+            "build_libc": "musl",
+            "linkage": "static",
+        }
+        for key, value in expected_metadata.items():
+            if manifest.get(key) != value:
+                fail(f"Linux static manifest metadata mismatch: {key}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
     if manifest.get("programs") != [binary_name]:
         fail("manifest program list is wrong")
@@ -245,10 +258,33 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
                          "license_sha256": FIRMWARE_LICENSE_SHA256}
     if firmware != expected_firmware:
         fail("manifest firmware provenance mismatch")
-    if platform.startswith("android") or platform == "windows-x64":
+    if platform in LINUX_ARCHITECTURES:
+        libusb = manifest.get("libusb")
+        expected_libusb = {
+            "version": LIBUSB_VERSION,
+            "source_ref": LIBUSB_SOURCE_URL,
+            "source_sha256": LIBUSB_SOURCE_SHA256,
+            "linkage": "static",
+            "udev": "disabled",
+            "backend": "netlink",
+        }
+        if libusb != expected_libusb:
+            fail("manifest Linux libusb provenance/linkage mismatch")
+    elif platform.startswith("android") or platform == "windows-x64":
+        expected_metadata = {
+            "architecture": "aarch64" if platform == "android-aarch64" else
+            "armv7a" if platform == "android-armv7a" else "x86_64",
+            "linkage": "static" if platform.startswith("android") else "dynamic",
+            "libc": "bionic" if platform.startswith("android") else "windows",
+        }
+        for key, value in expected_metadata.items():
+            if manifest.get(key) != value:
+                fail(f"manifest metadata mismatch: {key}")
         libusb = manifest.get("libusb")
         if not isinstance(libusb, dict) or libusb.get("version") != LIBUSB_VERSION or \
-                libusb.get("source_sha256") != LIBUSB_SOURCE_SHA256:
+                libusb.get("source_ref") != LIBUSB_SOURCE_URL or \
+                libusb.get("source_sha256") != LIBUSB_SOURCE_SHA256 or \
+                libusb.get("linkage") != expected_metadata["linkage"]:
             fail("manifest libusb provenance mismatch")
         if platform == "windows-x64" and libusb.get("package_sha256") != WINDOWS_LIBUSB_PACKAGE_SHA256:
             fail("manifest Windows libusb package provenance mismatch")
@@ -259,9 +295,11 @@ def expected_members(platform: str) -> set[str]:
     if platform not in PACKAGE_PLATFORMS:
         fail(f"platform is not packageable: {platform}")
     result = set(COMMON) | ({"siano-ts.exe"} if platform == "windows-x64" else {"siano-ts"})
-    if platform.startswith("android"):
+    if platform in LINUX_ARCHITECTURES:
+        result |= {"libusb/COPYING", "evidence/build.properties"}
+    elif platform.startswith("android"):
         result |= {
-            "libusb/COPYING", "libusb/libusb-1.0.28.tar.bz2",
+            "libusb/COPYING", f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2",
             "evidence/static-link-inventory.tsv", "evidence/build.properties",
             "evidence/ndk/source.properties", "evidence/ndk/NOTICE",
             "evidence/ndk/NOTICE.toolchain",
@@ -348,6 +386,11 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         fail(f"archive name does not match platform/version: {path.name}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
     verify_binary_archive_mode(modes, binary_name, platform)
+    if platform in LINUX_ARCHITECTURES:
+        with tempfile.TemporaryDirectory(prefix="siano-archive-audit-") as temporary:
+            binary = Path(temporary) / binary_name
+            binary.write_bytes(payloads[binary_name])
+            audit_linux_static_binary(binary, platform)
     if sha256_bytes(payloads["firmware/isdbt_rio.inp"]) != FIRMWARE_SHA256:
         fail("firmware SHA256 does not match the pinned input")
     if sha256_bytes(payloads["LICENCE.siano"]) != FIRMWARE_LICENSE_SHA256:
@@ -356,18 +399,51 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
     exact_firmware_fields(fields)
     if fields.get("source.archive") != f"siano-ts-{manifest['version']}-source.tar.gz":
         fail("dependency notice does not point to the corresponding project source archive")
-    if platform.startswith("android"):
+    if platform in LINUX_ARCHITECTURES:
         expected_fields = {
             "dependency.libusb.version": LIBUSB_VERSION,
             "dependency.libusb.linkage": "static",
             "dependency.libusb.license": "LGPL-2.1-or-later",
-            "corresponding-source": "libusb/libusb-1.0.28.tar.bz2",
+            "dependency.libusb.backend": "netlink",
+            "dependency.libusb.udev": "disabled",
+            "corresponding-source": f"siano-ts-{manifest['version']}-source.tar.gz",
+            "corresponding-source.path": f"third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
+            "libusb.source.url": LIBUSB_SOURCE_URL,
+            "libusb.source.sha256": LIBUSB_SOURCE_SHA256,
+        }
+        for key, value in expected_fields.items():
+            if fields.get(key) != value:
+                fail(f"dependency notice field mismatch: {key}")
+        properties = payloads["evidence/build.properties"].decode("utf-8")
+        required_properties = {
+            "target_os": "linux", "target_arch": LINUX_ARCHITECTURES[platform],
+            "libc": "none", "build_libc": "musl", "linkage": "static", "libusb_version": LIBUSB_VERSION,
+            "libusb_source_url": LIBUSB_SOURCE_URL, "libusb_source_sha256": LIBUSB_SOURCE_SHA256,
+            "libusb_backend": "netlink",
+        }
+        property_map = {}
+        for line in properties.splitlines():
+            if "=" not in line:
+                fail("Linux build.properties is malformed")
+            key, value = line.split("=", 1)
+            if key in property_map:
+                fail(f"duplicate Linux build property: {key}")
+            property_map[key] = value
+        for key, value in required_properties.items():
+            if property_map.get(key) != value:
+                fail(f"Linux build property mismatch: {key}")
+    elif platform.startswith("android"):
+        expected_fields = {
+            "dependency.libusb.version": LIBUSB_VERSION,
+            "dependency.libusb.linkage": "static",
+            "dependency.libusb.license": "LGPL-2.1-or-later",
+            "corresponding-source": f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2",
             "corresponding-source.sha256": LIBUSB_SOURCE_SHA256,
         }
         for key, value in expected_fields.items():
             if fields.get(key) != value:
                 fail(f"dependency notice field mismatch: {key}")
-        if sha256_bytes(payloads["libusb/libusb-1.0.28.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
+        if sha256_bytes(payloads[f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
             fail("Android corresponding libusb source checksum mismatch")
         verify_android_provenance(payloads, fields, platform)
     elif platform == "windows-x64":
@@ -389,6 +465,9 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         audit_pe_x64_bytes(payloads[binary_name], binary_name)
         audit_pe_x64_bytes(payloads["libusb-1.0.dll"], "libusb-1.0.dll")
     else:
+        if manifest.get("architecture") != "arm64" or manifest.get("linkage") != "dynamic" or \
+                manifest.get("libc") != "darwin":
+            fail("macOS manifest metadata mismatch")
         for key, value in {"dependency.libusb.linkage": "dynamic", "dependency.libusb.provider": "host"}.items():
             if fields.get(key) != value:
                 fail(f"dependency notice field mismatch: {key}")
@@ -425,26 +504,30 @@ def audit_pe_x64(path: Path) -> None:
 def audit_linux_elf_text(header: str, dynamic: str, program_headers: str,
                          platform: str, label: str) -> None:
     machine_patterns = {
-        "linux-glibc-x86_64": r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)",
         "linux-x86_64": r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)",
         "linux-aarch64": r"Machine:\s+AArch64",
     }
-    musl_interpreters = {
-        "linux-x86_64": "/lib/ld-musl-x86_64.so.1",
-        "linux-aarch64": "/lib/ld-musl-aarch64.so.1",
-    }
     if platform not in machine_patterns:
         fail(f"unsupported Linux platform: {platform}")
-    if "ELF" not in header or "libusb-1.0.so.0" not in dynamic:
-        fail(f"Linux binary is not a dynamic libusb ELF: {label}")
+    if "ELF" not in header:
+        fail(f"Linux binary is not an ELF: {label}")
     if not re.search(r"Class:\s+ELF64", header) or not re.search(machine_patterns[platform], header):
         architecture = "aarch64" if platform == "linux-aarch64" else "x86-64"
         fail(f"Linux binary is not {architecture} ELF: {label}")
-    expected_interpreter = musl_interpreters.get(platform)
-    if expected_interpreter and expected_interpreter not in program_headers:
-        fail(f"Linux musl interpreter missing: {label}")
-    if platform == "linux-glibc-x86_64" and "libc.so.6" not in dynamic:
-        fail(f"Linux glibc dependency missing: {label}")
+    if re.search(r"Requesting program interpreter:|INTERP", program_headers):
+        fail(f"Linux static binary contains PT_INTERP: {label}")
+    if re.search(r"\(NEEDED\)|Shared library:", dynamic):
+        fail(f"Linux static binary contains DT_NEEDED: {label}")
+
+
+def audit_linux_static_binary(path: Path, platform: str) -> None:
+    readelf = shutil.which("readelf") or shutil.which("llvm-readelf")
+    if not readelf:
+        fail("readelf or llvm-readelf is required")
+    header = run([readelf, "-h", str(path)])
+    dynamic = run([readelf, "-d", str(path)])
+    program_headers = run([readelf, "-lW", str(path)])
+    audit_linux_elf_text(header, dynamic, program_headers, platform, str(path))
 
 
 def write_json(path: Path, value: object) -> None:
@@ -500,12 +583,20 @@ def audit_source_archive(path: Path) -> dict:
         if not name.startswith(("repository/", "third_party/", "BUILD-RELINK.md", "DEPENDENCY-NOTICE.txt",
                                 "README.md", "COPYING", "LICENCE.siano", "source-manifest.json", "SHA256SUMS")):
             fail(f"unexpected source archive member: {name}")
-    if sha256_bytes(payloads["third_party/libusb-1.0.28.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
+    if sha256_bytes(payloads[f"third_party/libusb-{LIBUSB_VERSION}.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
         fail("source archive libusb checksum mismatch")
+    rebuild = payloads["BUILD-RELINK.md"].decode("utf-8")
+    for required_text in ("--disable-shared", "--enable-static", "--disable-udev", "test-static-relink.sh"):
+        if required_text not in rebuild:
+            fail(f"BUILD-RELINK.md is missing the static/relink recipe: {required_text}")
     manifest = parse_json(payloads["source-manifest.json"], "source-manifest.json")
     expected_provenance = {
         "schema": 1, "libusb_version": LIBUSB_VERSION,
+        "libusb_source_url": LIBUSB_SOURCE_URL,
         "libusb_source_sha256": LIBUSB_SOURCE_SHA256,
+        "libusb_license": "LGPL-2.1-or-later",
+        "linux_linkage": "static",
+        "linux_libusb_backend": "netlink",
         "firmware_url": FIRMWARE_URL, "firmware_sha256": FIRMWARE_SHA256,
         "firmware_license_url": FIRMWARE_LICENSE_URL,
         "firmware_license_sha256": FIRMWARE_LICENSE_SHA256,
@@ -534,7 +625,7 @@ def audit_source_archive(path: Path) -> dict:
         "source.ref": manifest["source_ref"],
         "source.resolved_commit": manifest["resolved_commit"],
         "source.tree": manifest["tree"],
-        "corresponding-source": "third_party/libusb-1.0.28.tar.bz2",
+        "corresponding-source": f"third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
         "corresponding-source.sha256": LIBUSB_SOURCE_SHA256,
         "libusb.source.url": LIBUSB_SOURCE_URL,
         "firmware.url": FIRMWARE_URL, "firmware.sha256": FIRMWARE_SHA256,
@@ -615,13 +706,20 @@ def self_test() -> None:
         fail("non-finite JSON self-test did not fail")
 
     aarch64_header = "ELF Header:\n  Class: ELF64\n  Machine: AArch64\n"
-    dynamic_libusb = "Shared library: [libusb-1.0.so.0]\n"
-    aarch64_program_headers = "Requesting program interpreter: /lib/ld-musl-aarch64.so.1\n"
-    audit_linux_elf_text(aarch64_header, dynamic_libusb, aarch64_program_headers,
+    static_dynamic = "There is no dynamic section in this file.\n"
+    static_program_headers = "Program Headers:\n"
+    audit_linux_elf_text(aarch64_header, static_dynamic, static_program_headers,
                          "linux-aarch64", "synthetic-aarch64")
     try:
-        audit_linux_elf_text(aarch64_header, dynamic_libusb,
-                             "Requesting program interpreter: /lib/ld-musl-x86_64.so.1\n",
+        audit_linux_elf_text(aarch64_header, "Dynamic section:\n  (NEEDED) Shared library: [libusb-1.0.so.0]\n",
+                             static_program_headers, "linux-aarch64", "synthetic-dynamic")
+    except AuditError:
+        pass
+    else:
+        fail("dynamic Linux dependency self-test did not fail")
+    try:
+        audit_linux_elf_text(aarch64_header, static_dynamic,
+                             "Requesting program interpreter: /lib/ld-linux-aarch64.so.1\n",
                              "linux-aarch64", "synthetic-wrong-interpreter")
     except AuditError:
         pass
@@ -630,7 +728,7 @@ def self_test() -> None:
     try:
         audit_linux_elf_text(
             "ELF Header:\n  Class: ELF64\n  Machine: Advanced Micro Devices X86-64\n",
-            dynamic_libusb, aarch64_program_headers, "linux-aarch64", "synthetic-wrong-arch")
+            static_dynamic, static_program_headers, "linux-aarch64", "synthetic-wrong-arch")
     except AuditError:
         pass
     else:
@@ -667,7 +765,7 @@ def self_test() -> None:
         "evidence/static-link-inventory.tsv": b"category\tarchive\tmember\nlibusb\tlibusb-1.0.a\tx.o\n",
         "evidence/build.properties": (
             b"android_abi=aarch64\nandroid_api=24\nndk_revision=27.3.13750724\n"
-            b"libusb_version=1.0.28\nlibusb_source_url=" + LIBUSB_SOURCE_URL.encode() + b"\n"
+            b"libusb_version=1.0.30\nlibusb_source_url=" + LIBUSB_SOURCE_URL.encode() + b"\n"
             b"libusb_source_sha256=" + LIBUSB_SOURCE_SHA256.encode() + b"\n"
         ),
         "evidence/ndk/source.properties": b"Pkg.Revision = 27.3.13750724\n",

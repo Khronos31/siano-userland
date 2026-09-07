@@ -8,7 +8,7 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -D_POSIX_C_SOURCE=200809L -D_FILE_OF
 CFLAGS += $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
-.PHONY: all clean test packaging-test
+.PHONY: all clean test packaging-test linux-static
 
 all: siano-ts
 
@@ -37,6 +37,9 @@ test: siano-ts test-protocol test-stream-state
 packaging-test:
 	python3 scripts/audit-artifact.py --self-test
 	python3 scripts/package-source.py --self-test
+
+linux-static:
+	scripts/build-linux-static.sh
 
 clean:
 	rm -f siano-ts test-protocol test-stream-state *.o tests/*.o tests/.cli-error

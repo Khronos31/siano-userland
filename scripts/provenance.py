@@ -15,15 +15,15 @@ FIRMWARE_LICENSE_URL = (
 )
 FIRMWARE_LICENSE_SHA256 = "cf2b4a0301e028d7357ca84644c5094dec0aa6a4e8f8616426c3d126788a406a"
 
-LIBUSB_VERSION = "1.0.28"
+LIBUSB_VERSION = "1.0.30"
 LIBUSB_SOURCE_URL = (
-    "https://github.com/libusb/libusb/releases/download/v1.0.28/"
-    "libusb-1.0.28.tar.bz2"
+    "https://github.com/libusb/libusb/releases/download/v1.0.30/"
+    "libusb-1.0.30.tar.bz2"
 )
-LIBUSB_SOURCE_SHA256 = "966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29"
+LIBUSB_SOURCE_SHA256 = "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf"
 
 WINDOWS_LIBUSB_PACKAGE_URL = (
-    "https://github.com/libusb/libusb/releases/download/v1.0.28/"
-    "libusb-1.0.28.7z"
+    "https://github.com/libusb/libusb/releases/download/v1.0.30/"
+    "libusb-1.0.30.7z"
 )
-WINDOWS_LIBUSB_PACKAGE_SHA256 = "ce633f98c3ce6aec82be3c0d273ab8bdd160642174faba4eb47d8dcd92af7f05"
+WINDOWS_LIBUSB_PACKAGE_SHA256 = "7fb1dfec805b97983763d7d0ae244320da12add1003d4249c96cc4d586398c79"

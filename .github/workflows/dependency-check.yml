@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Dependency check
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  libusb:
+    name: Check libusb stable release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Compare pinned version with upstream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          text = Path("scripts/provenance.py").read_text(encoding="utf-8")
+          pinned = re.search(r'LIBUSB_VERSION\s*=\s*"([^"]+)"', text).group(1)
+          request = urllib.request.Request(
+              "https://api.github.com/repos/libusb/libusb/releases/latest",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "User-Agent": "siano-userland-dependency-check",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              latest = json.load(response)["tag_name"].removeprefix("v")
+          print(f"pinned libusb: {pinned}")
+          print(f"latest stable libusb: {latest}")
+          if latest != pinned:
+              print(f"::error::pinned libusb differs from latest stable: {latest} (pinned: {pinned})")
+              raise SystemExit(1)
+          PY

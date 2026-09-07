@@ -237,7 +237,11 @@ def main() -> int:
         manifest = {
             "schema": 1, "version": args.version, "source_ref": args.source_ref,
             "resolved_commit": commit, "tree": tree, "libusb_version": LIBUSB_VERSION,
+            "libusb_source_url": LIBUSB_SOURCE_URL,
             "libusb_source_sha256": LIBUSB_SOURCE_SHA256,
+            "libusb_license": "LGPL-2.1-or-later",
+            "linux_linkage": "static",
+            "linux_libusb_backend": "netlink",
             "firmware_url": FIRMWARE_URL, "firmware_sha256": FIRMWARE_SHA256,
             "firmware_license_url": FIRMWARE_LICENSE_URL,
             "firmware_license_sha256": FIRMWARE_LICENSE_SHA256, "files": {},

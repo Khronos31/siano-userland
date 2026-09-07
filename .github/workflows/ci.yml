@@ -8,22 +8,113 @@ permissions:
   contents: read
 
 jobs:
-  linux:
-    name: Linux x86_64 (glibc)
-    runs-on: ubuntu-latest
+  linux-source:
+    name: Linux source tests (glibc)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install libusb
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libusb-1.0-0-dev
-      - name: Build and test
+      - name: Install host libusb
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential pkg-config libusb-1.0-0-dev
+      - name: Test source build
         run: |
           make test
-          scripts/audit-artifact.sh --platform linux-glibc-x86_64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
           make packaging-test
+
+  linux-static-x86_64:
+    name: Linux x86_64 static (Alpine)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and audit in Alpine
+        run: |
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
+            sh -euxc '
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=x86_64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                build/linux-x86_64/siano-ts --help >/dev/null
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-linux-x86_64
+          path: build/linux-x86_64
+          if-no-files-found: error
+
+  linux-static-aarch64:
+    name: Linux aarch64 static (Alpine)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and audit in native arm64 Alpine
+        run: |
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
+            sh -euxc '
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=aarch64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                build/linux-aarch64/siano-ts --help >/dev/null
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-linux-aarch64
+          path: build/linux-aarch64
+          if-no-files-found: error
+
+  linux-static-ubuntu-x86_64:
+    name: Linux x86_64 static startup (Ubuntu glibc)
+    needs: linux-static-x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bin-linux-x86_64
+          path: artifact
+      - name: Start exact produced binary
+        run: |
+          test "$(find artifact -type f -name siano-ts | wc -l)" -eq 1
+          binary=$(find artifact -type f -name siano-ts -print -quit)
+          chmod +x "$binary"
+          "$binary" --help >/dev/null
+
+  linux-static-ubuntu-aarch64:
+    name: Linux aarch64 static startup (Ubuntu glibc)
+    needs: linux-static-aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bin-linux-aarch64
+          path: artifact
+      - name: Start exact produced binary
+        run: |
+          test "$(find artifact -type f -name siano-ts | wc -l)" -eq 1
+          binary=$(find artifact -type f -name siano-ts -print -quit)
+          chmod +x "$binary"
+          "$binary" --help >/dev/null
 
   macos:
     name: macOS arm64
@@ -40,58 +131,12 @@ jobs:
           export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make test
           scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
+            --source-ref "$GITHUB_SHA" --evidence-output evidence/binary-audit.json
           make packaging-test
-
-  alpine:
-    name: Linux x86_64 (musl / Alpine)
-    runs-on: ubuntu-latest
-    container: alpine:3.21
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Install libusb
-        run: apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git
-      - name: Build and test
-        run: |
-          make test
-          scripts/audit-artifact.sh --platform linux-x86_64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
-          make packaging-test
-
-  alpine-arm64:
-    name: Linux aarch64 (musl / Alpine)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Build and test in native arm64 Alpine
-        run: |
-          docker run --rm \
-            -e GITHUB_SHA \
-            -e HOST_UID="$(id -u)" \
-            -e HOST_GID="$(id -g)" \
-            -v "$GITHUB_WORKSPACE:/src" \
-            -w /src \
-            alpine:3.21 \
-            sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git su-exec
-              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
-              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
-              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
-                scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
-                --source-ref "$GITHUB_SHA" \
-                --evidence-output evidence/binary-audit.json
-              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
-            '
 
   android:
     name: Android (Termux ${{ matrix.abi }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -106,7 +151,7 @@ jobs:
           ndk-version: r27d
           add-to-path: false
       - name: Host tools
-        run: sudo apt-get update && sudo apt-get install -y make file binutils curl python3
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y make file binutils curl python3
       - name: Build and test
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -114,8 +159,7 @@ jobs:
         run: |
           ./scripts/build-android.sh
           scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
-            --binary build/android-${{ matrix.abi }}/siano-ts \
-            --source-ref "$GITHUB_SHA" \
+            --binary build/android-${{ matrix.abi }}/siano-ts --source-ref "$GITHUB_SHA" \
             --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
           make packaging-test
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

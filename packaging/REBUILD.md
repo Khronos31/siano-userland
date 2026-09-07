@@ -1,16 +1,59 @@
 # Rebuild and relink
 
 The binary in this archive was built from the source commit recorded in
-`manifest.json`. The archive is a release artifact, not a substitute for the
-corresponding source archive.
+`manifest.json`. The corresponding source archive contains that exact Git
+tree under `repository/`, the pinned libusb source under `third_party/`, and
+this recipe as `BUILD-RELINK.md`.
 
-Native Linux and macOS builds use the platform's host `libusb-1.0` development
-package and therefore relink against the host-provided shared library. Windows
-uses the libusb 1.0.28 WinUSB package identified in `libusb/NOTICE.txt`; the
-downloaded 7z is verified during the build and is not embedded in the ZIP.
+## Linux static binaries
 
-Android uses libusb 1.0.28 statically. The exact source archive is included as
-`libusb/libusb-1.0.28.tar.bz2`; verify it against the SHA256 in
+The Linux release binary is built in Alpine with the pinned libusb 1.0.30
+source. libusb is configured with udev disabled, so its Linux netlink backend
+is used. `repository/scripts/build-linux-static.sh` is the exact build script:
+
+```sh
+apk add --no-cache gcc make pkgconf musl-dev python3 binutils curl tar bzip2
+cd repository
+SOURCE_REF=<source-ref> LINUX_ARCH=x86_64 \
+  LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
+  scripts/build-linux-static.sh
+```
+
+Use `LINUX_ARCH=aarch64` for the aarch64 binary. Verify the archive checksum
+before building. The script passes `-static` to the final link and records the
+actual libusb source checksum and build options in
+`build/<target>/evidence/build.properties`. A release build must have no
+`PT_INTERP` and no `DT_NEEDED`; use `repository/scripts/audit-artifact.sh` to
+check the result.
+
+The static Linux executable includes libusb under the LGPL-2.1-or-later. The
+corresponding source archive includes the complete application source, the
+complete pinned libusb source, `libusb/COPYING` in the binary archive, and this
+relink recipe. These materials are provided so libusb can be modified and the
+executable relinked as required by LGPL section 6(a).
+
+## Clean relink test
+
+Run the following from an Alpine environment. It extracts the corresponding
+source archive, rebuilds the unmodified source, then rebuilds against a
+harmlessly changed libusb source. The test requires the changed marker to be
+present in the resulting executable, so a successful compiler invocation alone
+does not pass the test.
+
+```sh
+repository/scripts/test-static-relink.sh \
+  --source-archive siano-ts-<version>-source.tar.gz \
+  --arch x86_64
+```
+
+## Other targets
+
+macOS uses the platform's host `libusb-1.0` shared library. Windows uses the
+libusb 1.0.30 WinUSB package identified in `libusb/NOTICE.txt`; the downloaded
+7z is verified during the build and is not embedded in the ZIP.
+
+Android uses libusb 1.0.30 statically. The exact source archive is included as
+`libusb/libusb-1.0.30.tar.bz2`; verify it against the SHA256 in
 `DEPENDENCY-NOTICE.txt`, unpack it, and build with:
 
 ```sh

@@ -82,7 +82,7 @@ def parse_properties(data: str) -> dict[str, str]:
 
 def verify_source_archive(path: Path, destination: Path) -> None:
     if path.name != f"libusb-{LIBUSB_VERSION}.tar.bz2" or sha256(path) != LIBUSB_SOURCE_SHA256:
-        fail("libusb source is not the pinned libusb 1.0.28 archive")
+        fail(f"libusb source is not the pinned libusb {LIBUSB_VERSION} archive")
     copying: bytes | None = None
     try:
         with tarfile.open(path, "r:bz2") as archive:
@@ -180,7 +180,7 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
             f"dependency.libusb.version={LIBUSB_VERSION}",
             "dependency.libusb.linkage=static",
             "dependency.libusb.license=LGPL-2.1-or-later",
-            "corresponding-source=libusb/libusb-1.0.28.tar.bz2",
+            f"corresponding-source=libusb/libusb-{LIBUSB_VERSION}.tar.bz2",
             f"corresponding-source.sha256={LIBUSB_SOURCE_SHA256}",
         ]
         explanation = "Android statically links libusb; see libusb/COPYING, libusb source, REBUILD.md, NDK notices, and evidence/."
@@ -194,9 +194,22 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
             f"corresponding-source.sha256={LIBUSB_SOURCE_SHA256}",
         ]
         explanation = "Windows bundles libusb-1.0.dll; see libusb/NOTICE.txt and the corresponding source archive."
+    elif platform.startswith("linux-"):
+        fields += [
+            f"dependency.libusb.version={LIBUSB_VERSION}",
+            "dependency.libusb.linkage=static",
+            "dependency.libusb.license=LGPL-2.1-or-later",
+            "dependency.libusb.backend=netlink",
+            "dependency.libusb.udev=disabled",
+            f"corresponding-source=siano-ts-{version}-source.tar.gz",
+            f"corresponding-source.path=third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
+            f"libusb.source.url={LIBUSB_SOURCE_URL}",
+            f"libusb.source.sha256={LIBUSB_SOURCE_SHA256}",
+        ]
+        explanation = f"Linux embeds a statically linked libusb {LIBUSB_VERSION} built without udev; see libusb/COPYING and the corresponding source archive."
     else:
         fields += ["dependency.libusb.linkage=dynamic", "dependency.libusb.provider=host"]
-        explanation = "Native builds use the host-provided dynamic libusb library."
+        explanation = "macOS builds use the host-provided dynamic libusb library."
     body = "\n".join(fields)
     with template.open("r", encoding="utf-8", newline="") as handle:
         text = handle.read()
@@ -219,8 +232,8 @@ def main() -> int:
     if not _audit.VERSION_RE.fullmatch(args.version):
         fail("version must be strict N.N.N")
     validate_source_ref(args.source_ref)
-    if args.platform.startswith("android") and not args.libusb_source_archive:
-        fail("Android package requires --libusb-source-archive")
+    if (args.platform.startswith("android") or args.platform.startswith("linux-")) and not args.libusb_source_archive:
+        fail("Android and static Linux packages require --libusb-source-archive")
     if args.platform == "windows-x64" and (not args.windows_package or not args.libusb_source_archive):
         fail("Windows package requires --windows-package and --libusb-source-archive")
     firmware = args.firmware.resolve()
@@ -270,7 +283,7 @@ def main() -> int:
             source_archive = args.libusb_source_archive.resolve()
             verify_source_archive(source_archive, stage / "libusb")
             if args.platform.startswith("android"):
-                copy_regular(source_archive, stage / "libusb/libusb-1.0.28.tar.bz2")
+                copy_regular(source_archive, stage / f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2")
         build_properties = None
         ndk_hashes = None
         if args.platform.startswith("android"):
@@ -285,10 +298,12 @@ def main() -> int:
             ndk_hashes = {key: sha256(stage / f"evidence/ndk/{name}") for key, name in {
                 "source_properties": "source.properties", "notice": "NOTICE",
                 "notice_toolchain": "NOTICE.toolchain"}.items()}
+        if args.platform.startswith("linux-"):
+            copy_regular(build / "evidence/build.properties", stage / "evidence/build.properties")
         if args.platform == "windows-x64":
             package = args.windows_package.resolve()
             if not package.is_file() or sha256(package) != WINDOWS_LIBUSB_PACKAGE_SHA256:
-                fail("Windows libusb package is not the pinned 1.0.28 package")
+                fail(f"Windows libusb package is not the pinned {LIBUSB_VERSION} package")
             dll = build / "libusb-1.0.dll"
             _audit.audit_pe_x64(dll)
             copy_regular(dll, stage / "libusb-1.0.dll")
@@ -311,8 +326,33 @@ def main() -> int:
             "firmware": {"url": FIRMWARE_URL, "sha256": FIRMWARE_SHA256,
                          "license_url": FIRMWARE_LICENSE_URL, "license_sha256": FIRMWARE_LICENSE_SHA256},
         }
+        metadata = {
+            "darwin-arm64": ("arm64", "dynamic", "darwin"),
+            "android-aarch64": ("aarch64", "static", "bionic"),
+            "android-armv7a": ("armv7a", "static", "bionic"),
+            "windows-x64": ("x86_64", "dynamic", "windows"),
+        }
+        if args.platform in metadata:
+            architecture, linkage, libc = metadata[args.platform]
+            manifest.update({"architecture": architecture, "linkage": linkage, "libc": libc})
+        if args.platform.startswith("linux-"):
+            manifest.update({
+                "architecture": args.platform.removeprefix("linux-"),
+                "libc": "none",
+                "build_libc": "musl",
+                "linkage": "static",
+                "libusb": {
+                    "version": LIBUSB_VERSION, "source_ref": LIBUSB_SOURCE_URL,
+                    "source_sha256": LIBUSB_SOURCE_SHA256, "linkage": "static",
+                    "udev": "disabled", "backend": "netlink",
+                },
+            })
         if args.platform.startswith("android") or args.platform == "windows-x64":
-            manifest["libusb"] = {"version": LIBUSB_VERSION, "source_sha256": LIBUSB_SOURCE_SHA256}
+            manifest["libusb"] = {
+                "version": LIBUSB_VERSION, "source_ref": LIBUSB_SOURCE_URL,
+                "source_sha256": LIBUSB_SOURCE_SHA256,
+                "linkage": "dynamic" if args.platform == "windows-x64" else "static",
+            }
         if args.platform == "windows-x64":
             manifest["libusb"]["package_sha256"] = WINDOWS_LIBUSB_PACKAGE_SHA256
         for path in sorted(stage.rglob("*")):

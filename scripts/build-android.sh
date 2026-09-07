@@ -28,8 +28,8 @@ armv7a|armeabi-v7a|arm)
 	exit 1
 	;;
 esac
-libusb_ver=${LIBUSB_VERSION:-1.0.28}
-libusb_sha256=966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29
+libusb_ver=${LIBUSB_VERSION:-1.0.30}
+libusb_sha256=fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf
 libusb_url="https://github.com/libusb/libusb/releases/download/v${libusb_ver}/libusb-${libusb_ver}.tar.bz2"
 
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)

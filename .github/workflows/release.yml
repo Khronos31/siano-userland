@@ -23,52 +23,39 @@ jobs:
             exit 1
           fi
 
-  # glibc is build/audit supported, but is deliberately not a candidate asset.
-  linux-glibc:
-    name: Linux glibc audit (not packaged)
+  linux-static:
+    name: Linux x86_64 static (Alpine)
     needs: preflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Build and audit
+      - name: Build and audit in Alpine
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential pkg-config libusb-1.0-0-dev
-          make test
-          mkdir -p evidence
-          scripts/audit-artifact.sh --platform linux-glibc-x86_64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
-
-  linux-musl:
-    name: Linux musl x86_64
-    needs: preflight
-    runs-on: ubuntu-24.04
-    container: alpine:3.21
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Build and audit
-        run: |
-          apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils
-          make test
-          mkdir -p evidence
-          scripts/audit-artifact.sh --platform linux-x86_64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
+          docker run --rm \
+            -e GITHUB_SHA \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
+            sh -euxc '
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
+              install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=x86_64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
+            '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-linux-x86_64
           path: |
-            siano-ts
-            evidence/binary-audit.json
+            build/linux-x86_64
           if-no-files-found: error
 
-  linux-musl-arm64:
-    name: Linux musl aarch64
+  linux-static-arm64:
+    name: Linux aarch64 static (Alpine)
     needs: preflight
     runs-on: ubuntu-24.04-arm
     steps:
@@ -83,23 +70,21 @@ jobs:
             -e HOST_GID="$(id -g)" \
             -v "$GITHUB_WORKSPACE:/src" \
             -w /src \
-            alpine:3.21 \
+            alpine:3.22 \
             sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils su-exec
+              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
               install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
-              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home mkdir -p evidence
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home \
-                scripts/audit-artifact.sh --platform linux-aarch64 --binary ./siano-ts \
-                --source-ref "$GITHUB_SHA" \
-                --evidence-output evidence/binary-audit.json
+                SOURCE_REF="$GITHUB_SHA" LINUX_ARCH=aarch64 scripts/build-linux-static.sh
+              su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make packaging-test
             '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-linux-aarch64
           path: |
-            siano-ts
-            evidence/binary-audit.json
+            build/linux-aarch64
           if-no-files-found: error
 
   macos:
@@ -179,8 +164,8 @@ jobs:
       - name: Fetch pinned libusb package
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri 'https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z' -OutFile libusb.7z
-          if ((Get-FileHash libusb.7z -Algorithm SHA256).Hash.ToLower() -ne 'ce633f98c3ce6aec82be3c0d273ab8bdd160642174faba4eb47d8dcd92af7f05') { throw 'libusb package checksum mismatch' }
+          Invoke-WebRequest -Uri 'https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.7z' -OutFile libusb.7z
+          if ((Get-FileHash libusb.7z -Algorithm SHA256).Hash.ToLower() -ne '7fb1dfec805b97983763d7d0ae244320da12add1003d4249c96cc4d586398c79') { throw 'libusb package checksum mismatch' }
           7z x libusb.7z -olibusb-src
           New-Item -ItemType Directory -Force -Path libusb\include\libusb-1.0 | Out-Null
           Copy-Item libusb-src\include\libusb.h libusb\include\libusb-1.0\
@@ -211,18 +196,18 @@ jobs:
           persist-credentials: false
       - name: Fetch pinned libusb source
         run: |
-          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
-            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.tar.bz2
-          echo '966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29  '"$RUNNER_TEMP/libusb-1.0.28.tar.bz2" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
+          echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
       - name: Package and audit
         run: |
           version=$(tr -d '\n' < VERSION)
           archive="siano-ts-$version-source.tar.gz"
           scripts/package-source.sh --version "$version" --source-ref "$GITHUB_SHA" \
-            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
             --output-dir "$RUNNER_TEMP/source-a"
           scripts/package-source.sh --version "$version" --source-ref "$GITHUB_SHA" \
-            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
+            --source-root "$GITHUB_WORKSPACE" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
             --output-dir "$RUNNER_TEMP/source-b"
           cmp "$RUNNER_TEMP/source-a/$archive" "$RUNNER_TEMP/source-b/$archive"
           scripts/audit-artifact.sh --source-archive --archive "$RUNNER_TEMP/source-a/$archive"
@@ -234,9 +219,49 @@ jobs:
           path: ${{ runner.temp }}/source/*.tar.gz
           if-no-files-found: error
 
+  source-relink-x86_64:
+    name: Clean source rebuild and relink (x86_64)
+    needs: source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc-source
+          path: source
+      - name: Rebuild and prove modified libusb was linked
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
+            apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2
+            archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
+            tmp=$(mktemp -d)
+            tar -xzf "$archive" -C "$tmp"
+            "$tmp/repository/scripts/test-static-relink.sh" --source-archive "$archive" --arch x86_64
+          '
+
+  source-relink-aarch64:
+    name: Clean source rebuild and relink (aarch64)
+    needs: source
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc-source
+          path: source
+      - name: Rebuild and prove modified libusb was linked
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
+            apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2
+            archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
+            # The helper is inside the corresponding source archive; extract it
+            # and invoke it with the archive mounted in the same container.
+            tmp=$(mktemp -d)
+            tar -xzf "$archive" -C "$tmp"
+            "$tmp/repository/scripts/test-static-relink.sh" --source-archive "$archive" --arch aarch64
+          '
+
   package:
     name: Package candidate archives
-    needs: [linux-glibc, linux-musl, linux-musl-arm64, macos, android, windows, source]
+    needs: [linux-static, linux-static-arm64, macos, android, windows, source, source-relink-x86_64, source-relink-aarch64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -255,12 +280,12 @@ jobs:
           curl -fsSL --retry 2 -o "$RUNNER_TEMP/isdbt_rio.inp" \
             'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp?id=e981caea6ed33c48d25b7dbf473327dbd01df163'
           echo '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818  '"$RUNNER_TEMP/isdbt_rio.inp" | sha256sum -c -
-          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" \
-            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.tar.bz2
-          echo '966bb0d231f94a474eaae2e67da5ec844d3527a1f386456394ff432580634b29  '"$RUNNER_TEMP/libusb-1.0.28.tar.bz2" | sha256sum -c -
-          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.28.7z" \
-            https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.7z
-          echo 'ce633f98c3ce6aec82be3c0d273ab8bdd160642174faba4eb47d8dcd92af7f05  '"$RUNNER_TEMP/libusb-1.0.28.7z" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
+          echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.7z" \
+            https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.7z
+          echo '7fb1dfec805b97983763d7d0ae244320da12add1003d4249c96cc4d586398c79  '"$RUNNER_TEMP/libusb-1.0.30.7z" | sha256sum -c -
       - name: Package, audit, and compare deterministic archives
         run: |
           set -eu
@@ -268,12 +293,12 @@ jobs:
           mkdir -p candidate reproducibility
           package_all() {
             out="$1"
-            scripts/package-artifact.sh --platform linux-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
-            scripts/package-artifact.sh --platform linux-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
+            scripts/package-artifact.sh --platform linux-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform linux-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform darwin-arm64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-darwin-arm64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
-            scripts/package-artifact.sh --platform android-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --output-dir "$out"
-            scripts/package-artifact.sh --platform android-armv7a --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-armv7a --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --output-dir "$out"
-            scripts/package-artifact.sh --platform windows-x64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-windows-x64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.28.tar.bz2" --windows-package "$RUNNER_TEMP/libusb-1.0.28.7z" --output-dir "$out"
+            scripts/package-artifact.sh --platform android-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform android-armv7a --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-armv7a --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform windows-x64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-windows-x64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --windows-package "$RUNNER_TEMP/libusb-1.0.30.7z" --output-dir "$out"
           }
           package_all candidate
           package_all reproducibility
@@ -292,8 +317,38 @@ jobs:
           test "$(find candidate -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 7
           (cd candidate && sha256sum "${expected_names[@]}" > SHA256SUMS && sha256sum -c SHA256SUMS)
           test "$(wc -l < candidate/SHA256SUMS)" -eq 7
+      - name: Start the packaged x86_64 binary on Ubuntu glibc
+        run: |
+          archive=$(find candidate -name '*-linux-x86_64.tar.gz' -type f -print -quit)
+          tmp=$(mktemp -d)
+          tar -xzf "$archive" -C "$tmp"
+          "$tmp/siano-ts" --help >/dev/null
+      - name: Start the same packaged x86_64 binary on Alpine musl
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" alpine:3.22 \
+            sh -euxc 'apk add --no-cache tar; archive=$(find /candidate -name "*-linux-x86_64.tar.gz" -type f -print -quit); tmp=$(mktemp -d); tar -xzf "$archive" -C "$tmp"; "$tmp/siano-ts" --help >/dev/null'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-candidate
           path: candidate
           if-no-files-found: error
+
+  packaged-runtime-aarch64:
+    name: Start packaged aarch64 binary on Ubuntu and Alpine
+    needs: package
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate
+          path: candidate
+      - name: Start the packaged binary on Ubuntu glibc arm64
+        run: |
+          archive=$(find candidate -name '*-linux-aarch64.tar.gz' -type f -print -quit)
+          tmp=$(mktemp -d)
+          tar -xzf "$archive" -C "$tmp"
+          "$tmp/siano-ts" --help >/dev/null
+      - name: Start the same packaged binary on Alpine musl arm64
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" alpine:3.22 \
+            sh -euxc 'apk add --no-cache tar; archive=$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit); tmp=$(mktemp -d); tar -xzf "$archive" -C "$tmp"; "$tmp/siano-ts" --help >/dev/null'
