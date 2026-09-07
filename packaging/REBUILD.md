@@ -12,7 +12,7 @@ source. libusb is configured with udev disabled, so its Linux netlink backend
 is used. `repository/scripts/build-linux-static.sh` is the exact build script:
 
 ```sh
-apk add --no-cache gcc make pkgconf musl-dev python3 binutils curl tar bzip2
+apk add --no-cache gcc make pkgconf musl-dev linux-headers python3 binutils curl tar bzip2
 cd repository
 SOURCE_REF=<source-ref> LINUX_ARCH=x86_64 \
   LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \

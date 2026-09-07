@@ -37,6 +37,7 @@ test: siano-ts test-protocol test-stream-state
 packaging-test:
 	python3 scripts/audit-artifact.py --self-test
 	python3 scripts/package-source.py --self-test
+	python3 scripts/check-workflow-invariants.py
 
 linux-static:
 	scripts/build-linux-static.sh

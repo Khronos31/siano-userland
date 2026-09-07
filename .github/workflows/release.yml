@@ -23,9 +23,20 @@ jobs:
             exit 1
           fi
 
+  workflow-invariants:
+    name: Workflow invariants
+    needs: preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check Alpine build environments
+        run: python3 scripts/check-workflow-invariants.py
+
   linux-static:
     name: Linux x86_64 static (Alpine)
-    needs: preflight
+    needs: [preflight, workflow-invariants]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -39,7 +50,7 @@ jobs:
             -e HOST_GID="$(id -g)" \
             -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
             sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
+              apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
               install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
@@ -56,7 +67,7 @@ jobs:
 
   linux-static-arm64:
     name: Linux aarch64 static (Alpine)
-    needs: preflight
+    needs: [preflight, workflow-invariants]
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -72,7 +83,7 @@ jobs:
             -w /src \
             alpine:3.22 \
             sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2 su-exec
+              apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
               install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
@@ -188,7 +199,7 @@ jobs:
 
   source:
     name: Corresponding source archive
-    needs: preflight
+    needs: [preflight, workflow-invariants]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -231,7 +242,7 @@ jobs:
       - name: Rebuild and prove modified libusb was linked
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
-            apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2
+            apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
             archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
             tmp=$(mktemp -d)
             tar -xzf "$archive" -C "$tmp"
@@ -250,7 +261,7 @@ jobs:
       - name: Rebuild and prove modified libusb was linked
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
-            apk add --no-cache gcc make pkgconf musl-dev libusb-dev python3 binutils git curl tar bzip2
+            apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
             archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
             # The helper is inside the corresponding source archive; extract it
             # and invoke it with the archive mounted in the same container.
