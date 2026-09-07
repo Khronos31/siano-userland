@@ -97,37 +97,97 @@ jobs:
           path: build/linux-aarch64
           if-no-files-found: error
 
-  linux-static-ubuntu-x86_64:
-    name: Linux x86_64 static startup (Ubuntu glibc)
-    needs: linux-static-x86_64
+  package-linux:
+    name: Assemble final Linux archives
+    needs: [linux-static-x86_64, linux-static-aarch64]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: bin-linux-x86_64
-          path: artifact
-      - name: Start exact produced binary
+          pattern: bin-linux-*
+          path: dist
+      - name: Fetch pinned package inputs
         run: |
-          test "$(find artifact -type f -name siano-ts | wc -l)" -eq 1
-          binary=$(find artifact -type f -name siano-ts -print -quit)
-          chmod +x "$binary"
-          "$binary" --help >/dev/null
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/isdbt_rio.inp" \
+            'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp?id=e981caea6ed33c48d25b7dbf473327dbd01df163'
+          echo '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818  '"$RUNNER_TEMP/isdbt_rio.inp" | sha256sum -c -
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+            https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
+          echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
+      - name: Assemble final Linux archives
+        run: |
+          set -eu
+          version=$(tr -d '\n' < VERSION)
+          mkdir -p candidate
+          scripts/package-artifact.sh --platform linux-x86_64 --version "$version" \
+            --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 \
+            --firmware "$RUNNER_TEMP/isdbt_rio.inp" \
+            --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir candidate
+          scripts/package-artifact.sh --platform linux-aarch64 --version "$version" \
+            --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-aarch64 \
+            --firmware "$RUNNER_TEMP/isdbt_rio.inp" \
+            --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir candidate
+          (cd candidate && sha256sum ./*.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-linux
+          path: candidate
+          if-no-files-found: error
 
-  linux-static-ubuntu-aarch64:
-    name: Linux aarch64 static startup (Ubuntu glibc)
-    needs: linux-static-aarch64
+  packaged-runtime-x86_64:
+    name: Final Linux x86_64 archive runtime smoke (Ubuntu glibc and Alpine musl)
+    needs: package-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: packaged-linux
+          path: candidate
+      - name: Start downloaded final archive on Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-x86_64.tar.gz' -type f -print -quit)" --architecture x86_64
+      - name: Start the same downloaded final archive on Alpine musl
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-x86_64.tar.gz" -type f -print -quit)" \
+                --architecture x86_64
+            '
+
+  packaged-runtime-aarch64:
+    name: Final Linux aarch64 archive runtime smoke (Ubuntu glibc and Alpine musl)
+    needs: package-linux
     runs-on: ubuntu-24.04-arm
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: bin-linux-aarch64
-          path: artifact
-      - name: Start exact produced binary
+          name: packaged-linux
+          path: candidate
+      - name: Start downloaded final archive on native arm64 Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-aarch64.tar.gz' -type f -print -quit)" --architecture aarch64
+      - name: Start the same downloaded final archive on native arm64 Alpine musl
         run: |
-          test "$(find artifact -type f -name siano-ts | wc -l)" -eq 1
-          binary=$(find artifact -type f -name siano-ts -print -quit)
-          chmod +x "$binary"
-          "$binary" --help >/dev/null
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit)" \
+                --architecture aarch64
+            '
 
   windows:
     name: Windows WinUSB x64

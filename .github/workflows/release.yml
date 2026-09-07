@@ -328,38 +328,60 @@ jobs:
           test "$(find candidate -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 7
           (cd candidate && sha256sum "${expected_names[@]}" > SHA256SUMS && sha256sum -c SHA256SUMS)
           test "$(wc -l < candidate/SHA256SUMS)" -eq 7
-      - name: Start the packaged x86_64 binary on Ubuntu glibc
-        run: |
-          archive=$(find candidate -name '*-linux-x86_64.tar.gz' -type f -print -quit)
-          tmp=$(mktemp -d)
-          tar -xzf "$archive" -C "$tmp"
-          "$tmp/siano-ts" --help >/dev/null
-      - name: Start the same packaged x86_64 binary on Alpine musl
-        run: |
-          docker run --rm -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" alpine:3.22 \
-            sh -euxc 'apk add --no-cache tar; archive=$(find /candidate -name "*-linux-x86_64.tar.gz" -type f -print -quit); tmp=$(mktemp -d); tar -xzf "$archive" -C "$tmp"; "$tmp/siano-ts" --help >/dev/null'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-candidate
           path: candidate
           if-no-files-found: error
 
-  packaged-runtime-aarch64:
-    name: Start packaged aarch64 binary on Ubuntu and Alpine
+  packaged-runtime-x86_64:
+    name: Final Linux x86_64 archive runtime smoke (Ubuntu glibc and Alpine musl)
     needs: package
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-candidate
           path: candidate
-      - name: Start the packaged binary on Ubuntu glibc arm64
+      - name: Start downloaded final archive on Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-x86_64.tar.gz' -type f -print -quit)" --architecture x86_64
+      - name: Start the same downloaded final archive on Alpine musl
         run: |
-          archive=$(find candidate -name '*-linux-aarch64.tar.gz' -type f -print -quit)
-          tmp=$(mktemp -d)
-          tar -xzf "$archive" -C "$tmp"
-          "$tmp/siano-ts" --help >/dev/null
-      - name: Start the same packaged binary on Alpine musl arm64
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-x86_64.tar.gz" -type f -print -quit)" \
+                --architecture x86_64
+            '
+
+  packaged-runtime-aarch64:
+    name: Final Linux aarch64 archive runtime smoke (Ubuntu glibc and Alpine musl)
+    needs: package
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate
+          path: candidate
+      - name: Start downloaded final archive on native arm64 Ubuntu glibc
+        run: scripts/test-packaged-linux.sh --archive "$(find candidate -name '*-linux-aarch64.tar.gz' -type f -print -quit)" --architecture aarch64
+      - name: Start the same downloaded final archive on native arm64 Alpine musl
         run: |
-          docker run --rm -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" alpine:3.22 \
-            sh -euxc 'apk add --no-cache tar; archive=$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit); tmp=$(mktemp -d); tar -xzf "$archive" -C "$tmp"; "$tmp/siano-ts" --help >/dev/null'
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/candidate:ro" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache tar
+              /repo/scripts/test-packaged-linux.sh \
+                --archive "$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit)" \
+                --architecture aarch64
+            '
