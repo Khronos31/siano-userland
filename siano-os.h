@@ -19,6 +19,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
+/* libusb's public event APIs use struct timeval.  WinSock2 is the
+ * Windows SDK definition of that type and must precede windows.h. */
+#include <winsock2.h>
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>

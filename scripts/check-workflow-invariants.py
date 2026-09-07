@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Check invariants for Alpine environments that rebuild the Linux binary."""
+"""Check invariants for release workflows and Linux build environments."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BUILD_CONTAINERS = {"ci.yml": 2, "release.yml": 4}
 STATIC_JOB_IDS = {"ci.yml": "linux-static-x86_64", "release.yml": "linux-static"}
+WINDOWS_CI_JOB_ID = "windows"
 
 
 def workflow_job(text: str, job_id: str) -> str:
@@ -30,6 +31,21 @@ def build_container_blocks(text: str) -> list[str]:
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
         blocks.append(text[match.start():end])
     return blocks
+
+
+def check_windows_ci(text: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        job = workflow_job(text, WINDOWS_CI_JOB_ID)
+    except ValueError as error:
+        return [f"ci.yml: {error}"]
+    if "runs-on: windows-2022" not in job:
+        errors.append("ci.yml: Windows job must use windows-2022")
+    if "nmake /f Makefile.win" not in job:
+        errors.append("ci.yml: Windows job must compile Makefile.win")
+    if "libusb-1.0.30.7z" not in job:
+        errors.append("ci.yml: Windows job must fetch pinned libusb 1.0.30 package")
+    return errors
 
 
 def check_workflow(path: Path) -> list[str]:
@@ -62,11 +78,12 @@ def main() -> int:
     errors: list[str] = []
     for workflow in EXPECTED_BUILD_CONTAINERS:
         errors.extend(check_workflow(ROOT / ".github/workflows" / workflow))
+    errors.extend(check_windows_ci((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")))
     if errors:
         for error in errors:
             print(f"workflow invariant: {error}", file=sys.stderr)
         return 1
-    print("workflow invariant: Alpine Linux build containers include linux-headers")
+    print("workflow invariant: Alpine Linux headers and Windows CI build are present")
     return 0
 
 
