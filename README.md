@@ -55,6 +55,8 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 ### Linux の USB デバイス権限
 
+Linux ディストリビューション別の実機検証済み構成例は [Linux環境別の検証済み構成例](docs/platforms/README.md) を参照してください。
+
 Linux では実行ユーザーに USB デバイスノードの読み書き権限が必要です。権限がない場合は `libusb_open: LIBUSB_ERROR_ACCESS` になります。udev を使う環境では、対象 ID だけを許可するルール例を `/etc/udev/rules.d/70-siano-userland.rules` に置けます。
 
 ```udev
@@ -79,21 +81,7 @@ sudo udevadm control --reload-rules
 
 #### Alpine Linux / BusyBox mdev
 
-以下は root shell で実行します。配布アーカイブの hotplug ルールだけを、Alpine の汎用 `$MODALIAS`/USB ルールより前に `/etc/mdev.conf` の先頭へ追加してください。helper と OpenRC の `.start` script は root でインストールします。
-
-```sh
-addgroup <実行ユーザー> video
-install -d -m 0755 /usr/local/libexec /usr/local/share /etc/local.d
-install -m 0755 mdev/siano-ts-mdev.sh /usr/local/libexec/siano-ts-mdev
-install -m 0755 mdev/siano-ts-mdev.start /etc/local.d/siano-ts-mdev.start
-install -m 0644 mdev/siano-ts-mdev.conf /usr/local/share/siano-ts-mdev.conf
-vi /etc/mdev.conf
-rc-update add local default
-mdev -s
-/usr/local/libexec/siano-ts-mdev --scan
-```
-
-`vi /etc/mdev.conf` では `/usr/local/share/siano-ts-mdev.conf` の hotplug ルールを先頭へ追加します。OpenRC の `local` は boot 時に `mdev -s` の後で `--scan` を実行します。`ls -l /dev/bus/usb/001/008` などで対象ノードが `root video`・`0660` になったことを確認してください。`siano-ts` 自体は `video` group の通常ユーザーで実行し、root は使いません。再接続時は hotplug ルールが反映されます。
+Alpine Linux（BusyBox mdev、コールドプラグスキャンヘルパー、OpenRC）での実機検証済み手順は [Alpine Linux の構成例](docs/platforms/alpine-mdev.md) を参照してください。USB ノードのパーミッションや video グループの要件は上記と同様です。
 
 ## 最短の使用例
 
