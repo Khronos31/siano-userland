@@ -54,6 +54,30 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 - **Windows**: Zadig などを用いて対象チューナーのドライバを WinUSB に設定します。配布 zip ではルートに `siano-ts.exe` と `libusb-1.0.dll`、`firmware/` 配下に `isdbt_rio.inp` が配置されています。アーカイブの構成を保ったままルートをカレントディレクトリとして実行するか、`--firmware` でファームウェアのパスを明示します。
 - **Android (Termux)**: Termux 環境に実行ファイルとファームウェアを配置します。USB デバイスのオープンには `termux-usb` コマンドを使用します。
 
+### Linux の USB デバイス権限
+
+Linux では実行ユーザーに USB デバイスノードの読み書き権限が必要です。権限がない場合は `libusb_open: LIBUSB_ERROR_ACCESS` になります。udev を使う環境では、対象 ID だけを許可するルール例を `/etc/udev/rules.d/70-siano-userland.rules` に置けます。
+
+```udev
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3275", ATTR{idProduct}=="0080", MODE="0660", GROUP="video"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="187f", ATTR{idProduct}=="0600", MODE="0660", GROUP="video"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="187f", ATTR{idProduct}=="0302", MODE="0660", GROUP="video"
+```
+
+実行ユーザー（サービスなら `User=` で指定したユーザー）を `video` グループへ追加する例:
+
+```sh
+sudo usermod -aG video "$USER"
+```
+
+ルールを再読込する例:
+
+```sh
+sudo udevadm control --reload-rules
+```
+
+再読込後は既存のデバイスノードへ反映するため、チューナーを物理的に挿し直してください。`MODE="0666"` のような全ユーザー許可は推奨しません。権限設定後は常に `sudo` で実行する必要はありません。
+
 ## 最短の使用例
 
 ```sh
@@ -98,9 +122,9 @@ MPEG-TS ストリームデータは標準出力または `-o` で指定したフ
 
 ## 注意事項
 
-### Linux でのスレッド優先度とメモリロック
+### Linux での任意の性能最適化
 
-Linux では、USB イベントスレッドで `SCHED_FIFO` リアルタイムスケジューリングおよび `mlockall` によるメモリロックを試みます。実行ユーザーに権限 (`CAP_SYS_NICE` / `CAP_IPC_LOCK`) がない場合は標準エラー出力に警告が出力されますが、通常優先度で処理を継続します。警告が出力された場合でも致命的なエラーではありません。
+USB ノードの読み書き権限とは別に、Linux では USB イベントスレッドの `SCHED_FIFO` リアルタイムスケジューリング (`CAP_SYS_NICE` または適切な `RLIMIT_RTPRIO`) と `mlockall` によるメモリロック (`CAP_IPC_LOCK` または十分な `RLIMIT_MEMLOCK`) を任意の最適化として試みます。これらがなくても警告を出して通常優先度・通常のメモリ管理で処理を継続し、致命的なエラーにはなりません。
 
 ### PID フィルタの ACK 応答
 
