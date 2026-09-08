@@ -511,12 +511,14 @@ static void try_realtime(pthread_t thread, int priority, const char *name)
 {
 #ifdef SCHED_FIFO
     struct sched_param param;
+    int return_code;
 
     memset(&param, 0, sizeof(param));
     param.sched_priority = priority;
-    if (pthread_setschedparam(thread, SCHED_FIFO, &param) != 0)
+    return_code = pthread_setschedparam(thread, SCHED_FIFO, &param);
+    if (return_code != 0)
         fprintf(stderr, "%s SCHED_FIFO %d: %s (continuing)\n",
-                name, priority, strerror(errno));
+                name, priority, strerror(return_code));
     else
         fprintf(stderr, "%s running SCHED_FIFO %d\n", name, priority);
 #else
