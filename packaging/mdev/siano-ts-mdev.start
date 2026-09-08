@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# OpenRC local.d hook; mdev has already populated /dev at this runlevel.
+exec /usr/local/libexec/siano-ts-mdev --scan

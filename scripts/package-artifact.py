@@ -300,6 +300,8 @@ def main() -> int:
                 "notice_toolchain": "NOTICE.toolchain"}.items()}
         if args.platform.startswith("linux-"):
             copy_regular(build / "evidence/build.properties", stage / "evidence/build.properties")
+            for name in ("siano-ts-mdev.conf", "siano-ts-mdev.sh", "siano-ts-mdev.start"):
+                copy_regular(repo_root / "packaging/mdev" / name, stage / "mdev" / name)
         if args.platform == "windows-x64":
             package = args.windows_package.resolve()
             if not package.is_file() or sha256(package) != WINDOWS_LIBUSB_PACKAGE_SHA256:

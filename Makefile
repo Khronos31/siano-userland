@@ -33,6 +33,7 @@ test: siano-ts test-protocol test-stream-state
 	./test-protocol
 	./test-stream-state
 	./tests/test_cli.sh
+	./tests/test-mdev.sh
 
 packaging-test:
 	python3 scripts/audit-artifact.py --self-test

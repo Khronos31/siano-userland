@@ -49,6 +49,9 @@ COMMON = {
     "COPYING", "LICENCE.siano", "README.md", "REBUILD.md", "DEPENDENCY-NOTICE.txt",
     "firmware/isdbt_rio.inp", "manifest.json", "SHA256SUMS", "evidence/binary-audit.json",
 }
+LINUX_MDEV = {
+    "mdev/siano-ts-mdev.conf", "mdev/siano-ts-mdev.sh", "mdev/siano-ts-mdev.start",
+}
 LINUX_ARCHITECTURES = {"linux-x86_64": "x86_64", "linux-aarch64": "aarch64"}
 SOURCE_REQUIRED = {
     "BUILD-RELINK.md", "DEPENDENCY-NOTICE.txt", "README.md", "COPYING",
@@ -297,7 +300,7 @@ def expected_members(platform: str) -> set[str]:
         fail(f"platform is not packageable: {platform}")
     result = set(COMMON) | ({"siano-ts.exe"} if platform == "windows-x64" else {"siano-ts"})
     if platform in LINUX_ARCHITECTURES:
-        result |= {"libusb/COPYING", "evidence/build.properties"}
+        result |= {"libusb/COPYING", "evidence/build.properties"} | LINUX_MDEV
     elif platform.startswith("android"):
         result |= {
             "libusb/COPYING", f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2",
@@ -328,6 +331,20 @@ def verify_binary_archive_mode(modes: dict[str, int], binary_name: str, platform
     mode = modes.get(binary_name)
     if mode is None or not mode & 0o111:
         fail(f"{platform} archive binary is not executable: {binary_name}")
+
+
+def verify_linux_mdev_modes(modes: dict[str, int], platform: str) -> None:
+    if platform not in LINUX_ARCHITECTURES:
+        return
+    expected_modes = {
+        "mdev/siano-ts-mdev.conf": 0o644,
+        "mdev/siano-ts-mdev.sh": 0o755,
+        "mdev/siano-ts-mdev.start": 0o755,
+    }
+    for name, expected in expected_modes.items():
+        mode = modes.get(name)
+        if mode != expected:
+            fail(f"{platform} mdev file has mode {mode!r}, expected {expected:o}: {name}")
 
 
 def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str], platform: str) -> None:
@@ -387,6 +404,7 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         fail(f"archive name does not match platform/version: {path.name}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
     verify_binary_archive_mode(modes, binary_name, platform)
+    verify_linux_mdev_modes(modes, platform)
     if platform in LINUX_ARCHITECTURES or platform.startswith("android"):
         with tempfile.TemporaryDirectory(prefix="siano-archive-audit-") as temporary:
             binary = Path(temporary) / binary_name
@@ -850,6 +868,24 @@ def self_test() -> None:
             else:
                 fail(f"non-executable binary archive self-test did not fail: {platform}")
             verify_binary_archive_mode({"siano-ts": 0o755}, "siano-ts", platform)
+        for platform in sorted(LINUX_ARCHITECTURES):
+            if not LINUX_MDEV <= expected_members(platform):
+                fail(f"Linux mdev members missing from allowlist self-test: {platform}")
+            expected_mdev_modes = {
+                "mdev/siano-ts-mdev.conf": 0o644,
+                "mdev/siano-ts-mdev.sh": 0o755,
+                "mdev/siano-ts-mdev.start": 0o755,
+            }
+            verify_linux_mdev_modes(expected_mdev_modes, platform)
+            for name in expected_mdev_modes:
+                invalid_modes = dict(expected_mdev_modes)
+                invalid_modes[name] = 0o600 if name.endswith(".conf") else 0o744
+                try:
+                    verify_linux_mdev_modes(invalid_modes, platform)
+                except AuditError:
+                    pass
+                else:
+                    fail(f"invalid mdev mode self-test did not fail: {platform}: {name}")
         verify_binary_archive_mode({"siano-ts.exe": 0o644}, "siano-ts.exe", "windows-x64")
     try:
         parse_json(b'{"a":1,"a":2}', "duplicate-json")
