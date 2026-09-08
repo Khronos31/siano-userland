@@ -51,6 +51,22 @@ def check_windows_ci(text: str) -> list[str]:
     return errors
 
 
+def check_macos_strip(text: str, path: Path) -> list[str]:
+    errors: list[str] = []
+    try:
+        job = workflow_job(text, "macos")
+    except ValueError as error:
+        return [f"{path}: {error}"]
+    if ("xcrun --find strip" not in job or "-S -x ./siano-ts" not in job or
+            "-N ./siano-ts" not in job):
+        errors.append(f"{path}: macOS job must use two-stage Apple strip")
+    if "./siano-ts --help" not in job:
+        errors.append(f"{path}: macOS job must smoke-test the stripped binary")
+    if "command -v otool" not in job or "command -v lipo" not in job:
+        errors.append(f"{path}: macOS job must verify native otool/lipo availability")
+    return errors
+
+
 def check_packaged_runtime(text: str, path: Path, job_id: str, artifact_name: str) -> list[str]:
     errors: list[str] = []
     try:
@@ -100,6 +116,8 @@ def check_ci_packaging(text: str, path: Path) -> list[str]:
         errors.append(f"{path}: {CI_PACKAGING_JOB_ID} must checkout before downloading build artifacts")
     if job.count("scripts/package-artifact.sh --platform linux-") != 2:
         errors.append(f"{path}: {CI_PACKAGING_JOB_ID} must assemble both Linux archives")
+    if "apt-get install" not in job or "binutils" not in job:
+        errors.append(f"{path}: {CI_PACKAGING_JOB_ID} lacks archive audit binutils")
     if "name: packaged-linux" not in job:
         errors.append(f"{path}: {CI_PACKAGING_JOB_ID} must upload packaged-linux")
     return errors
@@ -126,6 +144,8 @@ def check_workflow(path: Path) -> list[str]:
         apk_lines = re.findall(r"(?m)^\s*apk add[^\n]*", block)
         if not any("linux-headers" in line.split() for line in apk_lines):
             errors.append(f"{path}: Alpine build container {index} lacks linux-headers")
+        if not any("binutils" in line.split() for line in apk_lines):
+            errors.append(f"{path}: Alpine build container {index} lacks binutils (readelf/strip)")
         if "alpine:3.22" not in block:
             errors.append(f"{path}: Alpine build container {index} is not pinned to alpine:3.22")
     return errors
@@ -137,10 +157,12 @@ def main() -> int:
         errors.extend(check_workflow(ROOT / ".github/workflows" / workflow))
     errors.extend(check_windows_ci((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")))
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    errors.extend(check_macos_strip(ci, ROOT / ".github/workflows/ci.yml"))
     errors.extend(check_ci_packaging(ci, ROOT / ".github/workflows/ci.yml"))
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    errors.extend(check_macos_strip(release, ROOT / ".github/workflows/release.yml"))
     for job_id in RC_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(release, ROOT / ".github/workflows/release.yml", job_id, "release-candidate"))
     if errors:

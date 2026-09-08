@@ -63,6 +63,26 @@ fi
 dump_hdr=$("$readelf_bin" -h "$bin")
 dump_prog=$("$readelf_bin" -l "$bin")
 dump_dyn=$("$readelf_bin" -d "$bin")
+dump_sections=$("$readelf_bin" -SW "$bin")
+
+# Release ELF policy: retain runtime/dynamic and unwind metadata, but never
+# ship DWARF or the regular linker's symbol table.  The same rule is enforced
+# by audit-artifact.py for archive inputs.
+if printf '%s\n' "$dump_sections" | awk '
+/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+/ {
+	name=$3
+	if (name ~ /^\.debug/ || name ~ /^\.zdebug/ || name == ".symtab") {
+		print name
+		bad=1
+	}
+}
+END { exit bad }
+'; then
+	:
+else
+	echo "Android release ELF contains forbidden debug/symbol section" >&2
+	exit 1
+fi
 
 echo "$dump_hdr"
 echo "$dump_prog"

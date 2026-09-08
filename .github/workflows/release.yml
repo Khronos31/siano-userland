@@ -108,10 +108,16 @@ jobs:
           persist-credentials: false
       - name: Build and audit
         run: |
+          command -v otool
+          command -v lipo
           brew install libusb pkgconf
           libusb_prefix=$(brew --prefix libusb)
           export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make test
+          strip_bin=$(xcrun --find strip)
+          "$strip_bin" -S -x ./siano-ts
+          "$strip_bin" -N ./siano-ts
+          ./siano-ts --help >/dev/null
           mkdir -p evidence
           scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
             --source-ref "$GITHUB_SHA" \
@@ -278,6 +284,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Install archive audit tools
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y binutils python3
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: bin-*

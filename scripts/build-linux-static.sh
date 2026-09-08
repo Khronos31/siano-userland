@@ -165,6 +165,12 @@ case "$compiler_target" in
 	*musl*) ;;
 	*) echo "a musl-targeting compiler is required (got: $compiler_target)" >&2; exit 1 ;;
 esac
+strip_bin=${STRIP:-strip}
+strip_bin=$(command -v "$strip_bin" 2>/dev/null || true)
+if [ -z "$strip_bin" ] || [ ! -x "$strip_bin" ]; then
+	echo "target-native strip is required (set STRIP or install binutils)" >&2
+	exit 1
+fi
 
 provided_archive=
 if [ -n "${LIBUSB_SOURCE_ARCHIVE:-}" ]; then
@@ -250,6 +256,8 @@ env -i \
 mkdir -p "$build_root/evidence"
 cp -f "$root/siano-ts" "$build_root/siano-ts"
 chmod 755 "$build_root/siano-ts"
+"$strip_bin" --strip-unneeded "$build_root/siano-ts"
+"$build_root/siano-ts" --help >/dev/null
 make -C "$root" clean
 
 cat > "$build_root/evidence/build.properties" <<EOF

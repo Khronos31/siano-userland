@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -386,11 +387,14 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         fail(f"archive name does not match platform/version: {path.name}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
     verify_binary_archive_mode(modes, binary_name, platform)
-    if platform in LINUX_ARCHITECTURES:
+    if platform in LINUX_ARCHITECTURES or platform.startswith("android"):
         with tempfile.TemporaryDirectory(prefix="siano-archive-audit-") as temporary:
             binary = Path(temporary) / binary_name
             binary.write_bytes(payloads[binary_name])
-            audit_linux_static_binary(binary, platform)
+            if platform in LINUX_ARCHITECTURES:
+                audit_linux_static_binary(binary, platform)
+            else:
+                audit_elf_release_sections(binary, platform)
     if sha256_bytes(payloads["firmware/isdbt_rio.inp"]) != FIRMWARE_SHA256:
         fail("firmware SHA256 does not match the pinned input")
     if sha256_bytes(payloads["LICENCE.siano"]) != FIRMWARE_LICENSE_SHA256:
@@ -462,7 +466,12 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
             fail("Windows libusb notice does not identify the bundled DLL")
         if f"siano-ts-{manifest['version']}-source.tar.gz" not in payloads["libusb/NOTICE.txt"].decode("utf-8"):
             fail("Windows libusb notice does not point to the corresponding project source archive")
-        audit_pe_x64_bytes(payloads[binary_name], binary_name)
+        for name in payloads:
+            if name.lower().endswith(".pdb"):
+                fail(f"Windows package contains a bundled PDB: {name}")
+        audit_pe_x64_bytes(payloads[binary_name], binary_name, reject_debug_payload=True)
+        # The pinned upstream DLL is intentionally not rewritten or subjected
+        # to the project EXE's CodeView policy.
         audit_pe_x64_bytes(payloads["libusb-1.0.dll"], "libusb-1.0.dll")
     else:
         if manifest.get("architecture") != "arm64" or manifest.get("linkage") != "dynamic" or \
@@ -485,24 +494,120 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> str:
     return result.stdout
 
 
-def audit_pe_x64_bytes(data: bytes, label: str) -> None:
+def _pe_rva_to_file_offset(data: bytes, rva: int, sections: list[tuple[int, int, int, int]],
+                           label: str) -> int:
+    for virtual_address, virtual_size, raw_size, raw_offset in sections:
+        span = max(virtual_size, raw_size)
+        if virtual_address <= rva < virtual_address + span:
+            offset = raw_offset + rva - virtual_address
+            if offset < 0 or offset > len(data):
+                break
+            return offset
+    fail(f"Windows PE RVA is not backed by file data: {label}")
+
+
+def _pe_debug_types(data: bytes, pe_offset: int, optional_size: int, label: str) -> tuple[set[int], list[str]]:
+    optional = pe_offset + 24
+    if optional_size < 112 or optional + optional_size > len(data):
+        fail(f"Windows PE optional header is truncated: {label}")
+    number_of_directories = int.from_bytes(data[optional + 108:optional + 112], "little")
+    coff = pe_offset + 4
+    section_count = int.from_bytes(data[coff + 2:coff + 4], "little")
+    section_table = optional + optional_size
+    section_end = section_table + section_count * 40
+    if section_end > len(data):
+        fail(f"Windows PE section table is truncated: {label}")
+    sections: list[tuple[int, int, int, int]] = []
+    section_names: list[str] = []
+    for index in range(section_count):
+        section = section_table + index * 40
+        raw_name = data[section:section + 8].split(b"\0", 1)[0]
+        section_names.append(raw_name.decode("ascii", errors="replace"))
+        sections.append((
+            int.from_bytes(data[section + 12:section + 16], "little"),
+            int.from_bytes(data[section + 8:section + 12], "little"),
+            int.from_bytes(data[section + 16:section + 20], "little"),
+            int.from_bytes(data[section + 20:section + 24], "little"),
+        ))
+    if number_of_directories <= 6:
+        return set(), section_names
+    directory = optional + 112 + 6 * 8
+    if directory + 8 > optional + optional_size:
+        fail(f"Windows PE debug data directory is truncated: {label}")
+    debug_rva = int.from_bytes(data[directory:directory + 4], "little")
+    debug_size = int.from_bytes(data[directory + 4:directory + 8], "little")
+    if not debug_rva and not debug_size:
+        return set(), section_names
+    if not debug_rva or debug_size < 28 or debug_size % 28:
+        fail(f"Windows PE debug directory is malformed: {label}")
+
+    debug_offset = _pe_rva_to_file_offset(data, debug_rva, sections, label)
+    debug_end = debug_offset + debug_size
+    if debug_end > len(data):
+        fail(f"Windows PE debug directory exceeds file: {label}")
+    debug_types: set[int] = set()
+    for offset in range(debug_offset, debug_end, 28):
+        values = struct.unpack_from("<IIHHIIII", data, offset)
+        debug_type, size_of_data, address_of_raw_data, pointer_to_raw_data = values[4:]
+        debug_types.add(debug_type)
+        if size_of_data:
+            if pointer_to_raw_data + size_of_data > len(data):
+                fail(f"Windows PE debug payload exceeds file: {label}")
+            if address_of_raw_data:
+                _pe_rva_to_file_offset(data, address_of_raw_data, sections, label)
+    return debug_types, section_names
+
+
+def audit_pe_x64_bytes(data: bytes, label: str, *, reject_debug_payload: bool = False) -> None:
     if len(data) < 0x40 or data[:2] != b"MZ":
         fail(f"Windows binary is not an MZ executable: {label}")
     pe_offset = int.from_bytes(data[0x3c:0x40], "little")
     if pe_offset < 0 or pe_offset + 24 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0":
         fail(f"Windows binary has no PE signature: {label}")
     machine = int.from_bytes(data[pe_offset + 4:pe_offset + 6], "little")
+    symbol_table_pointer = int.from_bytes(data[pe_offset + 12:pe_offset + 16], "little")
+    symbol_count = int.from_bytes(data[pe_offset + 16:pe_offset + 20], "little")
     optional_magic = int.from_bytes(data[pe_offset + 24:pe_offset + 26], "little")
     if machine != 0x8664 or optional_magic != 0x20B:
         fail(f"Windows binary is not PE32+ x64: {label}")
+    debug_types, section_names = _pe_debug_types(
+        data, pe_offset, int.from_bytes(data[pe_offset + 20:pe_offset + 22], "little"), label
+    )
+    if reject_debug_payload:
+        if symbol_table_pointer or symbol_count:
+            fail(f"project Windows executable contains a COFF symbol table: {label}")
+        if 2 in debug_types:
+            fail(f"project Windows executable contains a CodeView/PDB debug record: {label}")
+        if 17 in debug_types:
+            fail(f"project Windows executable contains an embedded debug payload: {label}")
+        if any(name.startswith(".debug$") for name in section_names):
+            fail(f"project Windows executable contains embedded debug sections: {label}")
 
 
-def audit_pe_x64(path: Path) -> None:
-    audit_pe_x64_bytes(path.read_bytes(), str(path))
+def audit_pe_x64(path: Path, *, reject_debug_payload: bool = False) -> None:
+    if reject_debug_payload:
+        bundled_pdbs = [candidate for candidate in path.parent.iterdir()
+                        if candidate.is_file() and candidate.suffix.lower() == ".pdb"]
+        if bundled_pdbs:
+            fail(f"project Windows executable has bundled PDB files: {', '.join(map(str, bundled_pdbs))}")
+    audit_pe_x64_bytes(path.read_bytes(), str(path), reject_debug_payload=reject_debug_payload)
+
+
+def audit_elf_section_text(section_headers: str, label: str) -> None:
+    if "Section Headers:" not in section_headers and "There are no sections in this file." not in section_headers:
+        fail(f"ELF section-header output is malformed: {label}")
+    names: list[str] = []
+    for line in section_headers.splitlines():
+        match = re.match(r"^\s*\[\s*\d+\]\s+(\S+)", line)
+        if match:
+            names.append(match.group(1))
+    for name in names:
+        if name.startswith((".debug", ".zdebug")) or name == ".symtab":
+            fail(f"ELF release binary contains forbidden debug/symbol section {name}: {label}")
 
 
 def audit_linux_elf_text(header: str, dynamic: str, program_headers: str,
-                         platform: str, label: str) -> None:
+                         platform: str, label: str, section_headers: str = "") -> None:
     machine_patterns = {
         "linux-x86_64": r"Machine:\s+(?:Advanced Micro Devices X86-64|AMD x86-64)",
         "linux-aarch64": r"Machine:\s+AArch64",
@@ -518,6 +623,7 @@ def audit_linux_elf_text(header: str, dynamic: str, program_headers: str,
         fail(f"Linux static binary contains PT_INTERP: {label}")
     if re.search(r"\(NEEDED\)|Shared library:", dynamic):
         fail(f"Linux static binary contains DT_NEEDED: {label}")
+    audit_elf_section_text(section_headers, label)
 
 
 def audit_linux_static_binary(path: Path, platform: str) -> None:
@@ -527,7 +633,29 @@ def audit_linux_static_binary(path: Path, platform: str) -> None:
     header = run([readelf, "-h", str(path)])
     dynamic = run([readelf, "-d", str(path)])
     program_headers = run([readelf, "-lW", str(path)])
-    audit_linux_elf_text(header, dynamic, program_headers, platform, str(path))
+    sections = run([readelf, "-SW", str(path)])
+    audit_linux_elf_text(header, dynamic, program_headers, platform, str(path), sections)
+
+
+def audit_elf_release_sections(path: Path, label: str) -> None:
+    readelf = shutil.which("readelf") or shutil.which("llvm-readelf")
+    if not readelf:
+        fail("readelf or llvm-readelf is required")
+    audit_elf_section_text(run([readelf, "-SW", str(path)]), label)
+
+
+def audit_darwin_load_commands(load_commands: str, label: str) -> None:
+    if re.search(r"(?m)^\s*segname\s+__DWARF\s*$", load_commands):
+        fail(f"macOS binary contains DWARF sections: {label}")
+    blocks = re.findall(r"(?ms)^Load command \d+\n.*?(?=^Load command \d+\n|\Z)", load_commands)
+    symtab = [block for block in blocks if re.search(r"(?m)^\s*cmd\s+LC_SYMTAB\s*$", block)]
+    if len(symtab) != 1:
+        fail(f"macOS binary must contain exactly one LC_SYMTAB: {label}")
+    match = re.search(r"(?m)^\s*nsyms\s+(\d+)\s*$", symtab[0])
+    if match is None:
+        fail(f"macOS LC_SYMTAB has no nsyms field: {label}")
+    if int(match.group(1)) != 0:
+        fail(f"macOS binary contains symbols (nsyms={match.group(1)}): {label}")
 
 
 def write_json(path: Path, value: object) -> None:
@@ -556,7 +684,8 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
         header = run([readelf, "-h", str(path)])
         dynamic = run([readelf, "-d", str(path)])
         program_headers = run([readelf, "-lW", str(path)])
-        audit_linux_elf_text(header, dynamic, program_headers, platform, str(path))
+        sections = run([readelf, "-SW", str(path)])
+        audit_linux_elf_text(header, dynamic, program_headers, platform, str(path), sections)
     elif platform == "darwin-arm64":
         otool = shutil.which("otool")
         if not otool or "libusb-1.0" not in run([otool, "-L", str(path)]):
@@ -564,8 +693,9 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
         lipo = shutil.which("lipo")
         if not lipo or run([lipo, "-archs", str(path)]).split() != ["arm64"]:
             fail(f"macOS binary is not arm64-only: {path}")
+        audit_darwin_load_commands(run([otool, "-l", str(path)]), str(path))
     else:
-        audit_pe_x64(path)
+        audit_pe_x64(path, reject_debug_payload=True)
     evidence = {"schema": 2, "platform": platform, "source_ref": source_ref,
                 "binary": {"name": path.name, "sha256": sha256_file(path)}}
     if evidence_output:
@@ -708,8 +838,9 @@ def self_test() -> None:
     aarch64_header = "ELF Header:\n  Class: ELF64\n  Machine: AArch64\n"
     static_dynamic = "There is no dynamic section in this file.\n"
     static_program_headers = "Program Headers:\n"
+    static_section_headers = "Section Headers:\n"
     audit_linux_elf_text(aarch64_header, static_dynamic, static_program_headers,
-                         "linux-aarch64", "synthetic-aarch64")
+                         "linux-aarch64", "synthetic-aarch64", static_section_headers)
     try:
         audit_linux_elf_text(aarch64_header, "Dynamic section:\n  (NEEDED) Shared library: [libusb-1.0.so.0]\n",
                              static_program_headers, "linux-aarch64", "synthetic-dynamic")
@@ -733,6 +864,120 @@ def self_test() -> None:
         pass
     else:
         fail("aarch64 machine mismatch self-test did not fail")
+
+    stripped_release_sections = (
+        "Section Headers:\n"
+        "  [ 1] .text PROGBITS 00000000 000040 000010 00 AX 0 0 1\n"
+        "  [ 2] .dynsym DYNSYM 00000000 000050 000010 18 A 0 1 8\n"
+        "  [ 3] .eh_frame PROGBITS 00000000 000060 000010 00 A 0 0 8\n"
+    )
+    audit_elf_section_text(stripped_release_sections, "synthetic-stripped-release")
+    for forbidden in (".debug_info", ".zdebug_line", ".symtab"):
+        try:
+            audit_elf_section_text(
+                stripped_release_sections.replace(".text", forbidden, 1),
+                f"synthetic-{forbidden}",
+            )
+        except AuditError:
+            pass
+        else:
+            fail(f"forbidden ELF section self-test did not fail: {forbidden}")
+
+    compiler = shutil.which("cc") or shutil.which("clang")
+    readelf = shutil.which("readelf") or shutil.which("llvm-readelf")
+    strip = shutil.which("strip") or shutil.which("llvm-strip")
+    if compiler and readelf and strip:
+        with tempfile.TemporaryDirectory(prefix="siano-elf-audit-test-") as temporary:
+            fixture_root = Path(temporary)
+            source = fixture_root / "fixture.c"
+            unstripped = fixture_root / "unstripped"
+            stripped = fixture_root / "stripped"
+            source.write_text("int main(void) { return 0; }\n", encoding="ascii")
+            subprocess.run([compiler, "-g", "-O0", str(source), "-o", str(unstripped)], check=True)
+            if "ELF" in run([readelf, "-h", str(unstripped)]):
+                try:
+                    audit_elf_section_text(run([readelf, "-SW", str(unstripped)]), str(unstripped))
+                except AuditError:
+                    pass
+                else:
+                    fail("actual debug-bearing ELF self-test did not fail")
+                shutil.copyfile(unstripped, stripped)
+                subprocess.run([strip, "--strip-unneeded", str(stripped)], check=True)
+                audit_elf_section_text(run([readelf, "-SW", str(stripped)]), str(stripped))
+
+    def synthetic_pe(debug_type: int | None = None, coff_symbols: bool = False) -> bytes:
+        data = bytearray(0x500)
+        data[0:2] = b"MZ"
+        data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        data[0x80:0x84] = b"PE\0\0"
+        coff = 0x84
+        data[coff:coff + 2] = (0x8664).to_bytes(2, "little")
+        data[coff + 2:coff + 4] = (1).to_bytes(2, "little")
+        if coff_symbols:
+            data[coff + 8:coff + 12] = (0x400).to_bytes(4, "little")
+            data[coff + 12:coff + 16] = (1).to_bytes(4, "little")
+        data[coff + 16:coff + 18] = (0xF0).to_bytes(2, "little")
+        optional = coff + 20
+        data[optional:optional + 2] = (0x20B).to_bytes(2, "little")
+        data[optional + 108:optional + 112] = (16).to_bytes(4, "little")
+        if debug_type is not None:
+            directory = optional + 112 + 6 * 8
+            data[directory:directory + 4] = (0x1000).to_bytes(4, "little")
+            data[directory + 4:directory + 8] = (28).to_bytes(4, "little")
+        section = optional + 0xF0
+        data[section:section + 6] = b".rdata"
+        data[section + 8:section + 12] = (0x200).to_bytes(4, "little")
+        data[section + 12:section + 16] = (0x1000).to_bytes(4, "little")
+        data[section + 16:section + 20] = (0x200).to_bytes(4, "little")
+        data[section + 20:section + 24] = (0x200).to_bytes(4, "little")
+        if debug_type is not None:
+            data[0x200 + 12:0x200 + 16] = debug_type.to_bytes(4, "little")
+        return bytes(data)
+
+    audit_pe_x64_bytes(synthetic_pe(), "synthetic-stripped-windows", reject_debug_payload=True)
+    try:
+        audit_pe_x64_bytes(synthetic_pe(17), "synthetic-embedded-debug", reject_debug_payload=True)
+    except AuditError:
+        pass
+    else:
+        fail("embedded Windows debug self-test did not fail")
+    audit_pe_x64_bytes(synthetic_pe(2), "synthetic-upstream-dll-codeview")
+    try:
+        audit_pe_x64_bytes(synthetic_pe(2), "synthetic-project-codeview", reject_debug_payload=True)
+    except AuditError:
+        pass
+    else:
+        fail("project CodeView self-test did not fail")
+    for field in ("pointer", "count"):
+        try:
+            audit_pe_x64_bytes(
+                synthetic_pe(coff_symbols=True), f"synthetic-coff-{field}", reject_debug_payload=True
+            )
+        except AuditError:
+            pass
+        else:
+            fail(f"project COFF {field} self-test did not fail")
+    try:
+        audit_darwin_load_commands(
+            "Load command 1\n  segname __DWARF\n", "synthetic-dwarf"
+        )
+    except AuditError:
+        pass
+    else:
+        fail("macOS DWARF self-test did not fail")
+    audit_darwin_load_commands(
+        "Load command 1\n  cmd LC_SYMTAB\n  nsyms 0\n"
+        "Load command 2\n  segname __TEXT\n  sectname __text\n",
+        "synthetic-symbol-free",
+    )
+    try:
+        audit_darwin_load_commands(
+            "Load command 1\n  cmd LC_SYMTAB\n  nsyms 3\n", "synthetic-symbols"
+        )
+    except AuditError:
+        pass
+    else:
+        fail("macOS symbol-table self-test did not fail")
 
     binary_payloads = {"siano-ts": b"binary"}
     binary_manifest = {"platform": "linux-x86_64", "source_ref": "a" * 40}

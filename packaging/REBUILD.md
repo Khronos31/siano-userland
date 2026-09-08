@@ -9,7 +9,9 @@ this recipe as `BUILD-RELINK.md`.
 
 The Linux release binary is built in Alpine with the pinned libusb 1.0.30
 source. libusb is configured with udev disabled, so its Linux netlink backend
-is used. `repository/scripts/build-linux-static.sh` is the exact build script:
+is used. `repository/scripts/build-linux-static.sh` is the exact build script.
+The Alpine `binutils` package supplies the target-native `strip` and `readelf`
+tools required by the release policy:
 
 ```sh
 apk add --no-cache gcc make pkgconf musl-dev linux-headers python3 binutils curl tar bzip2
@@ -24,7 +26,9 @@ before building. The script passes `-static` to the final link and records the
 actual libusb source checksum and build options in
 `build/<target>/evidence/build.properties`. A release build must have no
 `PT_INTERP` and no `DT_NEEDED`; use `repository/scripts/audit-artifact.sh` to
-check the result.
+check the result. After the static-link and source-provenance checks, the
+script applies target-native `strip --strip-unneeded`, audits the result, and
+runs `siano-ts --help` before packaging.
 
 The static Linux executable includes libusb under the LGPL-2.1-or-later. The
 corresponding source archive includes the complete application source, the
@@ -74,3 +78,8 @@ The firmware is intentionally not part of a source archive. Obtain the
 separately licensed input from the pinned URL and verify its SHA256 before
 passing it to `--firmware`. The license text and its pinned URL/SHA256 are
 recorded in `LICENCE.siano` and `DEPENDENCY-NOTICE.txt`.
+
+The macOS distribution workflow applies Apple `strip -S -x` followed by
+`strip -N` to `siano-ts`,
+smoke-tests `siano-ts --help`, and then audits the Mach-O load commands for
+DWARF and local symbols.
