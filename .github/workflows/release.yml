@@ -110,13 +110,13 @@ jobs:
         run: |
           command -v otool
           command -v lipo
+          command -v nm
           brew install libusb pkgconf
           libusb_prefix=$(brew --prefix libusb)
           export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make test
           strip_bin=$(xcrun --find strip)
           "$strip_bin" -S -x ./siano-ts
-          "$strip_bin" -N ./siano-ts
           ./siano-ts --help >/dev/null
           mkdir -p evidence
           scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \

@@ -644,18 +644,47 @@ def audit_elf_release_sections(path: Path, label: str) -> None:
     audit_elf_section_text(run([readelf, "-SW", str(path)]), label)
 
 
-def audit_darwin_load_commands(load_commands: str, label: str) -> None:
+def audit_darwin_load_commands(load_commands: str, label: str) -> int:
     if re.search(r"(?m)^\s*segname\s+__DWARF\s*$", load_commands):
         fail(f"macOS binary contains DWARF sections: {label}")
     blocks = re.findall(r"(?ms)^Load command \d+\n.*?(?=^Load command \d+\n|\Z)", load_commands)
-    symtab = [block for block in blocks if re.search(r"(?m)^\s*cmd\s+LC_SYMTAB\s*$", block)]
-    if len(symtab) != 1:
-        fail(f"macOS binary must contain exactly one LC_SYMTAB: {label}")
-    match = re.search(r"(?m)^\s*nsyms\s+(\d+)\s*$", symtab[0])
+    dysymtab = [block for block in blocks if re.search(r"(?m)^\s*cmd\s+LC_DYSYMTAB\s*$", block)]
+    if len(dysymtab) != 1:
+        fail(f"macOS binary must contain exactly one LC_DYSYMTAB: {label}")
+    match = re.search(r"(?m)^\s*nlocalsym\s+(\d+)\s*$", dysymtab[0])
     if match is None:
-        fail(f"macOS LC_SYMTAB has no nsyms field: {label}")
-    if int(match.group(1)) != 0:
-        fail(f"macOS binary contains symbols (nsyms={match.group(1)}): {label}")
+        fail(f"macOS LC_DYSYMTAB has no nlocalsym field: {label}")
+    nlocalsym = int(match.group(1))
+    if nlocalsym > 1:
+        fail(f"macOS binary contains too many local symbols (nlocalsym={nlocalsym}): {label}")
+    return nlocalsym
+
+
+def audit_darwin_optional_symbol_text(nm_output: str, label: str) -> None:
+    lines = [line for line in nm_output.splitlines() if line.strip()]
+    radr_lines = [line for line in lines if "radr://" in line]
+    if len(radr_lines) != 1:
+        fail(f"macOS nlocalsym=1 must contain exactly one radr:// metadata symbol: {label}")
+    tokens = radr_lines[0].split()
+    if (not tokens or not re.fullmatch(r"radr://[0-9]+", tokens[-1]) or
+            len(tokens) > 6 or
+            any(not re.fullmatch(r"(?:[0-9A-Fa-f]+|[-?+]|OPT)", token)
+                for token in tokens[:-1])):
+        fail(f"macOS local symbol is not the permitted OPT radr:// metadata: {label}")
+    for line in lines:
+        tokens = line.split()
+        if (len(tokens) >= 3 and re.fullmatch(r"[0-9A-Fa-f]+", tokens[0]) and
+                len(tokens[1]) == 1 and tokens[1].islower()):
+            fail(f"macOS nlocalsym=1 contains a local function/source/debug symbol: {label}")
+
+
+def audit_darwin_binary(path: Path, otool: str, label: str) -> None:
+    nlocalsym = audit_darwin_load_commands(run([otool, "-l", str(path)]), label)
+    if nlocalsym == 1:
+        nm = shutil.which("nm")
+        if not nm:
+            fail("nm is required to validate macOS nlocalsym=1 metadata")
+        audit_darwin_optional_symbol_text(run([nm, "-ap", str(path)]), label)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -693,7 +722,7 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
         lipo = shutil.which("lipo")
         if not lipo or run([lipo, "-archs", str(path)]).split() != ["arm64"]:
             fail(f"macOS binary is not arm64-only: {path}")
-        audit_darwin_load_commands(run([otool, "-l", str(path)]), str(path))
+        audit_darwin_binary(path, otool, str(path))
     else:
         audit_pe_x64(path, reject_debug_payload=True)
     evidence = {"schema": 2, "platform": platform, "source_ref": source_ref,
@@ -966,18 +995,37 @@ def self_test() -> None:
     else:
         fail("macOS DWARF self-test did not fail")
     audit_darwin_load_commands(
-        "Load command 1\n  cmd LC_SYMTAB\n  nsyms 0\n"
+        "Load command 1\n  cmd LC_DYSYMTAB\n  nlocalsym 0\n"
         "Load command 2\n  segname __TEXT\n  sectname __text\n",
         "synthetic-symbol-free",
     )
     try:
         audit_darwin_load_commands(
-            "Load command 1\n  cmd LC_SYMTAB\n  nsyms 3\n", "synthetic-symbols"
+            "Load command 1\n  cmd LC_DYSYMTAB\n  nlocalsym 2\n", "synthetic-symbols"
         )
     except AuditError:
         pass
     else:
         fail("macOS symbol-table self-test did not fail")
+    audit_darwin_load_commands(
+        "Load command 1\n  cmd LC_DYSYMTAB\n  nlocalsym 1\n", "synthetic-radr"
+    )
+    audit_darwin_optional_symbol_text(
+        "0000000005614542 - 00 0000   OPT radr://5614542\n", "synthetic-radr"
+    )
+    for bad_nm in (
+            "0000000005614542 - 00 0000   OPT radr://5614542\n"
+            "0000000000000000 t _local_function\n",
+            "0000000005614542 - 00 0000   OPT radr://5614542\n"
+            "0000000005614542 - 00 0000   OPT radr://5678\n",
+            "0000000005614542 - 00 0000   OPT radr://not-a-number\n",
+            "0000000005614542 - 00 0000   N_OPT radr://5614542\n"):
+        try:
+            audit_darwin_optional_symbol_text(bad_nm, "synthetic-invalid-radr")
+        except AuditError:
+            pass
+        else:
+            fail("macOS optional local-symbol self-test did not fail")
 
     binary_payloads = {"siano-ts": b"binary"}
     binary_manifest = {"platform": "linux-x86_64", "source_ref": "a" * 40}

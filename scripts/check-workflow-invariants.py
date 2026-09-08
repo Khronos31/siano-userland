@@ -57,13 +57,15 @@ def check_macos_strip(text: str, path: Path) -> list[str]:
         job = workflow_job(text, "macos")
     except ValueError as error:
         return [f"{path}: {error}"]
-    if ("xcrun --find strip" not in job or "-S -x ./siano-ts" not in job or
-            "-N ./siano-ts" not in job):
-        errors.append(f"{path}: macOS job must use two-stage Apple strip")
+    if "xcrun --find strip" not in job or "-S -x ./siano-ts" not in job:
+        errors.append(f"{path}: macOS job must use Apple strip -S -x")
+    if "-N ./siano-ts" in job:
+        errors.append(f"{path}: macOS job must not use Apple strip -N")
     if "./siano-ts --help" not in job:
         errors.append(f"{path}: macOS job must smoke-test the stripped binary")
-    if "command -v otool" not in job or "command -v lipo" not in job:
-        errors.append(f"{path}: macOS job must verify native otool/lipo availability")
+    if ("command -v otool" not in job or "command -v lipo" not in job or
+            "command -v nm" not in job):
+        errors.append(f"{path}: macOS job must verify native otool/lipo/nm availability")
     return errors
 
 

@@ -233,12 +233,12 @@ jobs:
         run: |
           command -v otool
           command -v lipo
+          command -v nm
           libusb_prefix=$(brew --prefix libusb)
           export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make test
           strip_bin=$(xcrun --find strip)
           "$strip_bin" -S -x ./siano-ts
-          "$strip_bin" -N ./siano-ts
           ./siano-ts --help >/dev/null
           scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
             --source-ref "$GITHUB_SHA" --evidence-output evidence/binary-audit.json

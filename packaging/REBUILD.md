@@ -79,7 +79,7 @@ separately licensed input from the pinned URL and verify its SHA256 before
 passing it to `--firmware`. The license text and its pinned URL/SHA256 are
 recorded in `LICENCE.siano` and `DEPENDENCY-NOTICE.txt`.
 
-The macOS distribution workflow applies Apple `strip -S -x` followed by
-`strip -N` to `siano-ts`,
+The macOS distribution workflow applies Apple `strip -S -x` to `siano-ts`,
 smoke-tests `siano-ts --help`, and then audits the Mach-O load commands for
-DWARF and local symbols.
+DWARF and local symbols. It does not use `strip -N`, which removes all nlist
+entries and is not required for debug-symbol removal.
