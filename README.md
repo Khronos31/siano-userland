@@ -19,7 +19,6 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 ### 対応OS
 
 - **Linux** (glibc / musl; x86_64 / aarch64)
-  - aarch64 は対応（実機未検証）です。
 - **macOS**
 - **Android (Termux)** (aarch64 / armv7a)
   - Termux 用のコマンドライン実行ファイルです（Android 向け APK アプリケーションではありません）。
