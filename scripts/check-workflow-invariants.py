@@ -125,7 +125,7 @@ def check_ci_packaging(text: str, path: Path) -> list[str]:
     return errors
 
 
-def check_android_build_only(ci: str, release: str, audit: str, package: str) -> list[str]:
+def check_android_packageable(ci: str, release: str, audit: str, package: str) -> list[str]:
     errors: list[str] = []
     try:
         ci_job = workflow_job(ci, "android")
@@ -135,20 +135,49 @@ def check_android_build_only(ci: str, release: str, audit: str, package: str) ->
         release_job = workflow_job(release, "android")
     except ValueError as error:
         return [f"release.yml: {error}"]
+    try:
+        package_job = workflow_job(release, "package")
+    except ValueError as error:
+        return [f"release.yml: {error}"]
 
-    if "abi: x86_64" not in ci_job or "packageable: false" not in ci_job:
-        errors.append("ci.yml: Android matrix must include non-packageable x86_64")
-    if "scripts/build-android.sh" not in ci_job or "scripts/verify-android-elf.sh" not in ci_job:
-        errors.append("ci.yml: Android x86_64 must be built and verified")
+    if not re.search(r"(?ms)^\s*- abi: x86_64\s*\n\s*packageable: true\s*$", ci_job):
+        errors.append("ci.yml: Android x86_64 matrix entry must be packageable")
+    if "scripts/build-android.sh" not in ci_job or \
+            "scripts/audit-artifact.sh --platform android-${{ matrix.abi }}" not in ci_job:
+        errors.append("ci.yml: Android matrix must build and run the full artifact audit")
     upload_at = ci_job.find("uses: actions/upload-artifact@")
     if upload_at < 0 or "if: matrix.packageable" not in ci_job[max(0, upload_at - 160):upload_at]:
         errors.append("ci.yml: Android artifact upload must be conditional on packageable")
-    if "abi: x86_64" in release_job or "android-x86_64" in release:
-        errors.append("release.yml: Android x86_64 must remain build-only")
-    if "android-x86_64" in audit:
-        errors.append("audit-artifact.py: Android x86_64 must not be packageable")
-    if "android-x86_64" in package:
-        errors.append("package-artifact.py: Android x86_64 must not be packageable")
+    if "packageable: false" in ci_job:
+        errors.append("ci.yml: Android matrix must not retain a build-only ABI")
+
+    if not re.search(r"abi:\s*\[aarch64, armv7a, x86_64\]", release_job):
+        errors.append("release.yml: Android release matrix must include all three ABIs")
+    if "scripts/build-android.sh" not in release_job or \
+            "scripts/audit-artifact.sh --platform android-${{ matrix.abi }}" not in release_job:
+        errors.append("release.yml: Android release matrix must build and run the full artifact audit")
+    release_upload_at = release_job.find("uses: actions/upload-artifact@")
+    if release_upload_at < 0 or "name: bin-android-${{ matrix.abi }}" not in release_job[release_upload_at:]:
+        errors.append("release.yml: Android release matrix must upload each audited artifact")
+
+    if "android" not in package_job.split("needs:", 1)[-1].split("runs-on:", 1)[0]:
+        errors.append("release.yml: package job must depend on the Android artifact job")
+    if "actions/download-artifact@" not in package_job or "pattern: bin-*" not in package_job:
+        errors.append("release.yml: package job must download the Android build artifacts")
+    if package_job.count("scripts/package-artifact.sh --platform android-") != 3:
+        errors.append("release.yml: package job must assemble all three Android archives")
+    if "scripts/package-artifact.sh --platform android-x86_64" not in package_job:
+        errors.append("release.yml: package job must assemble android-x86_64")
+    if "siano-ts-$version-android-x86_64.tar.gz" not in package_job:
+        errors.append("release.yml: expected asset list must include android-x86_64")
+    if "-eq 8" not in package_job or "wc -l < candidate/SHA256SUMS)\" -eq 8" not in package_job:
+        errors.append("release.yml: release candidate and SHA256SUMS must each contain eight assets")
+    if "scripts/audit-artifact.sh --source-archive" not in package_job or "cmp -s" not in package_job:
+        errors.append("release.yml: package job must audit source and compare deterministic archives")
+    if "android-x86_64" not in audit:
+        errors.append("audit-artifact.py: Android x86_64 mapping/package support is missing")
+    if "android-x86_64" not in package:
+        errors.append("package-artifact.py: Android x86_64 metadata/package support is missing")
     return errors
 
 
@@ -191,7 +220,7 @@ def main() -> int:
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    errors.extend(check_android_build_only(
+    errors.extend(check_android_packageable(
         ci, release,
         (ROOT / "scripts/audit-artifact.py").read_text(encoding="utf-8"),
         (ROOT / "scripts/package-artifact.py").read_text(encoding="utf-8")))

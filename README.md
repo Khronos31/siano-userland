@@ -20,8 +20,9 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 - **Linux** (glibc / musl; x86_64 / aarch64)
 - **macOS**
-- **Android (Termux)** (aarch64 / armv7a)
+- **Android (Termux)** (aarch64 / armv7a / x86_64)
   - Termux 用のコマンドライン実行ファイルです（Android 向け APK アプリケーションではありません）。
+  - x86_64 は配布用アーカイブのビルド確認済みですが、実機では未検証です。
 - **Windows** (x64, WinUSB)
 
 ## 必要物
@@ -44,7 +45,7 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 - **Linux**: ソースビルドは glibc / musl に対応します。配布バイナリは libusb 1.0.30 を静的リンクした、libc 非依存のバイナリです。
 - **macOS**: `libusb` (libusb-1.0 共有ライブラリ)
-- **Android (Termux)**: 追加ランタイム不要 (Bionic 向けに libusb を静的リンク済み)
+- **Android (Termux)**: 追加ランタイム不要 (Bionic 向けに libusb を静的リンク済み)。配布対象 ABI は aarch64 / armv7a / x86_64 です。
 - **Windows**: WinUSB ドライバ、`libusb-1.0.dll` (配布アーカイブに同梱)
 
 ## 導入

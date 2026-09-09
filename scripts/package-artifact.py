@@ -332,6 +332,7 @@ def main() -> int:
             "darwin-arm64": ("arm64", "dynamic", "darwin"),
             "android-aarch64": ("aarch64", "static", "bionic"),
             "android-armv7a": ("armv7a", "static", "bionic"),
+            "android-x86_64": ("x86_64", "static", "bionic"),
             "windows-x64": ("x86_64", "dynamic", "windows"),
         }
         if args.platform in metadata:

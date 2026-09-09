@@ -96,7 +96,7 @@ if ! command -v strings >/dev/null 2>&1; then
 fi
 
 dump_hdr=$("$readelf_bin" -h "$bin")
-dump_prog=$("$readelf_bin" -l "$bin")
+dump_prog=$("$readelf_bin" -lW "$bin")
 dump_dyn=$("$readelf_bin" -d "$bin")
 dump_sections=$("$readelf_bin" -SW "$bin")
 
@@ -148,6 +148,25 @@ if [ "$interp" != "$want_interp" ]; then
 	echo "interpreter must be $want_interp, got: $interp" >&2
 	exit 1
 fi
+
+# Android 15 and newer x86_64 devices may use 16 KiB pages.  Release ELFs
+# must be link-compatible with that loader; require every loadable segment to
+# advertise the 16 KiB maximum page size recorded by the linker.
+load_alignments=$(printf '%s\n' "$dump_prog" | awk '$1 == "LOAD" { print $NF }')
+if [ -z "$load_alignments" ]; then
+	echo "no LOAD segments found" >&2
+	exit 1
+fi
+for alignment in $load_alignments; do
+	case "$alignment" in
+	0x4000|0x00004000)
+		;;
+	*)
+		echo "Android LOAD alignment must be 16 KiB (0x4000), got: $alignment" >&2
+		exit 1
+		;;
+	esac
+done
 
 needed=$(printf '%s\n' "$dump_dyn" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
 if [ -z "$needed" ]; then

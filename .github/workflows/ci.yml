@@ -256,7 +256,7 @@ jobs:
           - abi: armv7a
             packageable: true
           - abi: x86_64
-            packageable: false
+            packageable: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -274,15 +274,9 @@ jobs:
           ANDROID_ABI: ${{ matrix.abi }}
         run: |
           ./scripts/build-android.sh
-          if [ "${{ matrix.packageable }}" = true ]; then
-            scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
-              --binary build/android-${{ matrix.abi }}/siano-ts --source-ref "$GITHUB_SHA" \
-              --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
-          else
-            ANDROID_ABI="${{ matrix.abi }}" \
-              scripts/verify-android-elf.sh build/android-${{ matrix.abi }}/siano-ts \
-              "${{ matrix.abi }}" /system/bin/linker64
-          fi
+          scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+            --binary build/android-${{ matrix.abi }}/siano-ts --source-ref "$GITHUB_SHA" \
+            --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
           make packaging-test
       - if: matrix.packageable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

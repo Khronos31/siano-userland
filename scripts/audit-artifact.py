@@ -39,11 +39,32 @@ PLATFORMS = {
     "darwin-arm64": "darwin",
     "android-aarch64": "android",
     "android-armv7a": "android",
+    "android-x86_64": "android",
     "windows-x64": "windows",
 }
 PACKAGE_PLATFORMS = {
     "linux-x86_64", "linux-aarch64", "darwin-arm64", "android-aarch64",
-    "android-armv7a", "windows-x64"
+    "android-armv7a", "android-x86_64", "windows-x64"
+}
+ANDROID_ABI_METADATA = {
+    "android-aarch64": {
+        "abi": "aarch64",
+        "elf_class": "ELF64",
+        "machine": r"AArch64|AARCH64|ARM aarch64",
+        "interpreter": "/system/bin/linker64",
+    },
+    "android-armv7a": {
+        "abi": "armv7a",
+        "elf_class": "ELF32",
+        "machine": r"ARM|Arm",
+        "interpreter": "/system/bin/linker",
+    },
+    "android-x86_64": {
+        "abi": "x86_64",
+        "elf_class": "ELF64",
+        "machine": r"Advanced Micro Devices X86-64|AMD x86-64|X86-64|x86-64",
+        "interpreter": "/system/bin/linker64",
+    },
 }
 COMMON = {
     "COPYING", "LICENCE.siano", "README.md", "REBUILD.md", "DEPENDENCY-NOTICE.txt",
@@ -276,8 +297,8 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
             fail("manifest Linux libusb provenance/linkage mismatch")
     elif platform.startswith("android") or platform == "windows-x64":
         expected_metadata = {
-            "architecture": "aarch64" if platform == "android-aarch64" else
-            "armv7a" if platform == "android-armv7a" else "x86_64",
+            "architecture": ANDROID_ABI_METADATA[platform]["abi"]
+            if platform.startswith("android") else "x86_64",
             "linkage": "static" if platform.startswith("android") else "dynamic",
             "libc": "bionic" if platform.startswith("android") else "windows",
         }
@@ -371,7 +392,10 @@ def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str]
         if key in property_map:
             fail(f"duplicate Android property: {key}")
         property_map[key] = value
-    expected_abi = "aarch64" if platform == "android-aarch64" else "armv7a"
+    metadata = ANDROID_ABI_METADATA.get(platform)
+    if metadata is None:
+        fail(f"unsupported Android platform: {platform}")
+    expected_abi = metadata["abi"]
     if property_map.get("android_api") != "24" or property_map.get("android_abi") != expected_abi or \
             not property_map.get("ndk_revision", "").startswith("27.") or \
             property_map.get("libusb_version") != LIBUSB_VERSION or \
@@ -412,7 +436,7 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
             if platform in LINUX_ARCHITECTURES:
                 audit_linux_static_binary(binary, platform)
             else:
-                audit_elf_release_sections(binary, platform)
+                audit_android_binary(binary, platform, Path(__file__).resolve().parents[1])
     if sha256_bytes(payloads["firmware/isdbt_rio.inp"]) != FIRMWARE_SHA256:
         fail("firmware SHA256 does not match the pinned input")
     if sha256_bytes(payloads["LICENCE.siano"]) != FIRMWARE_LICENSE_SHA256:
@@ -662,6 +686,30 @@ def audit_elf_release_sections(path: Path, label: str) -> None:
     audit_elf_section_text(run([readelf, "-SW", str(path)]), label)
 
 
+def audit_android_binary(path: Path, platform: str, repo_root: Path) -> None:
+    metadata = ANDROID_ABI_METADATA.get(platform)
+    if metadata is None:
+        fail(f"unsupported Android platform: {platform}")
+    readelf = os.environ.get("READELF") or shutil.which("readelf") or shutil.which("llvm-readelf")
+    if not readelf:
+        fail("readelf or llvm-readelf is required")
+    header = run([readelf, "-h", str(path)])
+    program_headers = run([readelf, "-lW", str(path)])
+    if "ELF" not in header or not re.search(rf"Class:\s+{metadata['elf_class']}", header) or \
+            not re.search(rf"Machine:\s+{metadata['machine']}", header):
+        fail(f"Android binary has the wrong ELF class or machine: {path}")
+    interpreter = re.search(r"Requesting program interpreter:\s*([^\]\n]+)", program_headers)
+    if interpreter is None or interpreter.group(1) != metadata["interpreter"]:
+        fail(f"Android binary has the wrong interpreter: {path}")
+    alignments = re.findall(r"(?m)^\s*LOAD\s+.*\s(0x[0-9A-Fa-f]+)\s*$", program_headers)
+    if not alignments or any(int(alignment, 16) != 0x4000 for alignment in alignments):
+        fail(f"Android binary LOAD segments are not aligned to 16 KiB: {path}")
+    env = os.environ.copy()
+    env["ANDROID_PATH_MARKERS"] = str(path.parent.resolve())
+    run([str(repo_root / "scripts/verify-android-elf.sh"), str(path),
+         metadata["abi"], metadata["interpreter"]], env=env)
+
+
 def audit_darwin_load_commands(load_commands: str, label: str) -> int:
     if re.search(r"(?m)^\s*segname\s+__DWARF\s*$", load_commands):
         fail(f"macOS binary contains DWARF sections: {label}")
@@ -720,11 +768,7 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
     if not path.is_file() or path.is_symlink():
         fail(f"missing binary: {path}")
     if platform.startswith("android"):
-        expected = "/system/bin/linker64" if platform.endswith("aarch64") else "/system/bin/linker"
-        expected_abi = "aarch64" if platform == "android-aarch64" else "armv7a"
-        env = os.environ.copy()
-        env["ANDROID_PATH_MARKERS"] = str(path.parent.resolve())
-        run([str(repo_root / "scripts/verify-android-elf.sh"), str(path), expected_abi, expected], env=env)
+        audit_android_binary(path, platform, repo_root)
     elif platform.startswith("linux"):
         readelf = shutil.which("readelf") or shutil.which("llvm-readelf")
         if not readelf:
@@ -979,13 +1023,15 @@ def self_test() -> None:
             "#!/bin/sh\n"
             "set -eu\n"
             "case \"$2\" in\n"
-            "*android-aarch64) machine='AArch64'; interp=/system/bin/linker64 ;;\n"
-            "*android-armv7a) machine='ARM'; interp=/system/bin/linker ;;\n"
+            "*android-aarch64) elf_class=ELF64; machine='AArch64'; interp=/system/bin/linker64 ;;\n"
+            "*android-armv7a) elf_class=ELF32; machine='ARM'; interp=/system/bin/linker ;;\n"
+            "*android-x86_64) elf_class=ELF64; machine='Advanced Micro Devices X86-64'; interp=/system/bin/linker64 ;;\n"
             "*) exit 2 ;;\n"
             "esac\n"
+            "elf_class=${ANDROID_TEST_ELF_CLASS_OVERRIDE:-$elf_class}\n"
             "case \"$1\" in\n"
-            "-h) printf 'ELF Header:\\n  Type: DYN (Position-Independent Executable file)\\n  Machine: %s\\n' \"$machine\" ;;\n"
-            "-l) printf 'Program Headers:\\n      [Requesting program interpreter: %s]\\n' \"$interp\" ;;\n"
+            "-h) printf 'ELF Header:\\n  Class: %s\\n  Type: DYN (Position-Independent Executable file)\\n  Machine: %s\\n' \"$elf_class\" \"$machine\" ;;\n"
+            "-l|-lW) printf 'Program Headers:\\n  LOAD 0x0 0x0 0x0 0x0 0x0 R E 0x4000\\n      [Requesting program interpreter: %s]\\n' \"$interp\" ;;\n"
             "-d) printf 'Dynamic section:\\n  (NEEDED) Shared library: [liblog.so]\\n  (NEEDED) Shared library: [libdl.so]\\n  (NEEDED) Shared library: [libc.so]\\n' ;;\n"
             "-SW) printf 'Section Headers:\\n' ;;\n"
             "*) exit 2 ;;\n"
@@ -994,20 +1040,40 @@ def self_test() -> None:
         )
         fake_readelf.chmod(0o755)
         saved_android_abi = os.environ.pop("ANDROID_ABI", None)
+        saved_test_elf_class = os.environ.pop("ANDROID_TEST_ELF_CLASS_OVERRIDE", None)
         saved_readelf = os.environ.get("READELF")
         os.environ["READELF"] = str(fake_readelf)
         try:
+            fixtures = {}
             for platform, machine in (
                     ("android-aarch64", "AArch64"),
-                    ("android-armv7a", "ARM")):
+                    ("android-armv7a", "ARM"),
+                    ("android-x86_64", "Advanced Micro Devices X86-64")):
                 fixture = fixture_root / platform
                 fixture.write_text(f"{machine} fixture\n", encoding="ascii")
+                fixtures[platform] = fixture
                 audit_binary(fixture, platform, "a" * 40, repo_root)
+            for platform, wrong_class in (
+                    ("android-armv7a", "ELF64"),
+                    ("android-x86_64", "ELF32")):
+                os.environ["ANDROID_TEST_ELF_CLASS_OVERRIDE"] = wrong_class
+                try:
+                    audit_binary(fixtures[platform], platform, "a" * 40, repo_root)
+                except AuditError:
+                    pass
+                else:
+                    fail(f"Android ELF class self-test did not fail: {platform} as {wrong_class}")
+                finally:
+                    os.environ.pop("ANDROID_TEST_ELF_CLASS_OVERRIDE", None)
         finally:
             if saved_android_abi is None:
                 os.environ.pop("ANDROID_ABI", None)
             else:
                 os.environ["ANDROID_ABI"] = saved_android_abi
+            if saved_test_elf_class is None:
+                os.environ.pop("ANDROID_TEST_ELF_CLASS_OVERRIDE", None)
+            else:
+                os.environ["ANDROID_TEST_ELF_CLASS_OVERRIDE"] = saved_test_elf_class
             if saved_readelf is None:
                 os.environ.pop("READELF", None)
             else:

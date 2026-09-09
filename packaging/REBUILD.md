@@ -61,13 +61,16 @@ Android uses libusb 1.0.30 statically. The exact source archive is included as
 `DEPENDENCY-NOTICE.txt`, unpack it, and build with:
 
 ```sh
-./configure --host=aarch64-linux-android --disable-shared --enable-static \
+./configure --host=<android-abi>-linux-android --disable-shared --enable-static \
   --with-pic --disable-udev --disable-examples-build --disable-tests-build
 make
 ```
 
 Use the Android NDK API 24 clang target for the archive's ABI, pass the
 resulting `libusb-1.0.a` directly to the final link, and retain `-llog`.
+Use `aarch64` for `android-aarch64` or `x86_64` for `android-x86_64` in the
+`--host` placeholder above (for example, `x86_64-linux-android`). For
+`android-armv7a`, use the NDK target `armv7a-linux-androideabi` instead.
 The exact NDK revision is in `evidence/build.properties` and
 `DEPENDENCY-NOTICE.txt`. The matching NDK `source.properties`, `NOTICE`, and
 `NOTICE.toolchain` are copied byte-for-byte into `evidence/ndk/`. The

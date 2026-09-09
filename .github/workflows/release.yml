@@ -137,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi: [aarch64, armv7a]
+        abi: [aarch64, armv7a, x86_64]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -317,6 +317,7 @@ jobs:
             scripts/package-artifact.sh --platform darwin-arm64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-darwin-arm64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
             scripts/package-artifact.sh --platform android-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform android-armv7a --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-armv7a --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
+            scripts/package-artifact.sh --platform android-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform windows-x64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-windows-x64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --windows-package "$RUNNER_TEMP/libusb-1.0.30.7z" --output-dir "$out"
           }
           package_all candidate
@@ -328,14 +329,14 @@ jobs:
           source_archive="dist/rc-source/siano-ts-$version-source.tar.gz"
           cp "$source_archive" candidate/
           scripts/audit-artifact.sh --source-archive --archive "candidate/$(basename "$source_archive")"
-          expected="siano-ts-$version-linux-x86_64.tar.gz siano-ts-$version-linux-aarch64.tar.gz siano-ts-$version-darwin-arm64.tar.gz siano-ts-$version-android-aarch64.tar.gz siano-ts-$version-android-armv7a.tar.gz siano-ts-$version-windows-x64.zip siano-ts-$version-source.tar.gz"
+          expected="siano-ts-$version-linux-x86_64.tar.gz siano-ts-$version-linux-aarch64.tar.gz siano-ts-$version-darwin-arm64.tar.gz siano-ts-$version-android-aarch64.tar.gz siano-ts-$version-android-armv7a.tar.gz siano-ts-$version-android-x86_64.tar.gz siano-ts-$version-windows-x64.zip siano-ts-$version-source.tar.gz"
           read -r -a expected_names <<< "$expected"
           for name in "${expected_names[@]}"; do
             test -f "candidate/$name"
           done
-          test "$(find candidate -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 7
+          test "$(find candidate -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 8
           (cd candidate && sha256sum "${expected_names[@]}" > SHA256SUMS && sha256sum -c SHA256SUMS)
-          test "$(wc -l < candidate/SHA256SUMS)" -eq 7
+          test "$(wc -l < candidate/SHA256SUMS)" -eq 8
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-candidate
