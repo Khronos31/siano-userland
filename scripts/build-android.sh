@@ -1,8 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Cross-compile siano-ts for Termux (Bionic). ANDROID_ABI is aarch64
-# (linker64) or armv7a (linker). This is not a musl/glibc Linux binary.
+# Cross-compile siano-ts for Termux (Bionic). ANDROID_ABI is aarch64 or
+# x86_64 (linker64), or armv7a (linker). This is not a musl/glibc Linux
+# binary.
 # Host pkg-config, LIBRARY_PATH, LD_RUN_PATH, and shared libusb are kept
 # out of the link so /usr and the NDK sysroot never become DT_NEEDED/RPATH.
 # Prefix maps make the whole ELF reproducible with respect to the checkout,
@@ -17,6 +18,11 @@ aarch64)
 	autotools_host=aarch64-linux-android
 	want_interp=/system/bin/linker64
 	;;
+x86_64)
+	clang_triple=x86_64-linux-android${api}
+	autotools_host=x86_64-linux-android
+	want_interp=/system/bin/linker64
+	;;
 armv7a|armeabi-v7a|arm)
 	abi=armv7a
 	clang_triple=armv7a-linux-androideabi${api}
@@ -24,7 +30,7 @@ armv7a|armeabi-v7a|arm)
 	want_interp=/system/bin/linker
 	;;
 *)
-	echo "ANDROID_ABI must be aarch64 or armv7a, got: $abi" >&2
+	echo "ANDROID_ABI must be aarch64, x86_64, or armv7a, got: $abi" >&2
 	exit 1
 	;;
 esac
@@ -235,7 +241,7 @@ PATH="$host_path" \
 	READELF="$readelf_bin" \
 	ANDROID_ABI="$abi" \
 	ANDROID_PATH_MARKERS="$root $out $src $prefix $ndk" \
-	"$root/scripts/verify-android-elf.sh" "$out/siano-ts" "$want_interp"
+	"$root/scripts/verify-android-elf.sh" "$out/siano-ts" "$abi" "$want_interp"
 
 python3 "$root/scripts/android-link-inventory.py" \
 	--map "$out/siano-ts.map" --output "$out/static-link-inventory.tsv"

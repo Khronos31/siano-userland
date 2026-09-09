@@ -125,6 +125,33 @@ def check_ci_packaging(text: str, path: Path) -> list[str]:
     return errors
 
 
+def check_android_build_only(ci: str, release: str, audit: str, package: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        ci_job = workflow_job(ci, "android")
+    except ValueError as error:
+        return [f"ci.yml: {error}"]
+    try:
+        release_job = workflow_job(release, "android")
+    except ValueError as error:
+        return [f"release.yml: {error}"]
+
+    if "abi: x86_64" not in ci_job or "packageable: false" not in ci_job:
+        errors.append("ci.yml: Android matrix must include non-packageable x86_64")
+    if "scripts/build-android.sh" not in ci_job or "scripts/verify-android-elf.sh" not in ci_job:
+        errors.append("ci.yml: Android x86_64 must be built and verified")
+    upload_at = ci_job.find("uses: actions/upload-artifact@")
+    if upload_at < 0 or "if: matrix.packageable" not in ci_job[max(0, upload_at - 160):upload_at]:
+        errors.append("ci.yml: Android artifact upload must be conditional on packageable")
+    if "abi: x86_64" in release_job or "android-x86_64" in release:
+        errors.append("release.yml: Android x86_64 must remain build-only")
+    if "android-x86_64" in audit:
+        errors.append("audit-artifact.py: Android x86_64 must not be packageable")
+    if "android-x86_64" in package:
+        errors.append("package-artifact.py: Android x86_64 must not be packageable")
+    return errors
+
+
 def check_workflow(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     errors: list[str] = []
@@ -164,6 +191,10 @@ def main() -> int:
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    errors.extend(check_android_build_only(
+        ci, release,
+        (ROOT / "scripts/audit-artifact.py").read_text(encoding="utf-8"),
+        (ROOT / "scripts/package-artifact.py").read_text(encoding="utf-8")))
     errors.extend(check_macos_strip(release, ROOT / ".github/workflows/release.yml"))
     for job_id in RC_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(release, ROOT / ".github/workflows/release.yml", job_id, "release-candidate"))

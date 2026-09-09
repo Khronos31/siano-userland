@@ -5,32 +5,67 @@
 # absolute build/source/NDK path in any string-bearing ELF section.
 set -eu
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-	echo "usage: $0 <siano-ts> [linker64|linker]" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+	echo "usage: $0 <siano-ts> [abi] [linker64|linker]" >&2
 	exit 2
 fi
 
 bin=$1
-want_interp=${2:-}
 abi=${ANDROID_ABI:-aarch64}
-case "$want_interp" in
-'' )
-	case "$abi" in
-	aarch64) want_interp=/system/bin/linker64 ;;
-	armv7a|armeabi-v7a|arm) want_interp=/system/bin/linker ;;
+want_interp=
+if [ "$#" -eq 2 ]; then
+	case "$2" in
+	aarch64|x86_64|armv7a|armeabi-v7a|arm)
+		abi=$2
+		;;
+	linker64|/system/bin/linker64|linker|/system/bin/linker)
+		want_interp=$2
+		;;
 	*)
-		echo "unknown ANDROID_ABI=$abi (expected aarch64 or armv7a)" >&2
+		echo "second argument must be an ABI or interpreter, got: $2" >&2
 		exit 2
 		;;
 	esac
+elif [ "$#" -eq 3 ]; then
+	abi=$2
+	want_interp=$3
+fi
+
+case "$abi" in
+aarch64)
+	expected_machine='AArch64|AARCH64|ARM aarch64'
+	expected_interp=/system/bin/linker64
 	;;
-linker64|/system/bin/linker64) want_interp=/system/bin/linker64 ;;
-linker|/system/bin/linker) want_interp=/system/bin/linker ;;
+x86_64)
+	expected_machine='Advanced Micro Devices X86-64|AMD x86-64|X86-64|x86-64'
+	expected_interp=/system/bin/linker64
+	;;
+armv7a|armeabi-v7a|arm)
+	expected_machine='ARM|Arm'
+	expected_interp=/system/bin/linker
+	;;
 *)
-	echo "interpreter must be linker64 or linker, got: $want_interp" >&2
+	echo "unknown ANDROID_ABI=$abi (expected aarch64, x86_64, or armv7a)" >&2
 	exit 2
 	;;
 esac
+
+if [ -z "$want_interp" ]; then
+	want_interp=$expected_interp
+else
+	case "$want_interp" in
+	linker64|/system/bin/linker64) want_interp=/system/bin/linker64 ;;
+	linker|/system/bin/linker) want_interp=/system/bin/linker ;;
+	*)
+		echo "interpreter must be linker64 or linker, got: $want_interp" >&2
+		exit 2
+		;;
+	esac
+fi
+if [ "$want_interp" != "$expected_interp" ]; then
+	echo "$abi requires interpreter $expected_interp, got: $want_interp" >&2
+	exit 2
+fi
 
 if [ ! -f "$bin" ]; then
 	echo "missing binary: $bin" >&2
@@ -89,24 +124,9 @@ echo "$dump_prog"
 echo "$dump_dyn"
 
 machine=$(printf '%s\n' "$dump_hdr" | awk -F: '/Machine:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')
-if [ "$want_interp" = "/system/bin/linker64" ]; then
-	case "$machine" in
-	AArch64|AARCH64|"ARM aarch64")
-		;;
-	*)
-		echo "expected AArch64, got: $machine" >&2
-		exit 1
-		;;
-	esac
-else
-	case "$machine" in
-	ARM|Arm)
-		;;
-	*)
-		echo "expected 32-bit ARM, got: $machine" >&2
-		exit 1
-		;;
-	esac
+if ! printf '%s\n' "$machine" | grep -E -x -- "$expected_machine" >/dev/null; then
+	echo "expected $abi machine, got: $machine" >&2
+	exit 1
 fi
 
 type=$(printf '%s\n' "$dump_hdr" | awk -F: '/Type:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}')

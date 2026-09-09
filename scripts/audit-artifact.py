@@ -721,9 +721,10 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
         fail(f"missing binary: {path}")
     if platform.startswith("android"):
         expected = "/system/bin/linker64" if platform.endswith("aarch64") else "/system/bin/linker"
+        expected_abi = "aarch64" if platform == "android-aarch64" else "armv7a"
         env = os.environ.copy()
         env["ANDROID_PATH_MARKERS"] = str(path.parent.resolve())
-        run([str(repo_root / "scripts/verify-android-elf.sh"), str(path), expected], env=env)
+        run([str(repo_root / "scripts/verify-android-elf.sh"), str(path), expected_abi, expected], env=env)
     elif platform.startswith("linux"):
         readelf = shutil.which("readelf") or shutil.which("llvm-readelf")
         if not readelf:
@@ -969,6 +970,48 @@ def self_test() -> None:
                 shutil.copyfile(unstripped, stripped)
                 subprocess.run([strip, "--strip-unneeded", str(stripped)], check=True)
                 audit_elf_section_text(run([readelf, "-SW", str(stripped)]), str(stripped))
+
+    with tempfile.TemporaryDirectory(prefix="siano-android-audit-test-") as temporary:
+        fixture_root = Path(temporary)
+        repo_root = Path(__file__).resolve().parents[1]
+        fake_readelf = fixture_root / "readelf"
+        fake_readelf.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "case \"$2\" in\n"
+            "*android-aarch64) machine='AArch64'; interp=/system/bin/linker64 ;;\n"
+            "*android-armv7a) machine='ARM'; interp=/system/bin/linker ;;\n"
+            "*) exit 2 ;;\n"
+            "esac\n"
+            "case \"$1\" in\n"
+            "-h) printf 'ELF Header:\\n  Type: DYN (Position-Independent Executable file)\\n  Machine: %s\\n' \"$machine\" ;;\n"
+            "-l) printf 'Program Headers:\\n      [Requesting program interpreter: %s]\\n' \"$interp\" ;;\n"
+            "-d) printf 'Dynamic section:\\n  (NEEDED) Shared library: [liblog.so]\\n  (NEEDED) Shared library: [libdl.so]\\n  (NEEDED) Shared library: [libc.so]\\n' ;;\n"
+            "-SW) printf 'Section Headers:\\n' ;;\n"
+            "*) exit 2 ;;\n"
+            "esac\n",
+            encoding="ascii",
+        )
+        fake_readelf.chmod(0o755)
+        saved_android_abi = os.environ.pop("ANDROID_ABI", None)
+        saved_readelf = os.environ.get("READELF")
+        os.environ["READELF"] = str(fake_readelf)
+        try:
+            for platform, machine in (
+                    ("android-aarch64", "AArch64"),
+                    ("android-armv7a", "ARM")):
+                fixture = fixture_root / platform
+                fixture.write_text(f"{machine} fixture\n", encoding="ascii")
+                audit_binary(fixture, platform, "a" * 40, repo_root)
+        finally:
+            if saved_android_abi is None:
+                os.environ.pop("ANDROID_ABI", None)
+            else:
+                os.environ["ANDROID_ABI"] = saved_android_abi
+            if saved_readelf is None:
+                os.environ.pop("READELF", None)
+            else:
+                os.environ["READELF"] = saved_readelf
 
     def synthetic_pe(debug_type: int | None = None, coff_symbols: bool = False) -> bytes:
         data = bytearray(0x500)
