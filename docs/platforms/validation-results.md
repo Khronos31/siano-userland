@@ -27,9 +27,9 @@
 | Fedora 44 | `0315bd5609422748293bdde63e760c9e02a9cef8` | x86_64 / glibc / SELinux Enforcing。一般ユーザーでPX-S1UDの地上波27chを30秒受信、64,972,800 bytes / 345,600 packets、188-byte remainder 0、sync error 0、AVC拒否0。 | — |
 | FreeBSD 15.1-RELEASE | — | amd64。ソース修正なし、native buildと全testを実施。PX-S1UD 2台の単独・同時受信を確認。単独TSのalignment/sync/TEI 0、同時受信は両方exit 0。 | 現行Release対象外。 |
 | OpenWrt 25.12.5 | `0315bd5609422748293bdde63e760c9e02a9cef8` | x86_64 / musl 1.2.5 / procd。static/stripped成果物を使用。USB `3275:0080`。PX-S1UDで地上波27chを10秒受信、21,804,240 bytes / 115,980 packets、alignment/sync/TEI/continuity error 0。受信中切断で`LIBUSB_ERROR_IO`・exit 1・ハングなし。再接続後1回目の列挙で復帰し同条件の受信成功。 | OpenWrt向けソース修正なし。 |
+| Bliss OS（Android 13 API 33 / x86_64 / Bionic） | `2b73ec58a756d49b96402cc6f4c7a201132ffddc` | PX-S1UDを使用。CI成果物で地上波27chを10秒受信し21,800,480 bytes / 115,960 packets、native buildと全test成功後のnative binaryで30秒受信し64,972,800 bytes / 345,600 packets。いずれもalignment/sync/malformed/TEI/continuity error 0。受信中切断は`LIBUSB_ERROR_IO`・exit 1で有限終了し、プロセス残存なし。OS再起動なしの再接続後も受信成功。 | IP3 GT1、kernel 6.1.112-gloria-xanmod1、Termux 0.118.3。 |
 
 ## CIのみ
 
 - Linux x86_64/aarch64 × glibc/muslはbuild、artifact audit、最終archive起動をCIで確認。aarch64/muslのUSB実機は未確認。
-- Android x86_64はbuild、ELF検査、package監査、再現生成、relink試験まで確認。Bliss OS実機試験は未完了。
-
+- Android x86_64はbuild、ELF検査、package監査、再現生成、relink試験に加え、Bliss OS実機試験まで完了。
