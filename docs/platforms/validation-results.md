@@ -4,16 +4,17 @@
 
 ## 2026-09-12 現行CI候補（fix/release-symbol-stripping）
 
-- **ブランチ / コミット**: `fix/release-symbol-stripping`（`2cd91cd5681742603d07d3dd62d747eb2be3c7b0`、short `2cd91cd`）
-- **GitHub Actions**: run `34648405870`（全job success）
+- **ブランチ / 検証対象コミット**: ブランチ `fix/release-symbol-stripping`、build / baseline candidate commit `ee5c6b9047f5000b1ddc0c45792900b71d75ae42`（short `ee5c6b9`、Windows baseline固定）、reproducible build commit `d418f8bc85d3226a66ee1633044d6f282731af14`（short `d418f8b`）、runtime code candidate `2cd91cd5681742603d07d3dd62d747eb2be3c7b0`（short `2cd91cd`）
+- **GitHub Actions**: run `34654669361`（commit `ee5c6b9`）/ run `34654057294`（commit `d418f8b`）（いずれも全job success）
 - **変更内容**:
   - macOSにおけるTS continuity欠落バーストを抑止するため、`siano-ts.c`でmacOSのみ`MAX_URBS=128U`へ変更（他OSは従来の32Uを維持、commit `a4a914f`）。
-  - Windows環境でのQPC（QueryPerformanceCounter）からtimespecへの変換において、`counter * 1000000000` のuint64オーバーフローにより単調時計および受信時間（--time）判定が壊れる不具合を修正。回帰テストを追加（commit `2cd91cd`）。CI Windows jobではMSVC環境で`siano-ts.exe`のビルドおよび `--help` 起動確認を実施。単体回帰テスト（`test_clock`）はPOSIX環境の `make test` で実行し、Windows環境固有の時計挙動はGEEKOM A6実機検証（30s smoke, 30m soak）にて確認。
-  - 非Windows成果物（macOS arm64、Linux static x86_64/aarch64、Android 3 ABI）は直前コミット（`a4a914f`）とbyte-identical（同一バイナリ）。
+  - Windows環境でのQPC（QueryPerformanceCounter）からtimespecへの変換において、`counter * 1000000000` のuint64オーバーフローにより単調時計および受信時間（--time）判定が壊れる不具合を修正。回帰テストを追加（commit `2cd91cd`）。
+  - WindowsバイナリのPEタイムスタンプ差を解消するため、MSVCビルドに`/Brepro`を導入し、クリーン2回ビルド全バイト一致およびベースライン照合（`packaging/windows-baseline.sha256`）を行う再現可能ビルドを導入（commit `d418f8b`、`ee5c6b9`）。同一run内再現性とrun間一致（cross-run identity）を確認。
+  - 非Windows成果物（macOS arm64、Linux static x86_64/aarch64、Android 3 ABI）およびWindows `libusb-1.0.dll` はbyte-identical（同一バイナリ）。
 - **ファームウェア**: Android 3 ABI、macOS、Windowsの試験で使用したfirmware SHA-256は `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。
 - **検証概要**:
   - **macOS**: M2 Mac mini / macOS 26.6.2 / PX-S1UD / T22にて、CI生成macOSバイナリ（SHA-256 `23614737...`）の実機検証を実施。30秒受信および30分連続受信にてTSDuck continuity error 0、queue drop/libusb errorなし、正常終了を確認。受信中USB物理切断時の有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT正常終了（1秒以内）を確認。
-  - **Windows**: GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) / PX-S1UD (WinUSB) にて、CI生成Windowsバイナリ（EXE SHA-256 `b9a90cb6...`、DLL SHA-256 `7cbf37e7...`）の実機検証を実施。30秒smoke（exit 0）、30分連続受信（--time 1800にて約1800秒で自然終了、lock取得、queue drop/USB error 0、process残留0）、Ctrl+C終了、受信中物理切断時の有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、TSDuck continuity error 0）を確認。
+  - **Windows**: GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) / PX-S1UD (WinUSB) にて、再現可能ビルドexact CI artifact（実機試験元: run `34654057294` / commit `d418f8b`、commit `ee5c6b9` / run `34654669361`はcross-run byte-identical；EXE SHA-256 `dbdf7d69...`、DLL SHA-256 `7cbf37e7...`）の実機検証を実施。地上波T22を30秒受信し、64,769,760 bytes / 344,520 packets、alignment 0、sync 0、TEI 0、continuity error 0、malformed 0、exit 0、process残留0を確認。同一runtime sourceにおいて、先行するcommit `2cd91cd`の旧EXEによる30分連続受信（--time 1800にて約1800秒で自然終了、lock取得、queue drop/USB error 0、process残留0）、Ctrl+C終了、物理切断有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、continuity 0）が検証済み。
   - **Android**: Android 3 ABIバイナリ（Pixel 9a aarch64、Google TV Streamer armv7a、Bliss OS x86_64）は検証済みバイナリとbyte-identical。
   - 全プラットフォーム向けの統合 release-candidate archive の作成および最終ガバナンスは今後実施。
 
@@ -23,7 +24,8 @@
 | Google TV Streamer / Android 14 / Termux arm | armv7a / Bionic | `c0e19d928f7d4e26cacf3830f923c94fc041da32824ecbf08fd070413aef54fc` | PX-S1UDで地上波T22を受信（約31秒）。64,758,480 bytes / 344,460 packets。sync error 0、TEI 0、continuity error 0。exit 0、終了後process残留なし（バイナリ一致により証跡継承）。 | 実機受信確認済 |
 | Bliss OS / Termux | x86_64 / Bionic | `0db2e15cfaab035e70783645a6132078608581b8335b1acd894e98d694cde353` | 30分受信、signal、物理切断・再接続を検証した実機バイナリとexact match（詳細は既存の追加検証「Bliss OS」行参照、バイナリ一致により証跡継承）。 | 実機検証済バイナリと一致 |
 | M2 Mac mini / macOS 26.6.2 | arm64 | `23614737764d6a3ef0a2355b9ed204930e3a830384e31f03aaf09a623da6523f` | PX-S1UDで地上波T22を受信。exact CI artifactにて30秒受信および30分連続受信（drop output）を実施し、TSDuck continuity error 0、queue drop/libusb error 0、exit 0、process残留0。受信中物理切断時の有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT（1秒以内exit 0）を確認。 | 実機受信確認済 |
-| GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) | x86_64 / Windows (WinUSB) | EXE: `b9a90cb61127efeb7d64d96d259fe00c68be7da1e214bfb67b297fe34d66ffe6`<br>DLL: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7` | PX-S1UDで地上波T22を受信。exact CI artifactにて30秒smoke（exit 0）、30分連続受信（--time 1800にて約1800秒で自然終了、lock取得、queue drop/USB error 0、process残留0）。Ctrl+C終了、受信中物理切断時の有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、TSDuck continuity error 0）を確認。 | 実機受信確認済 |
+| GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) | x86_64 / Windows (WinUSB) | EXE: `dbdf7d6912ca60ffdce35bf65f5221a89d1a19c45b89bd32a04a86607995dc7f`<br>DLL: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7` | PX-S1UDで地上波T22を受信。再現可能ビルドexact CI artifact（実機試験元: run `34654057294` / commit `d418f8b`；commit `ee5c6b9` / run `34654669361`はcross-run byte-identical）にて30秒受信（64,769,760 bytes / 344,520 packets、alignment/sync/TEI/continuity/malformed 0、exit 0、process残留0）を確認。同一runtime sourceにおいて、先行する旧EXE（commit `2cd91cd`）による30分連続受信（約1800秒自然終了、drop/error 0）、Ctrl+C終了、物理切断有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、continuity 0）が検証済み。 | 実機受信確認済 |
+
 
 ## 2026-09-05 共通回帰
 
@@ -54,6 +56,8 @@
 | Latitude 5300 / AnduinOS（Linux標準Sianoドライバ参照比較） | kernel 7.0.0-31-generic | 同一PX-S1UD・T22でLinux標準smsusb/smsdvbによる約6分受信（recisdb 1.2.4、777,060,352 bytes / 4,133,299 packets、末尾140 bytes、SHA-256 `7656a9cf61e6de1da05505d204f5c612ea4bd3155a0826ddf869abfe2e73b892`）。sync loss 0、resync 0、TEI 0、malformed adaptation 0。packet index 4,116,021〜4,116,267（出力停止の約1.5秒前）に4 PID（273, 274, 2112, 2144）のcontinuity missing 9 event（計52 missing packets）を検出。短時間の複数PID burstという形態はmacOS userland（旧32 transfer時）と共通するが、発生量・PID数・位置は同等でなく原因は未特定。本比較時点ではmacOS判定を保留としたが、後続の転送深度調査（MAX_URBS=128U）およびexact CI artifact検証によりmacOSの実機検証は完了した。 | 参考比較用（siano-userlandバイナリではない） |
 | M2 Mac mini / macOS 26.6.2（macOS限定 MAX_URBS=128U exact CI artifact） | commit `2cd91cd` / `a4a914f`（CI build SHA-256: `23614737764d6a3ef0a2355b9ed204930e3a830384e31f03aaf09a623da6523f`） | PX-S1UD / T22 / firmware SHA-256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。macOSのみ`MAX_URBS=128U`とする修正後のexact CI成果物を使用。30秒受信（source/TSDuck/wait exit 0/0/0、continuity error 0）、30分連続受信（exit 0/0/0、TSDuck continuity error 0、queue drop/libusb errorなし、process残留0）。受信中物理切断時の有限終了（LIBUSB_ERROR_IO、exit 1、残留0）、再接続復帰、SIGINT（1秒以内exit 0）を確認。 | exact CI artifact実機検証完了。 |
 | GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343)（Windows単調時計修正 exact CI artifact） | commit `2cd91cd`（CI build EXE SHA-256: `b9a90cb61127efeb7d64d96d259fe00c68be7da1e214bfb67b297fe34d66ffe6`、DLL SHA-256: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7`） | PX-S1UD（WinUSB）/ T22 / firmware SHA-256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。単調時計修正後のexact CI成果物を使用。30秒smoke（exit 0）、30分soak（--time 1800にて約1800秒で自然終了、lock取得、queue drop/USB error 0、process残留0）、Ctrl+C終了、受信中物理切断時の有限終了（LIBUSB_ERROR_PIPE、exit 1、残留0）、再接続復帰（30秒TS取得exit 0、TSDuck continuity error 0）を確認。 | exact CI artifact実機検証完了。 |
+| GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343)（Windows再現可能ビルド exact CI artifact） | commit `d418f8b`（実機試験元、run `34654057294`）/ commit `ee5c6b9`（baseline固定、run `34654669361`、cross-run byte-identical）（CI build EXE SHA-256: `dbdf7d6912ca60ffdce35bf65f5221a89d1a19c45b89bd32a04a86607995dc7f`、DLL SHA-256: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7`） | PX-S1UD（WinUSB）/ T22 / firmware SHA-256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。MSVC `/Brepro`、2回クリーンビルド全バイト一致、ベースライン照合済みのexact CI成果物を使用。実機試験を実施した新exact artifactはrun `34654057294`（commit `d418f8b`）生成物（commit `ee5c6b9` / run `34654669361`とcross-run byte-identical）。30秒受信にて64,769,760 bytes / 344,520 packets、alignment 0、sync 0、TEI 0、continuity error 0、malformed 0、exit 0、process残留0を確認。同一runtime sourceに対しcommit `2cd91cd`旧EXEで30分soak検証済み。 | exact CI artifact実機検証完了。 |
+
 
 ## CIのみ
 
