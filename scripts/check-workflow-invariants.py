@@ -72,6 +72,27 @@ def check_windows_makefile(text: str) -> list[str]:
     return errors
 
 
+def check_windows_baseline(baseline: Path, helper: Path) -> list[str]:
+    errors: list[str] = []
+    try:
+        baseline_text = baseline.read_text(encoding="utf-8")
+    except OSError as error:
+        return [f"{baseline}: cannot read Windows baseline: {error}"]
+    if not re.fullmatch(r"[0-9a-f]{64}  siano-ts\.exe\n?", baseline_text):
+        errors.append(f"{baseline}: must contain one lowercase SHA-256 line for siano-ts.exe")
+    try:
+        helper_text = helper.read_text(encoding="utf-8")
+    except OSError as error:
+        return errors + [f"{helper}: cannot read Windows reproducibility helper: {error}"]
+    if "packaging/windows-baseline.sha256" not in helper_text.replace("\\", "/"):
+        errors.append(f"{helper}: must reference the Windows baseline file")
+    if "Get-FileHash" not in helper_text or "-Algorithm SHA256" not in helper_text:
+        errors.append(f"{helper}: must hash the generated EXE with SHA-256")
+    if "baselineHash" not in helper_text or "actualHash" not in helper_text:
+        errors.append(f"{helper}: must compare the generated hash with the baseline hash")
+    return errors
+
+
 def check_macos_strip(text: str, path: Path) -> list[str]:
     errors: list[str] = []
     try:
@@ -235,6 +256,9 @@ def main() -> int:
     for workflow in EXPECTED_BUILD_CONTAINERS:
         errors.extend(check_workflow(ROOT / ".github/workflows" / workflow))
     errors.extend(check_windows_makefile((ROOT / "Makefile.win").read_text(encoding="utf-8")))
+    errors.extend(check_windows_baseline(
+        ROOT / "packaging/windows-baseline.sha256",
+        ROOT / "scripts/reproducible-windows-build.ps1"))
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     errors.extend(check_windows(ci, ROOT / ".github/workflows/ci.yml"))
     errors.extend(check_macos_strip(ci, ROOT / ".github/workflows/ci.yml"))

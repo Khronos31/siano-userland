@@ -82,5 +82,22 @@ for ($index = 0; $index -lt $firstBytes.Length; $index++) {
     }
 }
 
-Copy-Item -LiteralPath $second -Destination (Join-Path $root 'siano-ts.exe') -Force
+$output = Join-Path $root 'siano-ts.exe'
+Copy-Item -LiteralPath $second -Destination $output -Force
+
+$baselinePath = Join-Path $root 'packaging/windows-baseline.sha256'
+if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
+    throw "Windows baseline file is missing: $baselinePath"
+}
+$baselineText = [System.IO.File]::ReadAllText($baselinePath).Trim()
+if ($baselineText -notmatch '^(?<hash>[0-9a-fA-F]{64})  siano-ts\.exe$') {
+    throw "Windows baseline file has invalid format: $baselinePath"
+}
+$baselineHash = $Matches['hash'].ToLowerInvariant()
+$actualHash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualHash -ne $baselineHash) {
+    throw "Windows build hash does not match baseline: $actualHash vs $baselineHash"
+}
+
 Write-Host "Windows clean builds are byte-identical ($($secondBytes.Length) bytes)"
+Write-Host "Windows build matches baseline SHA-256 $actualHash"
