@@ -48,8 +48,12 @@
 #define O_BINARY 0
 #endif
 
-/* 32 x 16KiB ≈ 250ms of 17Mbps in flight. Kernel smsusb uses 10 x 8KiB. */
+/* Use a deeper ring on macOS to absorb host-side callback stalls. */
+#if defined(__APPLE__)
+#define MAX_URBS 128U
+#else
 #define MAX_URBS 32U
+#endif
 #define USB_TRANSFER_SIZE 16384U
 #define TS_QUEUE_SLOTS 256U
 #define CONTROL_TIMEOUT_MS 10000U
