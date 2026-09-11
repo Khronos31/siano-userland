@@ -12,7 +12,7 @@ all: siano-ts.exe
 siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj
 	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj /link $(LIBS)
 
-siano-ts.obj: siano-ts.c protocol.h stream-state.h siano-os.h
+siano-ts.obj: siano-ts.c protocol.h stream-state.h siano-os.h siano-clock.h
 	$(CC) $(CFLAGS) /c siano-ts.c
 
 protocol.obj: protocol.c protocol.h

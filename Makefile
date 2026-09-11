@@ -24,13 +24,19 @@ test-protocol: tests/test_protocol.o protocol.o
 
 tests/test_protocol.o: tests/test_protocol.c protocol.h
 
+test-clock: tests/test_clock.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_clock.o: tests/test_clock.c siano-clock.h
+
 test-stream-state: tests/test_stream_state.o stream-state.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 tests/test_stream_state.o: tests/test_stream_state.c stream-state.h
 
-test: siano-ts test-protocol test-stream-state
+test: siano-ts test-protocol test-clock test-stream-state
 	./test-protocol
+	./test-clock
 	./test-stream-state
 	./tests/test_cli.sh
 	./tests/test-mdev.sh
@@ -44,4 +50,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-stream-state *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-clock test-stream-state *.o tests/*.o tests/.cli-error

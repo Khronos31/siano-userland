@@ -34,6 +34,7 @@
 #include <string.h>
 #include <time.h>
 #include <BaseTsd.h>
+#include "siano-clock.h"
 
 typedef SSIZE_T ssize_t;
 
@@ -89,15 +90,12 @@ static inline int siano_clock_gettime(int clock_id, struct timespec *ts)
     if (clock_id == CLOCK_MONOTONIC) {
         static LARGE_INTEGER freq;
         LARGE_INTEGER now;
-        unsigned long long ns;
 
         if (freq.QuadPart == 0)
             QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&now);
-        ns = (unsigned long long)now.QuadPart * 1000000000ULL /
-             (unsigned long long)freq.QuadPart;
-        ts->tv_sec = (time_t)(ns / 1000000000ULL);
-        ts->tv_nsec = (long)(ns % 1000000000ULL);
+        siano_qpc_to_timespec((uint64_t)now.QuadPart,
+                              (uint64_t)freq.QuadPart, ts);
         return 0;
     }
     {
