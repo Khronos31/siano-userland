@@ -219,6 +219,14 @@ jobs:
           .\siano-ts.exe --help | Out-Null
           New-Item -ItemType Directory -Force -Path evidence | Out-Null
           python scripts/audit-artifact.py --platform windows-x64 --binary siano-ts.exe --source-ref $env:GITHUB_SHA --evidence-output evidence\binary-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-windows-x64
+          path: |
+            siano-ts.exe
+            libusb-1.0.dll
+            evidence/binary-audit.json
+          if-no-files-found: error
 
   macos:
     name: macOS arm64
@@ -243,6 +251,13 @@ jobs:
           scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
             --source-ref "$GITHUB_SHA" --evidence-output evidence/binary-audit.json
           make packaging-test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bin-darwin-arm64
+          path: |
+            siano-ts
+            evidence/binary-audit.json
+          if-no-files-found: error
 
   android:
     name: Android (Termux ${{ matrix.abi }})
