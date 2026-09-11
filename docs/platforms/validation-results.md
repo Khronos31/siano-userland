@@ -2,6 +2,22 @@
 
 本ドキュメントは、特定のrevisionにおいて実施した実測記録であり、将来のバージョンやあらゆる動作環境における動作を保証するものではありません。
 
+## 2026-09-12 現行CI候補（fix/release-symbol-stripping）
+
+- **ブランチ / コミット**: `fix/release-symbol-stripping`（`40c78040f5d7e97f1deaae9824eda39b4a1585a6`）
+- **GitHub Actions**: run `34622036467`（全job success）
+- **変更内容**: 通常CIでmacOS/Windowsのraw artifactを保存する変更のみ。AndroidおよびLinuxの実行ファイルは直前コミット `f09abaeb9dd032b202e153b8b02a1fb0c381f5e1`（run `34446874994`）とbyte-identical。
+- **ファームウェア**: Android 3 ABIおよびmacOSの試験で使用したfirmware SHA-256は `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。
+- **留意点**: 全プラットフォーム向けの統合 release-candidate archive は未作成。macOSはPX-S1UD実受信（30分ファイル出力および10分named FIFO）を実施し、連続動作・有限終了・同期・TEI正常を確認したが、双方で複数PID同時の短いcontinuity欠落バーストを検出し、発生箇所・原因が未確定のためStable合格とは記載しない。Windowsの実受信は未完了のまま。
+
+| 環境 | arch/libc | 対象バイナリ SHA-256 | 確認内容 | 状態 |
+| --- | --- | --- | --- | --- |
+| Pixel 9a / Android 17 / Termux | aarch64 / Bionic | `5046f44a2c7b93abe07881bd0937169bd68cec6470d8995501e5832c6306a4ff` | PX-S1UDで地上波T22を受信（約31秒）。64,972,800 bytes / 345,600 packets。sync error 0、TEI 0、continuity error 0。exit 0、終了後process残留なし。 | 実機受信確認済 |
+| Google TV Streamer / Android 14 / Termux arm | armv7a / Bionic | `c0e19d928f7d4e26cacf3830f923c94fc041da32824ecbf08fd070413aef54fc` | PX-S1UDで地上波T22を受信（約31秒）。64,758,480 bytes / 344,460 packets。sync error 0、TEI 0、continuity error 0。exit 0、終了後process残留なし。 | 実機受信確認済 |
+| Bliss OS / Termux | x86_64 / Bionic | `0db2e15cfaab035e70783645a6132078608581b8335b1acd894e98d694cde353` | 30分受信、signal、物理切断・再接続を検証した実機バイナリとexact match（詳細は既存の追加検証「Bliss OS」行参照）。 | 実機検証済バイナリと一致 |
+| M2 Mac mini / macOS | arm64 | `d9e62767d4c44fa17b8529fb8870384648c83e9bde031b93fce0cf2a79587925` | current raw artifact保存、SHA確認。PX-S1UDで地上波T22を受信（30分ファイル出力）。出力3,884,847,040 bytes / 20,664,080 packets、188-byte remainder 0、sync error 0、TEI 0。exit 0、終了後process残留なし、`siano-ts` stderrにqueue drop/USB errorなし。TSDuck continuity pluginでmissing event 273、missing packet 1,398（23 PID、12個の短バースト）、ffprobeでPacket corrupt 26、PES packet size mismatch 10を検出。切り分けとして実施した30秒named FIFOはsiano-ts/TSDuck/waitすべてexit 0、continuity報告0。10分named FIFO再試験ではsiano-ts/TSDuck/waitすべてexit 0、queue drop/USB error記録なし、process残留なしの一方、TSDuckがmissing event 37、missing packet 198、15 PID（277.0秒と293.6秒の2短バースト）を検出。通常ファイルとFIFOの双方で多数PID同時の約16秒間隔バーストを再現したため出力先固有ではないが、発生箇所・原因は未確定（Stable未合格）。 | 実機受信完了（切り分け中） |
+| Windows | x86_64 | EXE: `9c644a41cab2f13af0b6cf49c8f4a22411ee173550ea4d5577d3162868a09b0f`<br>DLL: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7` | current raw artifact保存、SHA確認、実機上の `--help` 起動まで完了。PX-S1UD実受信は未完了。 | 実機起動確認済（実受信未完了） |
+
 ## 2026-09-05 共通回帰
 
 | 環境 | arch/libc | revision | 確認内容 |
