@@ -188,10 +188,11 @@ jobs:
           Copy-Item libusb-src\include\libusb.h libusb\include\libusb-1.0\
           Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.lib libusb\
           Copy-Item libusb-src\VS2022\MS64\dll\libusb-1.0.dll .
-      - name: Build and audit
+      - name: Build, prove reproducibility, and audit
         shell: pwsh
         run: |
-          nmake /f Makefile.win
+          .\scripts\reproducible-windows-build.ps1
+          .\siano-ts.exe --help | Out-Null
           New-Item -ItemType Directory -Force -Path evidence | Out-Null
           python scripts/audit-artifact.py --platform windows-x64 --binary siano-ts.exe --source-ref $env:GITHUB_SHA --evidence-output evidence\binary-audit.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

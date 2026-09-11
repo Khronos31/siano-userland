@@ -12,7 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BUILD_CONTAINERS = {"ci.yml": 2, "release.yml": 4}
 STATIC_JOB_IDS = {"ci.yml": "linux-static-x86_64", "release.yml": "linux-static"}
-WINDOWS_CI_JOB_ID = "windows"
+WINDOWS_JOB_ID = "windows"
 CI_PACKAGING_JOB_ID = "package-linux"
 CI_RUNTIME_JOB_IDS = {"packaged-runtime-x86_64", "packaged-runtime-aarch64"}
 RC_RUNTIME_JOB_IDS = {"packaged-runtime-x86_64", "packaged-runtime-aarch64"}
@@ -36,18 +36,39 @@ def build_container_blocks(text: str) -> list[str]:
     return blocks
 
 
-def check_windows_ci(text: str) -> list[str]:
+def check_windows(text: str, path: Path) -> list[str]:
     errors: list[str] = []
     try:
-        job = workflow_job(text, WINDOWS_CI_JOB_ID)
+        job = workflow_job(text, WINDOWS_JOB_ID)
     except ValueError as error:
-        return [f"ci.yml: {error}"]
+        return [f"{path}: {error}"]
     if "runs-on: windows-2022" not in job:
-        errors.append("ci.yml: Windows job must use windows-2022")
-    if "nmake /f Makefile.win" not in job:
-        errors.append("ci.yml: Windows job must compile Makefile.win")
+        errors.append(f"{path}: Windows job must use windows-2022")
+    if "reproducible-windows-build.ps1" not in job:
+        errors.append(f"{path}: Windows job must run the reproducibility helper")
+    if "siano-ts.exe --help" not in job:
+        errors.append(f"{path}: Windows job must smoke-test the second build")
+    if "audit-artifact.py --platform windows-x64" not in job:
+        errors.append(f"{path}: Windows job must audit the second build")
+    if "uses: actions/upload-artifact@" not in job or "name: bin-windows-x64" not in job:
+        errors.append(f"{path}: Windows job must upload the audited binary artifact")
+    helper_at = job.find("reproducible-windows-build.ps1")
+    help_at = job.find("siano-ts.exe --help")
+    audit_at = job.find("audit-artifact.py --platform windows-x64")
+    upload_at = job.find("uses: actions/upload-artifact@")
+    if not (0 <= helper_at < help_at < audit_at < upload_at):
+        errors.append(f"{path}: Windows reproducibility, smoke test, audit, and upload must be ordered")
     if "libusb-1.0.30.7z" not in job:
-        errors.append("ci.yml: Windows job must fetch pinned libusb 1.0.30 package")
+        errors.append(f"{path}: Windows job must fetch pinned libusb 1.0.30 package")
+    return errors
+
+
+def check_windows_makefile(text: str) -> list[str]:
+    errors: list[str] = []
+    if not re.search(r"(?m)^CFLAGS\s*=.*\s/Brepro(?:\s|$)", text):
+        errors.append("Makefile.win: CFLAGS must enable /Brepro")
+    if not re.search(r"(?m)^\s*\$\(CC\).*?/link\s+/Brepro(?:\s|$)", text):
+        errors.append("Makefile.win: link command must enable /Brepro")
     return errors
 
 
@@ -213,13 +234,15 @@ def main() -> int:
     errors: list[str] = []
     for workflow in EXPECTED_BUILD_CONTAINERS:
         errors.extend(check_workflow(ROOT / ".github/workflows" / workflow))
-    errors.extend(check_windows_ci((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")))
+    errors.extend(check_windows_makefile((ROOT / "Makefile.win").read_text(encoding="utf-8")))
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    errors.extend(check_windows(ci, ROOT / ".github/workflows/ci.yml"))
     errors.extend(check_macos_strip(ci, ROOT / ".github/workflows/ci.yml"))
     errors.extend(check_ci_packaging(ci, ROOT / ".github/workflows/ci.yml"))
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    errors.extend(check_windows(release, ROOT / ".github/workflows/release.yml"))
     errors.extend(check_android_packageable(
         ci, release,
         (ROOT / "scripts/audit-artifact.py").read_text(encoding="utf-8"),
