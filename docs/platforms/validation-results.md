@@ -2,10 +2,15 @@
 
 本ドキュメントは、特定のrevisionにおいて実施した実測記録であり、将来のバージョンやあらゆる動作環境における動作を保証するものではありません。
 
-## 2026-09-12 現行CI候補（fix/release-symbol-stripping）
+## 2026-09-12 v0.1.5 受入記録
 
-- **ブランチ / 検証対象コミット**: ブランチ `fix/release-symbol-stripping`、build / baseline candidate commit `ee5c6b9047f5000b1ddc0c45792900b71d75ae42`（short `ee5c6b9`、Windows baseline固定）、reproducible build commit `d418f8bc85d3226a66ee1633044d6f282731af14`（short `d418f8b`）、runtime code candidate `2cd91cd5681742603d07d3dd62d747eb2be3c7b0`（short `2cd91cd`）
-- **GitHub Actions**: run `34654669361`（commit `ee5c6b9`）/ run `34654057294`（commit `d418f8b`）（いずれも全job success）
+- **検証対象コミット / ベースライン**: branch `main`、commit `6c5715ca87f75adbf799253573afc84e2beb23d5` (short `6c5715c`)、VERSION `0.1.5`（実機試験済み runtime/packaging baseline）
+- **GitHub Actions**: Release candidate run `34682612787`（全15 job success）
+- **パッケージング・成果物監査**:
+  - 全7プラットフォームのバイナリアーカイブおよびソースアーカイブ（計8アーカイブ）の `SHA256SUMS` 照合・展開監査に成功。
+  - 7バイナリアーカイブの `manifest.json` は version `0.1.5`、`source_ref="6c5715c"`。展開されたバイナリ群は同runのraw artifactとバイト完全一致（byte-identical）。
+  - ソースアーカイブは `VERSION` 0.1.5、resolved commit `6c5715c`。
+  - Windows ZIP内の `siano-ts.exe` (SHA-256 `dbdf7d6912ca60ffdce35bf65f5221a89d1a19c45b89bd32a04a86607995dc7f`) および `libusb-1.0.dll` (SHA-256 `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7`) は固定ベースラインと一致し、pre-RCの再現可能ビルド成果物とバイト完全一致。
 - **変更内容**:
   - macOSにおけるTS continuity欠落バーストを抑止するため、`siano-ts.c`でmacOSのみ`MAX_URBS=128U`へ変更（他OSは従来の32Uを維持、commit `a4a914f`）。
   - Windows環境でのQPC（QueryPerformanceCounter）からtimespecへの変換において、`counter * 1000000000` のuint64オーバーフローにより単調時計および受信時間（--time）判定が壊れる不具合を修正。回帰テストを追加（commit `2cd91cd`）。
@@ -13,18 +18,19 @@
   - 非Windows成果物（macOS arm64、Linux static x86_64/aarch64、Android 3 ABI）およびWindows `libusb-1.0.dll` はbyte-identical（同一バイナリ）。
 - **ファームウェア**: Android 3 ABI、macOS、Windowsの試験で使用したfirmware SHA-256は `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`。
 - **検証概要**:
-  - **macOS**: M2 Mac mini / macOS 26.6.2 / PX-S1UD / T22にて、CI生成macOSバイナリ（SHA-256 `23614737...`）の実機検証を実施。30秒受信および30分連続受信にてTSDuck continuity error 0、queue drop/libusb errorなし、正常終了を確認。受信中USB物理切断時の有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT正常終了（1秒以内）を確認。
-  - **Windows**: GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) / PX-S1UD (WinUSB) にて、再現可能ビルドexact CI artifact（実機試験元: run `34654057294` / commit `d418f8b`、commit `ee5c6b9` / run `34654669361`はcross-run byte-identical；EXE SHA-256 `dbdf7d69...`、DLL SHA-256 `7cbf37e7...`）の実機検証を実施。地上波T22を30秒受信し、64,769,760 bytes / 344,520 packets、alignment 0、sync 0、TEI 0、continuity error 0、malformed 0、exit 0、process残留0を確認。同一runtime sourceにおいて、先行するcommit `2cd91cd`の旧EXEによる30分連続受信（--time 1800にて約1800秒で自然終了、lock取得、queue drop/USB error 0、process残留0）、Ctrl+C終了、物理切断有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、continuity 0）が検証済み。
-  - **Android**: Android 3 ABIバイナリ（Pixel 9a aarch64、Google TV Streamer armv7a、Bliss OS x86_64）は検証済みバイナリとbyte-identical。
-  - 全プラットフォーム向けの統合 release-candidate archive の作成および最終ガバナンスは今後実施。
+  - **macOS**: M2 Mac mini / macOS 26.6.2 / PX-S1UD / T22にて、final RC archiveを展開して30秒受信を実施。64,972,800 bytes / 345,600 packets、188-byte remainder 0、TSDuck continuity error 0、exit 0を確認。先行pre-RC exact CI artifactにおいて30秒受信および30分連続受信（TSDuck continuity error 0、queue drop/libusb errorなし、正常終了）、受信中USB物理切断時の有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT正常終了（1秒以内exit 0）が検証済み。
+  - **Windows**: GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) / PX-S1UD (WinUSB) にて、final RC ZIPを展開しZIP内exact EXEで検証を実施。1800秒soakにて自律終了（実測約1802秒、stderr上USB/queue error記録なし、終了後プロセス残留0。監視ラッパーExitCode欄null、外側command exit 0）、Ctrl+CでLASTEXITCODE 0およびプロセス残留0、受信中物理切断にて有限終了（約36秒でLIBUSB_ERROR_PIPE、exit 1、プロセス残留0）、OS再起動なしの再接続後30秒TS取得にて64,769,760 bytes / 344,520 packets、remainder 0、continuity error 0、exit 0、プロセス残留0を確認。先行pre-RC exact CI artifact（run `34654057294` / commit `d418f8b`等）とbyte-identicalであることを確認。
+  - **Android**: Pixel 9a (aarch64)、Google TV Streamer (armv7a)、Bliss OS (x86_64) にてfinal RC archiveを展開して実機受信検証を実施。3環境とも地上波T22の30秒取得にてremainder 0、continuity error 0、exit 0、プロセス残留0を確認。Bliss OSにおける30分連続受信、シグナル終了、物理切断有限終了・再接続復帰は先行検証済みバイナリとの完全一致により継承。
+  - **Linux**: final RC archiveをCI上でUbuntu glibcおよびAlpine musl（x86_64 / aarch64）の全4組合せで起動確認済み。各archの同一ランタイムバイナリ系統でLinux実機受信を検証済み。
+  - 全プラットフォーム向けの統合 release-candidate archive の作成・展開監査および各対象環境での受入試験は完了。
 
 | 環境 | arch/libc | 対象バイナリ SHA-256 | 確認内容 | 状態 |
 | --- | --- | --- | --- | --- |
-| Pixel 9a / Android 17 / Termux | aarch64 / Bionic | `5046f44a2c7b93abe07881bd0937169bd68cec6470d8995501e5832c6306a4ff` | PX-S1UDで地上波T22を受信（約31秒）。64,972,800 bytes / 345,600 packets。sync error 0、TEI 0、continuity error 0。exit 0、終了後process残留なし（バイナリ一致により証跡継承）。 | 実機受信確認済 |
-| Google TV Streamer / Android 14 / Termux arm | armv7a / Bionic | `c0e19d928f7d4e26cacf3830f923c94fc041da32824ecbf08fd070413aef54fc` | PX-S1UDで地上波T22を受信（約31秒）。64,758,480 bytes / 344,460 packets。sync error 0、TEI 0、continuity error 0。exit 0、終了後process残留なし（バイナリ一致により証跡継承）。 | 実機受信確認済 |
-| Bliss OS / Termux | x86_64 / Bionic | `0db2e15cfaab035e70783645a6132078608581b8335b1acd894e98d694cde353` | 30分受信、signal、物理切断・再接続を検証した実機バイナリとexact match（詳細は既存の追加検証「Bliss OS」行参照、バイナリ一致により証跡継承）。 | 実機検証済バイナリと一致 |
-| M2 Mac mini / macOS 26.6.2 | arm64 | `23614737764d6a3ef0a2355b9ed204930e3a830384e31f03aaf09a623da6523f` | PX-S1UDで地上波T22を受信。exact CI artifactにて30秒受信および30分連続受信（drop output）を実施し、TSDuck continuity error 0、queue drop/libusb error 0、exit 0、process残留0。受信中物理切断時の有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT（1秒以内exit 0）を確認。 | 実機受信確認済 |
-| GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) | x86_64 / Windows (WinUSB) | EXE: `dbdf7d6912ca60ffdce35bf65f5221a89d1a19c45b89bd32a04a86607995dc7f`<br>DLL: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7` | PX-S1UDで地上波T22を受信。再現可能ビルドexact CI artifact（実機試験元: run `34654057294` / commit `d418f8b`；commit `ee5c6b9` / run `34654669361`はcross-run byte-identical）にて30秒受信（64,769,760 bytes / 344,520 packets、alignment/sync/TEI/continuity/malformed 0、exit 0、process残留0）を確認。同一runtime sourceにおいて、先行する旧EXE（commit `2cd91cd`）による30分連続受信（約1800秒自然終了、drop/error 0）、Ctrl+C終了、物理切断有限終了（LIBUSB_ERROR_PIPE）、再接続復帰（30秒TS取得exit 0、continuity 0）が検証済み。 | 実機受信確認済 |
+| Pixel 9a / Android 17 / Termux | aarch64 / Bionic | `5046f44a2c7b93abe07881bd0937169bd68cec6470d8995501e5832c6306a4ff` | final RC archiveを展開しPX-S1UDで地上波T22を30秒受信。64,766,000 bytes / 344,500 packets、remainder 0、continuity error 0、exit 0、終了後プロセス残留0。先行バイナリ受信（約31秒、64,972,800 bytes / 345,600 packets、エラー0）の証跡を継承。 | final RC実機受信確認済 |
+| Google TV Streamer / Android 14 / Termux arm | armv7a / Bionic | `c0e19d928f7d4e26cacf3830f923c94fc041da32824ecbf08fd070413aef54fc` | final RC archiveを展開しPX-S1UDで地上波T22を30秒受信。64,747,200 bytes / 344,400 packets、remainder 0、continuity error 0、exit 0、終了後プロセス残留0。先行バイナリ受信（約31秒、64,758,480 bytes / 344,460 packets、エラー0）の証跡を継承。 | final RC実機受信確認済 |
+| Bliss OS / Termux | x86_64 / Bionic | `0db2e15cfaab035e70783645a6132078608581b8335b1acd894e98d694cde353` | final RC archiveを展開しPX-S1UDで地上波T22を30秒受信。64,972,800 bytes / 345,600 packets、remainder 0、continuity error 0、exit 0、終了後プロセス残留0（初回USB permission時間切れ後、Termux前景で再試行成功、残留0）。先行バイナリでの30分受信、シグナル、物理切断・再接続の検証証跡を継承。 | final RC実機受信確認済 |
+| M2 Mac mini / macOS 26.6.2 | arm64 | `23614737764d6a3ef0a2355b9ed204930e3a830384e31f03aaf09a623da6523f` | final RC archiveを展開しPX-S1UDで地上波T22を30秒受信。64,972,800 bytes / 345,600 packets、188-byte remainder 0、TSDuck continuity error 0、exit 0。先行pre-RC exact CI artifactでの30秒受信、30分連続受信（TSDuck continuity error 0、queue drop/libusb error 0、残留0）、物理切断有限終了（LIBUSB_ERROR_IO）、再接続復帰、SIGINT（1秒以内exit 0）の検証証跡を継承。 | final RC実機受信確認済 |
+| GEEKOM A6 / Windows 11 Pro Insider Preview 25H2 (build 26220.9343) | x86_64 / Windows (WinUSB) | EXE: `dbdf7d6912ca60ffdce35bf65f5221a89d1a19c45b89bd32a04a86607995dc7f`<br>DLL: `7cbf37e76dae9c840c7e8dbf7348ee8897dcc86c8ba45e46ada60b89411569f7` | final RC ZIPを展開しZIP内exact EXEでPX-S1UD（WinUSB）の実機検証を実施。1800秒soak自律終了（実測約1802秒、stderr上USB/queue error記録なし、終了後プロセス残留0。監視ラッパーExitCode欄null、外側command exit 0）、Ctrl+C終了（LASTEXITCODE 0、残留0）、物理切断有限終了（約36秒でLIBUSB_ERROR_PIPE、exit 1、残留0）、OS再起動なしの再接続後30秒TS取得（64,769,760 bytes / 344,520 packets、remainder 0、continuity error 0、exit 0、残留0）。pre-RC再現可能ビルド成果物とバイト完全一致。 | final RC実機受信確認済 |
 
 
 ## 2026-09-05 共通回帰
