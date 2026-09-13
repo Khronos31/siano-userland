@@ -58,6 +58,14 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 Linux ディストリビューション別の実機検証済み構成例は [Linux環境別の検証済み構成例](docs/platforms/README.md) を参照してください。
 
+> [!WARNING]
+> Linux標準の`smsusb`へ一度bindされたチューナーを、稼働中に`siano-ts`へ切り替える運用は
+> 安全と判定していません。チューナーを接続する前またはboot時から、`smsusb`、`smsdvb`、
+> `smsmdtv`が対象機器を所有しない構成にしてください。すでにbind済みの場合はlive handoffに
+> 頼らず、blacklistを反映して再起動してください。これはUSB deviceの所有権に関する問題で、
+> AppArmorやSELinuxの設定とは別です。詳細は[AppArmor文書の競合説明](docs/platforms/apparmor.md#smsusbとの競合)を
+> 参照してください。
+
 Linux では実行ユーザーに USB デバイスノードの読み書き権限が必要です。権限がない場合は `libusb_open: LIBUSB_ERROR_ACCESS` になります。udev を使う環境では、対象 ID だけを許可するルール例を `/etc/udev/rules.d/70-siano-userland.rules` に置けます。
 
 ```udev
@@ -88,6 +96,11 @@ Alpine Linux（BusyBox mdev、コールドプラグスキャンヘルパー、Op
 
 自作profileで拘束する場合のUSB node、capability、`smsusb`との競合に関する実機検証結果は
 [AppArmorで実行する際の注意](docs/platforms/apparmor.md)を参照してください。
+
+#### SELinux
+
+Fedora 44 / SELinux Enforcingで残っている検証要約と、その証明範囲・再検証時の確認項目は
+[Fedora 44 / SELinux Enforcing](docs/platforms/fedora-selinux.md)を参照してください。
 
 ## 最短の使用例
 
