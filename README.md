@@ -84,6 +84,11 @@ sudo udevadm control --reload-rules
 
 Alpine Linux（BusyBox mdev、コールドプラグスキャンヘルパー、OpenRC）での実機検証済み手順は [Alpine Linux の構成例](docs/platforms/alpine-mdev.md) を参照してください。USB ノードのパーミッションや video グループの要件は上記と同様です。
 
+#### AppArmor
+
+自作profileで拘束する場合のUSB node、capability、`smsusb`との競合に関する実機検証結果は
+[AppArmorで実行する際の注意](docs/platforms/apparmor.md)を参照してください。
+
 ## 最短の使用例
 
 ```sh
