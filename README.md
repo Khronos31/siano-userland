@@ -59,12 +59,10 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 Linux ディストリビューション別の実機検証済み構成例は [Linux環境別の検証済み構成例](docs/platforms/README.md) を参照してください。
 
 > [!WARNING]
-> Linux標準の`smsusb`へ一度bindされたチューナーを、稼働中に`siano-ts`へ切り替える運用は
-> 安全と判定していません。チューナーを接続する前またはboot時から、`smsusb`、`smsdvb`、
-> `smsmdtv`が対象機器を所有しない構成にしてください。すでにbind済みの場合はlive handoffに
-> 頼らず、blacklistを反映して再起動してください。これはUSB deviceの所有権に関する問題で、
-> AppArmorやSELinuxの設定とは別です。詳細は[AppArmor文書の競合説明](docs/platforms/apparmor.md#smsusbとの競合)を
-> 参照してください。
+> - チューナー接続前にカーネルモジュール（`smsusb`、`smsdvb`、`smsmdtv`）をblacklistへ登録する。
+> - 稼働中のチューナーをカーネルから `siano-ts` へ動的に切り替える運用（live handoff）は安全と判定していない。
+> - すでにbind済みの場合は、blacklistを反映したうえでOSを再起動する。
+> - 詳細は [AppArmor文書の競合説明](docs/platforms/apparmor.md#smsusbとの競合) を参照する。
 
 Linux では実行ユーザーに USB デバイスノードの読み書き権限が必要です。権限がない場合は `libusb_open: LIBUSB_ERROR_ACCESS` になります。udev を使う環境では、対象 ID だけを許可するルール例を `/etc/udev/rules.d/70-siano-userland.rules` に置けます。
 
@@ -94,13 +92,11 @@ Alpine Linux（BusyBox mdev、コールドプラグスキャンヘルパー、Op
 
 #### AppArmor
 
-自作profileで拘束する場合のUSB node、capability、`smsusb`との競合に関する実機検証結果は
-[AppArmorで実行する際の注意](docs/platforms/apparmor.md)を参照してください。
+自作profileによる拘束、USBデバイスノードの権限、`smsusb`との競合に関する実機検証結果は [AppArmorで実行する際の注意](docs/platforms/apparmor.md) を参照する。
 
 #### SELinux
 
-Fedora 44 / SELinux Enforcingで残っている検証要約と、その証明範囲・再検証時の確認項目は
-[Fedora 44 / SELinux Enforcing](docs/platforms/fedora-selinux.md)を参照してください。
+Fedora 44（SELinux Enforcing）における検証要約、証明範囲、再検証時の確認項目は [Fedora 44 / SELinux Enforcing](docs/platforms/fedora-selinux.md) を参照する。
 
 ## 最短の使用例
 
@@ -144,7 +140,7 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 
 MPEG-TS ストリームデータは標準出力または `-o` で指定したファイルへ出力されます。診断やログはすべて標準エラー出力 (stderr) へ出力されるため、標準出力をパイプ等で安全に中継できます。
 
-同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USB nodeとVHCI側のimport済みnodeを区別するため、VHCI側nodeを事前にopenして`--fd`で渡す経路を実機検証しています。これは同一ホスト構成での検証記録であり、LAN越しusbipの要件を示すものではありません。
+同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USBノードとVHCI側のimport済みノードを区別するため、VHCI側ノードを事前にopenして`--fd`で渡す経路を実機検証している。これは同一ホスト内での検証記録であり、LAN経由のusbip構成に関する要件を示すものではない。
 
 ## 注意事項
 

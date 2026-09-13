@@ -1,65 +1,66 @@
 # AppArmorで実行する際の注意
 
-> **検証済み構成について:** 本文書は、一時的な自作profileを用いた実機検証の記録と、
-> その際に判明した運用上の注意です。本リポジトリはAppArmor profileを同梱しておらず、
-> 任意のprofileや将来のOS更新における動作を保証するものではありません。
+> [!NOTE]
+> 本リポジトリにAppArmor profileは含まれない。本文書は一時的な自作profileによる実機検証の記録と運用上の注意である。
 
-## 検証対象
+## 実行前の要点
+
+- profileは利用者側で用意する。
+- profile割り当て前の実行状態は `unconfined` となる。
+- 起動後に `/proc/<pid>/attr/current` で対象profileの適用状態を確かめる。
+- チューナー接続前にカーネルモジュール（`smsusb`、`smsdvb`、`smsmdtv`）をblacklistへ登録する。
+- すでにモジュールがbindしている場合は、blacklistを反映したうえでOSを再起動する。
+
+## 検証環境
 
 - 検証日: 2026-09-14
-- `siano-userland`: Stable v0.1.5 Linux x86_64配布アーカイブ
-- ホスト: Latitude 5300 / AnduinOS / Linux 7.0.0-31-generic / AppArmor 5.0.2
-- チューナー: PX-S1UD 2台（USB ID `3275:0080`）
-- 起動方法: 名前付きprofileをloadし、`aa-exec -p`から`siano-ts`を直接起動
+- ソフトウェア: `siano-userland` Stable v0.1.5 Linux x86_64 配布アーカイブ（SHA-256: `b5528d9f179574b93a2982390d295c595332bf16d1bb60836de775b0c693d931`）
+- 実行バイナリ: `siano-ts`（SHA-256: `53df5abd54039c41d3df0f130e59d82d5cff16a85b3b3c55f516213501c94818`）
+- ハードウェア: Latitude 5300
+- OS: AnduinOS（Linux 7.0.0-31-generic）
+- AppArmorバージョン: 5.0.2
+- 使用チューナー: PX-S1UD 2台（USB ID `3275:0080`）
+- 起動方法: 名前付きprofileをロードし、`aa-exec -p` 経由で `siano-ts` を直接起動
 
-## 実機で確認したこと
+## 検証結果
 
-- USB device nodeを許可しないenforce profileでは、profile内の`siano-ts`自身によるnative openが
-  `LIBUSB_ERROR_ACCESS`で有限時間内に失敗し、対象nodeへのAppArmor denialが記録された。
-- allow profileでは、complain 2台30秒、enforce 1台60秒、enforce 2台60秒、
-  enforce 2台30分の全caseが完走した。
-- 2台30分ではT22が20,667,240 packets、T21が20,666,100 packetsで、両方とも
-  remainder / sync / TEI / queue drop / libusb errorは0だった。
-- 30分間の181測定で、各processのRSSは5,424 KiB、FDは8で固定だった。
-- 合格case内のAppArmor denialとkernel異常は0で、終了後にprofileとprocessの残留がないことを確認した。
+- USB nodeの許可を省いたdeny gateでは、`siano-ts` 自身によるopenが `LIBUSB_ERROR_ACCESS` で有限時間内に失敗し、拒否ログ（AppArmor denial）が記録された。
+- 必要な権限を付与したprofileでは、complain（2台・30秒）、enforce（1台・60秒）、enforce（2台・60秒）、enforce（2台・30分）の全試験を完走した。
+- 2台による30分受信（T22: 20,667,240パケット、T21: 20,666,100パケット）において、188バイト余剰、syncエラー、TEI、キュー破棄、libusbエラーはすべて0件だった。
+- 30分間の181回測定すべてで、各プロセスのRSSは5,424 KiB、FDは8に固定された。
+- 合格試験中のAppArmor拒否およびカーネル異常は0件だった。
+- プロセス終了後にprofileおよびプロセスの残留がないことを確認した。
+- 詳細な測定値は [OS・環境別の検証結果](validation-results.md) を参照する。
 
-詳細な結果は[OS・環境別の検証結果](validation-results.md)を参照してください。
+## profileに必要だった権限
 
-## Profile設計の要点
+- 実行ファイル本体の実行権限。
+- ファームウェアの読み取り権限。
+- 対象USBデバイスノードの読み書き権限。
+- USB sysfsおよびudevデータベースの読み取り権限。
+- netlink通信権限。
+- プロセス間シグナル送信権限。
+- `ipc_lock`（任意の `mlockall` 呼び出しに対応）。
+- `sys_nice`（任意の `SCHED_FIFO` 呼び出しに対応）。
+- ファームウェアは実行ユーザーが通常権限で読めるディレクトリに配置する（所有権の不一致を `dac_override` や `dac_read_search` で回避する構成は避ける）。
+- `ipc_lock` と `sys_nice` の付与を省いた場合でも警告表示後に受信は継続するが、AppArmor拒否ログを0件にする場合は明示的な許可を設ける。
 
-- AppArmorが有効なLinuxでも、profileへ入っていないprocessは`unconfined`のままです。
-  `aa-exec -p`またはservice manager側の設定で、実際の`siano-ts`が意図したprofileへ入ったことを
-  `/proc/<pid>/attr/current`などで確認してください。
-- 実測したprofileでは、実行ファイル、firmwareの読み取り、対象USB device nodeの読み書き、
-  USB sysfsとudev databaseの読み取り、netlink、signal、`ipc_lock`、`sys_nice`を許可しました。
-- `ipc_lock`と`sys_nice`は、それぞれ任意の`mlockall`と`SCHED_FIFO`試行に対応します。
-  許可がなくても`siano-ts`は警告を出して通常動作を継続しますが、拒否ログを0件にするprofileでは
-  許可するか、この非致命な拒否を運用上明示して扱う必要があります。
-- firmwareは専用service accountから通常のファイル権限で読める場所へ置いてください。
-  所有権の不一致を`dac_override`や`dac_read_search`で迂回する構成は、この検証結果からは推奨しません。
+## USBデバイスノードの扱い
 
-## USB device nodeは固定パスではない
+- `/dev/bus/usb/BBB/DDD` のバス番号およびデバイス番号は動的に割り当てられるため、固定パスでの記述を避ける。
+- profileの生成および再読み込みの直前に、sysfsの `busnum` および `devnum` からノード番号を取得する。
+- 取得時はVID:PIDに加え、sysfs上の物理USBパスを照合する（シリアル番号を持たないPX-S1UD個体が存在するため）。
+- 照合に一致しない場合はprofileのロードを中断する（fail-closed構成）。
+- チューナーを再接続した際は、パスの再照合とprofileの再生成・再読み込みを実施する。
 
-`/dev/bus/usb/BBB/DDD`のbus番号とdevice番号は、抜き差しや再列挙で変わります。
-検証時に使った番号を恒久profileへコピーしないでください。
-
-USB nodeを個別に許可する場合は、profileの生成・reload直前にsysfsの`busnum`と`devnum`からnodeを求め、
-少なくともVID:PIDと物理USB pathを照合してください。PX-S1UDにはserialを持たない個体があるため、
-複数台を区別する場合は物理USB pathも必要です。照合できない場合はprofileをloadせず停止する
-fail-closedな構成にしてください。再接続後は同じ確認とprofileの再生成・reloadが必要です。
-
-## `smsusb`との競合
+## smsusbとの競合
 
 > [!WARNING]
-> ロード済みのLinux標準`smsusb`へ一度bindされたPX-S1UDを、稼働中にuserlandへ切り替える運用は
-> 安全と判定していません。
+> 稼働中のチューナーをカーネルドライバから切り替えて `siano-ts` へ渡す運用（live handoff）は安全と判定していない。
 
-`siano-ts`はlibusbのkernel driver自動detachを有効にします。一方、今回の検証では`smsusb`の
-unbind、自動reprobe、binding復元の境界で、`smsusb_onresponse`の`-ESHUTDOWN`、
-`page dumped because: Not a kmalloc allocation`、および1回のpage allocation failureを観測しました。
-AppArmor拘束下の受信case自体では発生しておらず、AppArmor denialやTS受信失敗とは分離していますが、
-live handoffを通常手順として推奨できる結果ではありません。
-
-継続運用では、PX-S1UDを接続する前またはboot時から`smsusb`がbindしない構成を採用してください。
-blacklistを反映する場所やinitramfsの再生成要否はdistributionごとに異なるため、利用中のOSの手順に
-従ってください。NixOSで実機確認した例は[NixOSでの構成例](nixos.md)にあります。
+- `smsusb` のunbind、自動reprobe、binding復元の境界で以下のカーネル異常を観測した。
+  - `smsusb_onresponse` での `-ESHUTDOWN`
+  - `page dumped because: Not a kmalloc allocation`
+  - 1回のページ割り当て失敗（page allocation failure）
+- 当該事象はAppArmorによる制限下でのTS受信処理自体とは分離しているが、live handoffを通常手順としない根拠となる。
+- ディストリビューション別のblacklist反映例は [NixOSの構成例](nixos.md) を参照する。
