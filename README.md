@@ -126,6 +126,8 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 
 MPEG-TS ストリームデータは標準出力または `-o` で指定したファイルへ出力されます。診断やログはすべて標準エラー出力 (stderr) へ出力されるため、標準出力をパイプ等で安全に中継できます。
 
+同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USB nodeとVHCI側のimport済みnodeを区別するため、VHCI側nodeを事前にopenして`--fd`で渡す経路を実機検証しています。これは同一ホスト構成での検証記録であり、LAN越しusbipの要件を示すものではありません。
+
 ## 注意事項
 
 ### Linux での任意の性能最適化
