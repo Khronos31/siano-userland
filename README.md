@@ -110,6 +110,9 @@ Fedora 44（SELinux Enforcing）における検証要約、証明範囲、再検
 # 地上波 27ch を 30 秒間受信し、ファイルへ保存
 ./siano-ts -c 27 -t 30 -o /tmp/output.ts
 
+# 起動後に標準入力から選局し直す (channel 27 / tune 545142857 / quit)
+./siano-ts --control
+
 # Android (Termux) で termux-usb を介して受信
 termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 ```
@@ -120,20 +123,21 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 使用法: siano-ts [オプション]
 ```
 
-`--list` による一覧表示を除き、受信処理には `-c, --channel` または `-f, --freq` のどちらか一方の指定が必須です（両方の同時指定は不可）。
+`--list` と `--control` を除き、受信には `-c, --channel` または `-f, --freq` のどちらか一方が必須です（両方の同時指定は不可）。`--control` では初期の `-c` / `-f` を省略できます。
 
 ### オプション一覧
 
 | オプション | 引数 | 説明 |
 |---|---|---|
-| `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。`-f` と排他。受信時はどちらか一方が必須。 |
-| `-f, --freq` | `HZ` | 受信周波数を Hz 単位で指定。`-c` と排他。受信時はどちらか一方が必須。 |
+| `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。`-f` と排他。`--control` なしの受信では `-f` とどちらか一方が必須。 |
+| `-f, --freq` | `HZ` | 受信周波数を Hz 単位で指定。`-c` と排他。`--control` なしの受信では `-c` とどちらか一方が必須。 |
 | `-t, --time` | `SECONDS` | 指定秒数の受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
+| `--control` | なし | 標準入力の `channel N` / `tune HZ` / `quit` で選局・終了。初期選局は省略可能。TS は stdout、診断は stderr。`-t` / `--list` とは併用不可。 |
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
 | `--device` | `N` | 列挙された対応 RIO デバイスの N 番目を使用 (0 起算、既定値: 0)。 |
 | `-l, --list` | なし | デバイスを開かずに一覧表示。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
-| `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。 |
+| `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。最初の選局成功後に一度だけ設定する。 |
 | `--firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
 | `-v, --verbose` | なし | 制御メッセージ種別を標準エラー出力へ表示。 |
 | `-h, --help` | なし | ヘルプを表示して終了。 |

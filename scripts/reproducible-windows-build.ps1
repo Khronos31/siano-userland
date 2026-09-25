@@ -15,6 +15,8 @@ $tempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
 $buildRoot = Join-Path $tempRoot 'siano-windows-reproducibility'
 $sourceFiles = @(
     'Makefile.win',
+    'control-parse.c',
+    'control-parse.h',
     'protocol.c',
     'protocol.h',
     'siano-clock.h',

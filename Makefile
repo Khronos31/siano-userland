@@ -12,12 +12,13 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 all: siano-ts
 
-siano-ts: siano-ts.o protocol.o stream-state.o
+siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h stream-state.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h
 protocol.o: protocol.c protocol.h
 stream-state.o: stream-state.c stream-state.h
+control-parse.o: control-parse.c control-parse.h
 
 test-protocol: tests/test_protocol.o protocol.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -34,10 +35,16 @@ test-stream-state: tests/test_stream_state.o stream-state.o
 
 tests/test_stream_state.o: tests/test_stream_state.c stream-state.h
 
-test: siano-ts test-protocol test-clock test-stream-state
+test-control-parse: tests/test_control_parse.o control-parse.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_control_parse.o: tests/test_control_parse.c control-parse.h
+
+test: siano-ts test-protocol test-clock test-stream-state test-control-parse
 	./test-protocol
 	./test-clock
 	./test-stream-state
+	./test-control-parse
 	./tests/test_cli.sh
 	./tests/test-mdev.sh
 
@@ -50,4 +57,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse *.o tests/*.o tests/.cli-error

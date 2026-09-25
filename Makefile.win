@@ -9,10 +9,10 @@ LIBS = $(LIBUSB_DIR)\libusb-1.0.lib
 
 all: siano-ts.exe
 
-siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj
-	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj /link /Brepro $(LIBS)
+siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj control-parse.obj
+	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj /link /Brepro $(LIBS)
 
-siano-ts.obj: siano-ts.c protocol.h stream-state.h siano-os.h siano-clock.h
+siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h siano-os.h siano-clock.h
 	$(CC) $(CFLAGS) /c siano-ts.c
 
 protocol.obj: protocol.c protocol.h
@@ -21,5 +21,8 @@ protocol.obj: protocol.c protocol.h
 stream-state.obj: stream-state.c stream-state.h siano-os.h
 	$(CC) $(CFLAGS) /c stream-state.c
 
+control-parse.obj: control-parse.c control-parse.h
+	$(CC) $(CFLAGS) /c control-parse.c
+
 clean:
-	del /q siano-ts.exe siano-ts.obj protocol.obj stream-state.obj 2>nul
+	del /q siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj 2>nul

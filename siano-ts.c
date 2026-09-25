@@ -12,6 +12,7 @@
 #endif
 
 #include "protocol.h"
+#include "control-parse.h"
 
 #ifdef _WIN32
 #include "siano-os.h"
@@ -32,6 +33,7 @@
 
 #ifndef _WIN32
 #include <getopt.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -125,10 +127,12 @@ struct siano_device {
 
 struct options {
     bool list;
+    bool control;
     bool verbose;
     int device_index;
     int device_fd;
     int duration;
+    bool have_duration;
     bool have_channel;
     unsigned channel;
     bool have_frequency;
@@ -159,6 +163,7 @@ static void usage(FILE *stream, const char *program)
             "  -o, --output PATH     write TS to PATH instead of stdout\n"
             "  -v, --verbose         log control message types\n"
             "  -l, --list            list Siano USB devices without opening them\n"
+            "      --control         accept channel/tune/quit commands on stdin\n"
             "  -h, --help            show this help\n"
             "A leftover integer argument is treated as --fd (termux-usb -e).\n",
             program);
@@ -199,6 +204,7 @@ static int apply_option(int option, const char *value_text, struct options *opti
         if (parse_unsigned(value_text, INT_MAX, &value) < 0)
             return -EINVAL;
         options->duration = (int)value;
+        options->have_duration = true;
         return 0;
     case 'F':
         options->firmware = (char *)value_text;
@@ -228,6 +234,9 @@ static int apply_option(int option, const char *value_text, struct options *opti
     case 'l':
         options->list = true;
         return 0;
+    case 2:
+        options->control = true;
+        return 0;
     case 'h':
         usage(stdout, program);
         fflush(stdout);
@@ -251,11 +260,14 @@ static int finish_options(int argc, char **argv, int leftover, struct options *o
     }
     if (options->have_channel && options->have_frequency)
         return -EINVAL;
+    if (options->control && (options->list || options->have_duration))
+        return -EINVAL;
     if (options->list && options->device_fd >= 0)
         return -EINVAL;
     if (options->device_fd >= 0 && options->device_index != 0)
         return -EINVAL;
-    if (!options->list && !options->have_channel && !options->have_frequency)
+    if (!options->list && !options->control &&
+        !options->have_channel && !options->have_frequency)
         return -EINVAL;
     return 0;
 }
@@ -273,6 +285,7 @@ static int parse_options(int argc, char **argv, struct options *options)
         {"output", required_argument, NULL, 'o'},
         {"verbose", no_argument, NULL, 'v'},
         {"list", no_argument, NULL, 'l'},
+        {"control", no_argument, NULL, 2},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -321,6 +334,8 @@ static int parse_options(int argc, char **argv, struct options *options)
                 }
             } else {
                 option = a[1];
+                if (option == '\0' || strchr("cftFdpovlh", option) == NULL)
+                    return -EINVAL;
                 needs_value = (option == 'c' || option == 'f' || option == 't' ||
                                option == 'F' || option == 'd' || option == 'p' ||
                                option == 'o');
@@ -1152,7 +1167,8 @@ static int tune(struct siano_device *device, uint32_t frequency)
                                      &device->response_mutex, &short_deadline);
         pthread_mutex_unlock(&device->response_mutex);
     }
-    fprintf(stderr, "ISDB-T tune response received but no demod lock\n");
+    if (!stop_requested)
+        fprintf(stderr, "ISDB-T tune response received but no demod lock\n");
     return -ETIMEDOUT;
 }
 
@@ -1211,6 +1227,27 @@ static int write_aligned_ts(int fd, uint8_t *hold, size_t *hold_len,
     return 0;
 }
 
+static int configure_pid_filters(struct siano_device *device,
+                                 const struct options *options)
+{
+    if (options->pid_count == 0) {
+        /* 0x2000 is the DVB catch-all. This firmware does not ACK it;
+         * the mux still flows, so do not block recording on the response. */
+        uint8_t message[SMS_HEADER_SIZE + 4U];
+        sms_pack_header(message, MSG_SMS_ADD_PID_FILTER_REQ,
+                        SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
+        sms_put_le32(message + SMS_HEADER_SIZE, 0x2000);
+        (void)send_message(device, message, sizeof(message));
+        return 0;
+    }
+    for (size_t i = 0; i < options->pid_count; i++) {
+        int rc = add_pid(device, options->pids[i]);
+        if (rc < 0)
+            return rc;
+    }
+    return 0;
+}
+
 static int stream_ts(struct siano_device *device, int output_fd, int duration)
 {
     struct timespec deadline;
@@ -1242,6 +1279,137 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
             if (now.tv_sec > deadline.tv_sec ||
                 (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
                 break;
+        }
+    }
+    return 0;
+}
+
+static int control_input_ready(void)
+{
+#ifdef _WIN32
+    DWORD result = WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 0);
+    return result == WAIT_OBJECT_0 ? 1 : (result == WAIT_TIMEOUT ? 0 : -1);
+#else
+    struct pollfd input = { STDIN_FILENO, POLLIN, 0 };
+    int rc = poll(&input, 1, 0);
+    if (rc < 0 && errno == EINTR)
+        return 0;
+    if (rc < 0)
+        return -errno;
+    return rc > 0 ? 1 : 0;
+#endif
+}
+
+static ssize_t read_control_input(uint8_t *buffer, size_t capacity)
+{
+#ifdef _WIN32
+    DWORD count = 0;
+    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, (DWORD)capacity, &count, NULL))
+        return -EIO;
+    return (ssize_t)count;
+#else
+    ssize_t count = read(STDIN_FILENO, buffer, capacity);
+    return count < 0 ? -errno : count;
+#endif
+}
+
+static int handle_control_line(struct siano_device *device, const struct options *options,
+                               bool *pid_filters_added, const char *line, bool *quit)
+{
+    uint32_t value = 0;
+    uint32_t frequency;
+    enum control_command_type command = parse_control_line(line, &value);
+    int rc;
+
+    if (command == CONTROL_EMPTY)
+        return 0;
+    if (command == CONTROL_INVALID) {
+        fprintf(stderr, "control: invalid\n");
+        return 0;
+    }
+    if (command == CONTROL_QUIT) {
+        *quit = true;
+        return 0;
+    }
+    if (command == CONTROL_CHANNEL) {
+        rc = sms_channel_frequency(value, &frequency);
+        if (rc < 0) {
+            fprintf(stderr, "control: invalid\n");
+            return 0;
+        }
+    } else {
+        frequency = value;
+    }
+    rc = tune(device, frequency);
+    if (rc < 0) {
+        if (!stop_requested)
+            fprintf(stderr, "control: tune failed: %s\n", strerror(-rc));
+        return 0;
+    }
+    if (!*pid_filters_added) {
+        rc = configure_pid_filters(device, options);
+        if (rc < 0)
+            return rc;
+        *pid_filters_added = true;
+    }
+    fprintf(stderr, "tuned %u\n", frequency);
+    return 0;
+}
+
+static int stream_ts_control(struct siano_device *device, const struct options *options,
+                             bool *pid_filters_added, int output_fd)
+{
+    uint8_t data[USB_TRANSFER_SIZE];
+    uint8_t hold[188];
+    char line[128];
+    size_t hold_len = 0;
+    size_t line_len = 0;
+    bool line_overflow = false;
+    bool quit = false;
+
+    while (!stop_requested && !quit) {
+        size_t length;
+        int rc = ts_pop(&device->ts, data, &length);
+
+        rc = siano_stream_state_stream_result(&device->state, rc);
+        if (rc < 0 && rc != -EAGAIN)
+            return rc;
+        if (rc == 0) {
+            rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
+            if (rc < 0) {
+                fprintf(stderr, "TS output: %s\n", strerror(-rc));
+                return rc;
+            }
+        }
+        rc = control_input_ready();
+        if (rc < 0)
+            return rc;
+        if (rc > 0) {
+            uint8_t input[256];
+            ssize_t count = read_control_input(input, sizeof(input));
+            if (count < 0)
+                return (int)count;
+            if (count == 0)
+                break;
+            for (ssize_t i = 0; i < count && !quit; i++) {
+                if (input[i] == '\n') {
+                    if (line_overflow) {
+                        fprintf(stderr, "control: invalid\n");
+                    } else {
+                        line[line_len] = '\0';
+                        rc = handle_control_line(device, options, pid_filters_added,
+                                                 line, &quit);
+                        if (rc < 0)
+                            return rc;
+                    }
+                    line_len = 0;
+                    line_overflow = false;
+                } else if (line_len + 1 < sizeof(line)) {
+                    line[line_len++] = (char)input[i];
+                } else {
+                    line_overflow = true;
+                }
+            }
         }
     }
     return 0;
@@ -1447,6 +1615,7 @@ int main(int argc, char **argv)
     uint32_t frequency;
     int output_fd = STDOUT_FILENO;
     bool close_output = false;
+    bool pid_filters_added = false;
     int state_error;
     int rc;
 
@@ -1471,8 +1640,10 @@ int main(int argc, char **argv)
             return 2;
         }
         fprintf(stderr, "channel %u -> %u Hz\n", options.channel, frequency);
-    } else {
+    } else if (options.have_frequency) {
         frequency = options.frequency;
+    } else {
+        frequency = 0;
     }
     if (!options.list) {
         rc = resolve_firmware(options.firmware, &firmware_path);
@@ -1529,23 +1700,21 @@ int main(int argc, char **argv)
     if (rc < 0)
         goto out;
     /* smsdvb tunes first (set_frontend), then ADD_PID on start_feed. */
-    rc = tune(device, frequency);
-    if (rc < 0)
-        goto out;
-    fprintf(stderr, "ISDB-T lock acquired\n");
-    if (options.pid_count == 0) {
-        /* 0x2000 is the DVB catch-all. This firmware does not ACK it;
-         * the mux still flows, so do not block recording on the response. */
-        uint8_t message[SMS_HEADER_SIZE + 4U];
-        sms_pack_header(message, MSG_SMS_ADD_PID_FILTER_REQ,
-                        SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
-        sms_put_le32(message + SMS_HEADER_SIZE, 0x2000);
-        (void)send_message(device, message, sizeof(message));
-    } else {
-        for (size_t i = 0; i < options.pid_count; i++) {
-            rc = add_pid(device, options.pids[i]);
+    if (options.have_channel || options.have_frequency) {
+        rc = tune(device, frequency);
+        if (rc < 0 && !options.control)
+            goto out;
+        if (rc == 0) {
+            fprintf(stderr, "ISDB-T lock acquired\n");
+            if (options.control)
+                fprintf(stderr, "tuned %u\n", frequency);
+            rc = configure_pid_filters(device, &options);
             if (rc < 0)
                 goto out;
+            pid_filters_added = true;
+        } else {
+            if (!stop_requested)
+                fprintf(stderr, "control: tune failed: %s\n", strerror(-rc));
         }
     }
     rc = 0;
@@ -1558,7 +1727,8 @@ int main(int argc, char **argv)
         }
         close_output = true;
     }
-    rc = stream_ts(device, output_fd, options.duration);
+    rc = options.control ? stream_ts_control(device, &options, &pid_filters_added, output_fd) :
+                           stream_ts(device, output_fd, options.duration);
 out:
     state_error = siano_stream_state_error(&device->state);
     if (device->ts.drops != 0)
