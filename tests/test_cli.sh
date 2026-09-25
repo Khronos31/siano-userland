@@ -2,8 +2,21 @@
 set -eu
 
 ./siano-ts --help | grep -q -- '--fd'
+./siano-ts --help | grep -q -- '--control'
 if ./siano-ts --list --fd 3 >/dev/null 2>&1; then
     echo "--list --fd should be rejected" >&2
+    exit 1
+fi
+if ./siano-ts --control --list >/dev/null 2>&1; then
+    echo "--control --list should be rejected" >&2
+    exit 1
+fi
+if ./siano-ts --control --time 5 >/dev/null 2>&1; then
+    echo "--control --time 5 should be rejected" >&2
+    exit 1
+fi
+if ./siano-ts --control --channel 27 --freq 100 >/dev/null 2>&1; then
+    echo "--control --channel 27 --freq 100 should be rejected" >&2
     exit 1
 fi
 if list_output=$(./siano-ts --list 2>tests/.list-err); then
