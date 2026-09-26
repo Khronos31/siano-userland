@@ -5,6 +5,7 @@
 /siano-ts
 /test-protocol
 /test-clock
+/test-usb-location
 /test-stream-state
 /test-control-parse
 /build/

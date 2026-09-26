@@ -15,7 +15,7 @@ all: siano-ts
 siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h usb-location.h
 protocol.o: protocol.c protocol.h
 stream-state.o: stream-state.c stream-state.h
 control-parse.o: control-parse.c control-parse.h
@@ -40,11 +40,17 @@ test-control-parse: tests/test_control_parse.o control-parse.o
 
 tests/test_control_parse.o: tests/test_control_parse.c control-parse.h
 
-test: siano-ts test-protocol test-clock test-stream-state test-control-parse
+test-usb-location: tests/test_usb_location.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_usb_location.o: tests/test_usb_location.c usb-location.h
+
+test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location
 	./test-protocol
 	./test-clock
 	./test-stream-state
 	./test-control-parse
+	./test-usb-location
 	./tests/test_cli.sh
 	./tests/test-mdev.sh
 
@@ -57,4 +63,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location *.o tests/*.o tests/.cli-error

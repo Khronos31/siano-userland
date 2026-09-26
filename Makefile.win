@@ -12,7 +12,7 @@ all: siano-ts.exe
 siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj control-parse.obj
 	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj /link /Brepro $(LIBS)
 
-siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h siano-os.h siano-clock.h
+siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h siano-os.h siano-clock.h usb-location.h
 	$(CC) $(CFLAGS) /c siano-ts.c
 
 protocol.obj: protocol.c protocol.h
