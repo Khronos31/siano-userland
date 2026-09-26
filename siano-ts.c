@@ -14,8 +14,6 @@
 #include "protocol.h"
 #include "control-parse.h"
 #include "device-selector.h"
-#include "detach-decision.h"
-#include "exit-codes.h"
 #include "usb-location.h"
 
 #ifdef _WIN32
@@ -28,6 +26,10 @@
 #include <fcntl.h>
 #include <libusb.h>
 #include <limits.h>
+/* These headers include <libusb.h>; keep them after siano-os.h so winsock2.h
+ * stays ahead of windows.h in the MSVC include order. */
+#include "detach-decision.h"
+#include "exit-codes.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
