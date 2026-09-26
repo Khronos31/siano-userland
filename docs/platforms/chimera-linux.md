@@ -20,7 +20,7 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="187f", ATTR{idPro
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="187f", ATTR{idProduct}=="0302", MODE="0660", GROUP="video"
 ```
 
-実行ユーザーを `video` グループに追加します。`siano-ts` は実行時にカーネルドライバーの自動デタッチを行いますが、今回の実機検証では競合要因を排除するため、起動時のブラックリスト設定を採用しました。
+実行ユーザーを `video` グループに追加します。`siano-ts` は既定では bind 済みカーネルドライバーを切り離さず、使用を拒否します。`--detach-kernel-driver` を明示した場合だけ切り離します。今回の実機検証では競合要因を排除するため、起動時のブラックリスト設定を採用しました。
 
 ```text
 blacklist smsusb

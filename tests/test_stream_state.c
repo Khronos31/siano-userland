@@ -38,6 +38,21 @@ static void test_transfer_status_classification(void)
     assert(siano_transfer_status_error(999) == LIBUSB_ERROR_OTHER);
 }
 
+static void test_stream_disconnect_normalization(void)
+{
+    assert(siano_stream_disconnect_error(LIBUSB_ERROR_NO_DEVICE) == LIBUSB_ERROR_NO_DEVICE);
+    assert(siano_stream_disconnect_error(LIBUSB_ERROR_IO) == LIBUSB_ERROR_NO_DEVICE);
+    assert(siano_stream_disconnect_error(LIBUSB_ERROR_PIPE) == LIBUSB_ERROR_NO_DEVICE);
+    assert(siano_stream_disconnect_error(LIBUSB_ERROR_TIMEOUT) == LIBUSB_ERROR_TIMEOUT);
+}
+
+static void test_pid_ack_policy(void)
+{
+    assert(!siano_pid_filter_requires_ack(0x2000));
+    assert(siano_pid_filter_requires_ack(0x0000));
+    assert(siano_pid_filter_requires_ack(0x1fff));
+}
+
 static void test_disconnect_propagates_once(void)
 {
     struct siano_stream_state state;
@@ -58,6 +73,19 @@ static void test_disconnect_propagates_once(void)
     siano_stream_state_destroy(&state);
 }
 
+static void test_async_io_and_pipe_are_disconnects(void)
+{
+    const int errors[] = {LIBUSB_ERROR_IO, LIBUSB_ERROR_PIPE};
+
+    for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+        struct siano_stream_state state;
+        assert(siano_stream_state_init(&state) == 0);
+        assert(siano_stream_state_fail(&state, errors[i]));
+        assert(siano_stream_state_error(&state) == LIBUSB_ERROR_NO_DEVICE);
+        siano_stream_state_destroy(&state);
+    }
+}
+
 static void test_graceful_stop_has_no_failure(void)
 {
     struct siano_stream_state state;
@@ -75,7 +103,10 @@ static void test_graceful_stop_has_no_failure(void)
 int main(void)
 {
     test_transfer_status_classification();
+    test_stream_disconnect_normalization();
+    test_pid_ack_policy();
     test_disconnect_propagates_once();
+    test_async_io_and_pipe_are_disconnects();
     test_graceful_stop_has_no_failure();
     puts("stream state tests: PASS");
     return 0;

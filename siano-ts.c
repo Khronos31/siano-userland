@@ -21,6 +21,9 @@
 #endif
 
 #include "stream-state.h"
+#include "queue-policy.h"
+#include "control-input.h"
+#include "write-policy.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -39,7 +42,6 @@
 
 #ifndef _WIN32
 #include <getopt.h>
-#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -98,6 +100,18 @@ struct ts_queue {
     size_t count;
     uint64_t drops;
     bool closed;
+    bool fail_on_drop;
+    bool overflowed;
+    bool discarding;
+    uint64_t epoch;
+};
+
+struct siano_device;
+
+struct siano_transfer_context {
+    struct siano_device *device;
+    /* Captured at submit time so delayed callbacks retain their old generation. */
+    uint64_t epoch;
 };
 
 struct version_info {
@@ -120,23 +134,29 @@ struct siano_device {
     pthread_t event_thread;
     bool event_thread_started;
     struct siano_stream_state state;
+    bool state_initialized;
     int active_transfers;
     struct libusb_transfer *transfers[MAX_URBS];
     uint8_t *transfer_buffers[MAX_URBS];
+    struct siano_transfer_context transfer_contexts[MAX_URBS];
 
     pthread_mutex_t response_mutex;
     pthread_cond_t response_changed;
+    bool response_mutex_initialized;
+    bool response_cond_initialized;
     unsigned response_count[1024];
     struct version_info version;
     bool locked;
 
     struct ts_queue ts;
+    bool ts_initialized;
 };
 
 struct options {
     bool list;
     bool control;
     bool detach_kernel_driver;
+    bool fail_on_drop;
     bool verbose;
     struct siano_device_selector device_selector;
     const char *device_spec;
@@ -166,14 +186,15 @@ static void usage(FILE *stream, const char *program)
             "  -c, --channel N       ISDB-T physical channel (13..62)\n"
             "  -f, --freq HZ         tune frequency in Hz\n"
             "  -t, --time SECONDS    stop after duration (default: until SIGINT)\n"
-            "      --firmware PATH   isdbt_rio.inp\n"
-            "      --device SPEC     index, USB port path (B-A.P...), or bus:address\n"
+            "  -F, --firmware PATH   isdbt_rio.inp\n"
+            "  -d, --device SPEC     index, USB port path (B-A.P...), or bus:address\n"
             "      --fd FD           use an already-open USB fd (Termux/Android)\n"
-            "      --pid PID         add PID filter (repeatable)\n"
+            "  -p, --pid PID         add PID filter (repeatable)\n"
             "  -o, --output PATH     write TS to PATH instead of stdout\n"
             "  -v, --verbose         log control message types\n"
-            "  -l, --list            list devices (select with --device index/port/bus:address)\n"
+            "  -l, --list            list devices (not filtered by --device)\n"
             "      --control         accept channel/tune/quit commands on stdin\n"
+            "      --fail-on-drop    exit 8 on the first TS queue overflow\n"
             "      --detach-kernel-driver\n"
             "                        take the device from a bound kernel driver (e.g. smsusb)\n"
             "  -h, --help            show this help\n"
@@ -213,7 +234,7 @@ static int apply_option(int option, const char *value_text, struct options *opti
         options->have_frequency = true;
         return 0;
     case 't':
-        if (parse_unsigned(value_text, INT_MAX, &value) < 0)
+        if (parse_unsigned(value_text, INT_MAX, &value) < 0 || value == 0)
             return -EINVAL;
         options->duration = (int)value;
         options->have_duration = true;
@@ -251,6 +272,9 @@ static int apply_option(int option, const char *value_text, struct options *opti
         return 0;
     case 3:
         options->detach_kernel_driver = true;
+        return 0;
+    case 4:
+        options->fail_on_drop = true;
         return 0;
     case 'h':
         usage(stdout, program);
@@ -306,6 +330,7 @@ static int parse_options(int argc, char **argv, struct options *options)
         {"list", no_argument, NULL, 'l'},
         {"control", no_argument, NULL, 2},
         {"detach-kernel-driver", no_argument, NULL, 3},
+        {"fail-on-drop", no_argument, NULL, 4},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -432,7 +457,7 @@ static int list_devices(libusb_context *usb)
     count = libusb_get_device_list(usb, &list);
     if (count < 0) {
         fprintf(stderr, "libusb_get_device_list: %s\n", libusb_strerror((int)count));
-        return 1;
+        return siano_list_result((long long)count);
     }
     for (ssize_t i = 0; i < count; i++) {
         struct libusb_device_descriptor descriptor;
@@ -454,11 +479,13 @@ static int list_devices(libusb_context *usb)
             location[0] = '\0';
         if (supported) {
             printf("model=%s usb=%04x:%04x%s status=ready receivers=1\n",
-                   name, descriptor.idVendor, descriptor.idProduct, location);
+                   name, (unsigned)descriptor.idVendor,
+                   (unsigned)descriptor.idProduct, location);
             printf("receiver=0 device=1 local=0 system=ISDB-T\n");
         } else {
             printf("rejected model=%s usb=%04x:%04x%s status=unsupported\n",
-                   name, descriptor.idVendor, descriptor.idProduct, location);
+                   name, (unsigned)descriptor.idVendor,
+                   (unsigned)descriptor.idProduct, location);
         }
     }
     libusb_free_device_list(list, 1);
@@ -547,6 +574,43 @@ static void ts_queue_close(struct ts_queue *queue)
     pthread_mutex_unlock(&queue->mutex);
 }
 
+static void ts_queue_set_fail_on_drop(struct ts_queue *queue, bool enabled)
+{
+    pthread_mutex_lock(&queue->mutex);
+    queue->fail_on_drop = enabled;
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static void ts_queue_retune_begin(struct ts_queue *queue)
+{
+    pthread_mutex_lock(&queue->mutex);
+    siano_queue_retune_begin(&queue->epoch, &queue->discarding);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static bool ts_queue_retune_finish(struct ts_queue *queue, size_t *hold_len,
+                                   int tune_result)
+{
+    bool succeeded;
+
+    pthread_mutex_lock(&queue->mutex);
+    succeeded = siano_queue_retune_finish(tune_result, &queue->epoch,
+                                          &queue->discarding, &queue->head,
+                                          &queue->tail, &queue->count, hold_len);
+    pthread_mutex_unlock(&queue->mutex);
+    return succeeded;
+}
+
+static uint64_t ts_queue_transfer_epoch(struct ts_queue *queue)
+{
+    uint64_t epoch;
+
+    pthread_mutex_lock(&queue->mutex);
+    epoch = queue->epoch;
+    pthread_mutex_unlock(&queue->mutex);
+    return epoch;
+}
+
 static void ts_queue_destroy(struct ts_queue *queue)
 {
     pthread_cond_destroy(&queue->available);
@@ -584,11 +648,24 @@ static void try_lock_pages(void)
 #endif
 }
 
-static void ts_enqueue(struct ts_queue *queue, const uint8_t *data, size_t length)
+static void ts_enqueue(struct ts_queue *queue, uint64_t transfer_epoch,
+                       const uint8_t *data, size_t length)
 {
     pthread_mutex_lock(&queue->mutex);
-    if (queue->closed || queue->count == TS_QUEUE_SLOTS) {
+    if (!siano_queue_epoch_accepts(queue->epoch, queue->discarding,
+                                   transfer_epoch)) {
+        pthread_mutex_unlock(&queue->mutex);
+        return;
+    }
+    if (queue->closed) {
+        pthread_mutex_unlock(&queue->mutex);
+        return;
+    }
+    if (queue->count == TS_QUEUE_SLOTS) {
         queue->drops++;
+        if (siano_queue_note_drop(queue->fail_on_drop, &queue->closed,
+                                  &queue->overflowed))
+            pthread_cond_broadcast(&queue->available);
         pthread_mutex_unlock(&queue->mutex);
         return;
     }
@@ -614,7 +691,9 @@ static int ts_pop(struct ts_queue *queue, uint8_t *data, size_t *length)
         if (rc == ETIMEDOUT)
             break;
     }
-    if (queue->count != 0) {
+    if (queue->overflowed) {
+        rc = siano_queue_overflow_result(queue->overflowed);
+    } else if (queue->count != 0) {
         struct ts_chunk *chunk = &queue->chunks[queue->head];
         memcpy(data, chunk->data, chunk->length);
         *length = chunk->length;
@@ -643,8 +722,10 @@ static void response_note(struct siano_device *device, uint16_t type,
         if (device->verbose) {
             fprintf(stderr,
                     "version payload: chip=%04x fw_id=%u proto=0x%02x app=%u.%u.%u rom=%u.%u\n",
-                    sms_get_le16(payload), payload[4], payload[5],
-                    payload[6], payload[7], payload[8], payload[10], payload[11]);
+                    (unsigned)sms_get_le16(payload), (unsigned)payload[4],
+                    (unsigned)payload[5], (unsigned)payload[6],
+                    (unsigned)payload[7], (unsigned)payload[8],
+                    (unsigned)payload[10], (unsigned)payload[11]);
         }
     } else if ((type == MSG_SMS_GET_STATISTICS_EX_RES && payload_length >= 20) ||
                (type == MSG_SMS_GET_STATISTICS_RES && payload_length >= 16)) {
@@ -660,7 +741,7 @@ static void response_note(struct siano_device *device, uint16_t type,
     pthread_mutex_unlock(&device->response_mutex);
 }
 
-static void handle_received_buffer(struct siano_device *device,
+static void handle_received_buffer(struct siano_device *device, uint64_t transfer_epoch,
                                    const uint8_t *buffer, size_t actual_length)
 {
     struct sms_frame frame;
@@ -676,9 +757,10 @@ static void handle_received_buffer(struct siano_device *device,
     }
     if (device->verbose && frame.type != MSG_SMS_DVBT_BDA_DATA)
         fprintf(stderr, "RX %s(%u) length=%u\n", sms_message_type_name(frame.type),
-                frame.type, frame.length);
+                (unsigned)frame.type, (unsigned)frame.length);
     if (frame.type == MSG_SMS_DVBT_BDA_DATA) {
-        ts_enqueue(&device->ts, buffer + frame.payload_offset, frame.payload_length);
+        ts_enqueue(&device->ts, transfer_epoch,
+                   buffer + frame.payload_offset, frame.payload_length);
     } else {
         response_note(device, frame.type, buffer + frame.payload_offset,
                       frame.payload_length);
@@ -714,7 +796,9 @@ static void fail_streaming(struct siano_device *device, int error)
 
 static void transfer_callback(struct libusb_transfer *transfer)
 {
-    struct siano_device *device = transfer->user_data;
+    struct siano_transfer_context *context = transfer->user_data;
+    struct siano_device *device = context->device;
+    uint64_t transfer_epoch = context->epoch;
     bool stopping;
     enum siano_transfer_action action;
 
@@ -732,11 +816,12 @@ static void transfer_callback(struct libusb_transfer *transfer)
     if (action == SIANO_TRANSFER_DRAIN)
         return;
     if (action == SIANO_TRANSFER_COMPLETE && transfer->actual_length > 0)
-        handle_received_buffer(device, transfer->buffer,
+        handle_received_buffer(device, transfer_epoch, transfer->buffer,
                                (size_t)transfer->actual_length);
 
     pthread_mutex_lock(&device->state.mutex);
     if (!device->state.stopping) {
+        context->epoch = ts_queue_transfer_epoch(&device->ts);
         int rc = libusb_submit_transfer(transfer);
         if (rc == 0) {
             device->active_transfers++;
@@ -793,7 +878,7 @@ static int start_streaming(struct siano_device *device)
         }
         libusb_fill_bulk_transfer(transfer, device->handle, device->in_ep,
                                   buffer, USB_TRANSFER_SIZE,
-                                  transfer_callback, device, 0);
+                                  transfer_callback, &device->transfer_contexts[i], 0);
         pthread_mutex_lock(&device->state.mutex);
         if (device->state.stopping) {
             rc = device->state.error != 0 ? device->state.error : -ECANCELED;
@@ -804,6 +889,8 @@ static int start_streaming(struct siano_device *device)
         }
         device->transfer_buffers[i] = buffer;
         device->transfers[i] = transfer;
+        device->transfer_contexts[i].device = device;
+        device->transfer_contexts[i].epoch = ts_queue_transfer_epoch(&device->ts);
         rc = libusb_submit_transfer(transfer);
         if (rc == 0)
             device->active_transfers++;
@@ -879,7 +966,7 @@ static int send_message(struct siano_device *device, const uint8_t *message,
 
     if (device->verbose)
         fprintf(stderr, "TX %s(%u) length=%zu\n", sms_message_type_name(type),
-                type, length);
+                (unsigned)type, length);
     rc = libusb_bulk_transfer(device->handle, device->tx_ep,
                               (unsigned char *)message, (int)length,
                               &transferred, 1000);
@@ -983,7 +1070,8 @@ static int load_family2_firmware(struct siano_device *device, const char *path,
         return -EBADMSG;
     }
     fprintf(stderr, "firmware: checksum=0x%08x length=%u start=0x%08x\n",
-            header.check_sum, header.length, header.start_address);
+            (unsigned)header.check_sum, (unsigned)header.length,
+            (unsigned)header.start_address);
 
     /* smscore_load_firmware_family2() passes the complete file size as size.
      * Preserve that wire length; the final 12 bytes are outside the payload
@@ -1088,9 +1176,9 @@ static int set_device_mode(struct siano_device *device, const char *firmware)
     current_mode = device->version.firmware_id == 255 ? DEVICE_MODE_NONE :
                    device->version.firmware_id;
     fprintf(stderr, "firmware mode=%d supported=0x%02x fw=%u.%u\n",
-            current_mode, device->version.supported_protocols,
-            device->version.firmware_version >> 8,
-            device->version.firmware_version & 0xff);
+            current_mode, (unsigned)device->version.supported_protocols,
+            (unsigned)(device->version.firmware_version >> 8),
+            (unsigned)(device->version.firmware_version & 0xff));
     /* smscore_set_device_mode() returns immediately when the running mode
      * already matches. Re-sending INIT_DEVICE on a warm RIO leaves HIF
      * unresponsive to the next control message (observed on PX-S1UD). */
@@ -1129,6 +1217,16 @@ static int add_pid(struct siano_device *device, uint16_t pid)
                     SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
     sms_put_le32(message + SMS_HEADER_SIZE, pid);
     return send_and_wait(device, message, sizeof(message), MSG_SMS_ADD_PID_FILTER_RES);
+}
+
+static int send_pid_filter(struct siano_device *device, uint16_t pid)
+{
+    uint8_t message[SMS_HEADER_SIZE + 4U];
+
+    sms_pack_header(message, MSG_SMS_ADD_PID_FILTER_REQ,
+                    SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
+    sms_put_le32(message + SMS_HEADER_SIZE, pid);
+    return send_message(device, message, sizeof(message));
 }
 
 static int tune(struct siano_device *device, uint32_t frequency)
@@ -1202,7 +1300,13 @@ static int tune(struct siano_device *device, uint32_t frequency)
 static int write_all(int fd, const uint8_t *data, size_t length)
 {
     while (length != 0) {
-        ssize_t written = write(fd, data, length);
+#ifdef _WIN32
+        size_t request_length = siano_write_request_size(length, (size_t)UINT_MAX);
+        ssize_t written = write(fd, data, (unsigned int)request_length);
+#else
+        size_t request_length = siano_write_request_size(length, SIZE_MAX);
+        ssize_t written = write(fd, data, request_length);
+#endif
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -1260,15 +1364,16 @@ static int configure_pid_filters(struct siano_device *device,
     if (options->pid_count == 0) {
         /* 0x2000 is the DVB catch-all. This firmware does not ACK it;
          * the mux still flows, so do not block recording on the response. */
-        uint8_t message[SMS_HEADER_SIZE + 4U];
-        sms_pack_header(message, MSG_SMS_ADD_PID_FILTER_REQ,
-                        SMS_DVBT_BDA_CONTROL_MSG_ID, SMS_HIF_TASK, sizeof(message), 0);
-        sms_put_le32(message + SMS_HEADER_SIZE, 0x2000);
-        (void)send_message(device, message, sizeof(message));
-        return 0;
+        return send_pid_filter(device, 0x2000);
     }
     for (size_t i = 0; i < options->pid_count; i++) {
-        int rc = add_pid(device, options->pids[i]);
+        int rc;
+
+        if (siano_pid_filter_requires_ack(options->pids[i])) {
+            rc = add_pid(device, options->pids[i]);
+        } else {
+            rc = send_pid_filter(device, options->pids[i]);
+        }
         if (rc < 0)
             return rc;
     }
@@ -1296,7 +1401,8 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
         if (rc == 0) {
             rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
             if (rc < 0) {
-                fprintf(stderr, "TS output: %s\n", strerror(-rc));
+                if (siano_report_output_error(rc))
+                    fprintf(stderr, "TS output: %s\n", strerror(-rc));
                 return rc;
             }
         }
@@ -1311,37 +1417,9 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
     return 0;
 }
 
-static int control_input_ready(void)
-{
-#ifdef _WIN32
-    DWORD result = WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 0);
-    return result == WAIT_OBJECT_0 ? 1 : (result == WAIT_TIMEOUT ? 0 : -1);
-#else
-    struct pollfd input = { STDIN_FILENO, POLLIN, 0 };
-    int rc = poll(&input, 1, 0);
-    if (rc < 0 && errno == EINTR)
-        return 0;
-    if (rc < 0)
-        return -errno;
-    return rc > 0 ? 1 : 0;
-#endif
-}
-
-static ssize_t read_control_input(uint8_t *buffer, size_t capacity)
-{
-#ifdef _WIN32
-    DWORD count = 0;
-    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, (DWORD)capacity, &count, NULL))
-        return -EIO;
-    return (ssize_t)count;
-#else
-    ssize_t count = read(STDIN_FILENO, buffer, capacity);
-    return count < 0 ? -errno : count;
-#endif
-}
-
 static int handle_control_line(struct siano_device *device, const struct options *options,
-                               bool *pid_filters_added, const char *line, bool *quit)
+                               bool *pid_filters_added, const char *line, bool *quit,
+                               size_t *hold_len)
 {
     uint32_t value = 0;
     uint32_t frequency;
@@ -1367,12 +1445,15 @@ static int handle_control_line(struct siano_device *device, const struct options
     } else {
         frequency = value;
     }
+    ts_queue_retune_begin(&device->ts);
     rc = tune(device, frequency);
     if (rc < 0) {
+        (void)ts_queue_retune_finish(&device->ts, hold_len, rc);
         if (!stop_requested)
             fprintf(stderr, "control: tune failed: %s\n", strerror(-rc));
         return 0;
     }
+    (void)ts_queue_retune_finish(&device->ts, hold_len, rc);
     if (!*pid_filters_added) {
         rc = configure_pid_filters(device, options);
         if (rc < 0)
@@ -1386,6 +1467,7 @@ static int handle_control_line(struct siano_device *device, const struct options
 static int stream_ts_control(struct siano_device *device, const struct options *options,
                              bool *pid_filters_added, int output_fd)
 {
+    struct siano_control_input control;
     uint8_t data[USB_TRANSFER_SIZE];
     uint8_t hold[188];
     char line[128];
@@ -1393,10 +1475,19 @@ static int stream_ts_control(struct siano_device *device, const struct options *
     size_t line_len = 0;
     bool line_overflow = false;
     bool quit = false;
+    int rc;
+
+#ifdef _WIN32
+    rc = siano_control_input_init(&control, GetStdHandle(STD_INPUT_HANDLE));
+#else
+    rc = siano_control_input_init(&control, STDIN_FILENO);
+#endif
+    if (rc < 0)
+        return rc;
 
     while (!stop_requested && !quit) {
         size_t length;
-        int rc = ts_pop(&device->ts, data, &length);
+        rc = ts_pop(&device->ts, data, &length);
 
         rc = siano_stream_state_stream_result(&device->state, rc);
         if (rc < 0 && rc != -EAGAIN)
@@ -1404,16 +1495,19 @@ static int stream_ts_control(struct siano_device *device, const struct options *
         if (rc == 0) {
             rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
             if (rc < 0) {
-                fprintf(stderr, "TS output: %s\n", strerror(-rc));
+                if (siano_report_output_error(rc))
+                    fprintf(stderr, "TS output: %s\n", strerror(-rc));
                 return rc;
             }
         }
-        rc = control_input_ready();
+        rc = siano_control_input_ready(&control);
         if (rc < 0)
             return rc;
         if (rc > 0) {
             uint8_t input[256];
-            ssize_t count = read_control_input(input, sizeof(input));
+            int64_t count = siano_control_input_read(&control, input, sizeof(input));
+            if (count == -EAGAIN)
+                continue;
             if (count < 0)
                 return (int)count;
             if (count == 0)
@@ -1425,7 +1519,7 @@ static int stream_ts_control(struct siano_device *device, const struct options *
                     } else {
                         line[line_len] = '\0';
                         rc = handle_control_line(device, options, pid_filters_added,
-                                                 line, &quit);
+                                                 line, &quit, &hold_len);
                         if (rc < 0)
                             return rc;
                     }
@@ -1650,24 +1744,43 @@ static int open_from_fd(struct siano_device *device, int fd)
 #endif
 }
 
+static void destroy_device_sync_state(struct siano_device *device)
+{
+    if (device->response_cond_initialized) {
+        pthread_cond_destroy(&device->response_changed);
+        device->response_cond_initialized = false;
+    }
+    if (device->response_mutex_initialized) {
+        pthread_mutex_destroy(&device->response_mutex);
+        device->response_mutex_initialized = false;
+    }
+    if (device->state_initialized) {
+        siano_stream_state_destroy(&device->state);
+        device->state_initialized = false;
+    }
+    if (device->ts_initialized) {
+        ts_queue_destroy(&device->ts);
+        device->ts_initialized = false;
+    }
+}
+
 static void close_device(struct siano_device *device, uint64_t *drops)
 {
     if (device->event_thread_started)
         stop_streaming(device);
-    ts_queue_close(&device->ts);
-    pthread_mutex_lock(&device->ts.mutex);
-    *drops = device->ts.drops;
-    pthread_mutex_unlock(&device->ts.mutex);
+    if (device->ts_initialized) {
+        ts_queue_close(&device->ts);
+        pthread_mutex_lock(&device->ts.mutex);
+        *drops = device->ts.drops;
+        pthread_mutex_unlock(&device->ts.mutex);
+    }
     if (device->handle) {
         if (device->interface_number >= 0)
             libusb_release_interface(device->handle, device->interface_number);
         libusb_close(device->handle);
         device->handle = NULL;
     }
-    pthread_cond_destroy(&device->response_changed);
-    pthread_mutex_destroy(&device->response_mutex);
-    siano_stream_state_destroy(&device->state);
-    ts_queue_destroy(&device->ts);
+    destroy_device_sync_state(device);
 }
 
 static int init_device_state(struct siano_device *device, libusb_context *usb,
@@ -1677,14 +1790,23 @@ static int init_device_state(struct siano_device *device, libusb_context *usb,
     device->usb = usb;
     device->verbose = verbose;
     device->interface_number = -1;
-    if (siano_stream_state_init(&device->state) != 0 ||
-        pthread_mutex_init(&device->response_mutex, NULL) != 0)
+    if (siano_stream_state_init(&device->state) != 0)
         return -1;
+    device->state_initialized = true;
+    if (pthread_mutex_init(&device->response_mutex, NULL) != 0)
+        goto fail;
+    device->response_mutex_initialized = true;
     if (cond_init_waitable(&device->response_changed) != 0)
-        return -1;
+        goto fail;
+    device->response_cond_initialized = true;
     if (ts_queue_init(&device->ts) < 0)
-        return -1;
+        goto fail;
+    device->ts_initialized = true;
     return 0;
+
+fail:
+    destroy_device_sync_state(device);
+    return -1;
 }
 
 #ifdef _WIN32
@@ -1732,7 +1854,7 @@ int main(int argc, char **argv)
             usage(stderr, argv[0]);
             return 2;
         }
-        fprintf(stderr, "channel %u -> %u Hz\n", options.channel, frequency);
+        fprintf(stderr, "channel %u -> %u Hz\n", options.channel, (unsigned)frequency);
     } else if (options.have_frequency) {
         frequency = options.frequency;
     } else {
@@ -1740,10 +1862,8 @@ int main(int argc, char **argv)
     }
     if (!options.list) {
         rc = resolve_firmware(options.firmware, &firmware_path);
-        if (rc < 0) {
-            usage(stderr, argv[0]);
+        if (rc < 0)
             return siano_exit_code(rc);
-        }
     }
 #ifdef SIANO_HAVE_WRAP_SYS_DEVICE
     if (options.device_fd >= 0) {
@@ -1778,6 +1898,7 @@ int main(int argc, char **argv)
         libusb_exit(usb);
         return 70;
     }
+    ts_queue_set_fail_on_drop(&device->ts, options.fail_on_drop);
     device->detach_kernel_driver = options.detach_kernel_driver;
     try_lock_pages();
     try_realtime(pthread_self(), WRITER_THREAD_PRIORITY, "writer");
@@ -1801,7 +1922,7 @@ int main(int argc, char **argv)
         if (rc == 0) {
             fprintf(stderr, "ISDB-T lock acquired\n");
             if (options.control)
-                fprintf(stderr, "tuned %u\n", frequency);
+                fprintf(stderr, "tuned %u\n", (unsigned)frequency);
             rc = configure_pid_filters(device, &options);
             if (rc < 0)
                 goto out;

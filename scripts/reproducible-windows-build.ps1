@@ -17,6 +17,8 @@ $sourceFiles = @(
     'Makefile.win',
     'control-parse.c',
     'control-parse.h',
+    'control-input.c',
+    'control-input.h',
     'device-selector.c',
     'device-selector.h',
     'detach-decision.h',
@@ -24,12 +26,15 @@ $sourceFiles = @(
     'exit-codes.h',
     'protocol.c',
     'protocol.h',
+    'queue-policy.c',
+    'queue-policy.h',
     'siano-clock.h',
     'siano-os.h',
     'siano-ts.c',
     'stream-state.c',
     'stream-state.h',
-    'usb-location.h'
+    'usb-location.h',
+    'write-policy.h'
 )
 
 function New-CleanBuild([string]$name) {

@@ -1,6 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "exit-codes.h"
 
+int siano_list_result(long long device_count)
+{
+    return device_count < 0 ? (int)device_count : 0;
+}
+
+int siano_report_output_error(int error)
+{
+    return error != -EPIPE;
+}
+
 int siano_exit_code(int rc)
 {
     if (rc >= 0)

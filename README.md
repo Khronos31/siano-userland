@@ -131,19 +131,20 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 |---|---|---|
 | `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。`-f` と排他。`--control` なしの受信では `-f` とどちらか一方が必須。 |
 | `-f, --freq` | `HZ` | 受信周波数を Hz 単位で指定。`-c` と排他。`--control` なしの受信では `-c` とどちらか一方が必須。 |
-| `-t, --time` | `SECONDS` | 指定秒数の受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
+| `-t, --time` | `SECONDS` | 1以上の秒数を指定して受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
 | `--control` | なし | 標準入力の `channel N` / `tune HZ` / `quit` で選局・終了。初期選局は省略可能。TS は stdout、診断は stderr。`-t` / `--list` とは併用不可。 |
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
-| `--device` | `SPEC` | 対応 RIO デバイスを選択。インデックス (0 起算)、ポートパス (`1-2` / `1-4.3`)、bus:address (`1:4`) を受理。既定値はインデックス `0`。 |
-| `-l, --list` | なし | デバイスを開かずに一覧表示。`--device` はインデックス・ポートパス・bus:address を受理。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
+| `-d, --device` | `SPEC` | 対応 RIO デバイスを選択。インデックス (0 起算)、ポートパス (`0-1.3` / `1-4.3`)、bus:address (`0:4` / `1:4`) を受理。既定値はインデックス `0`。 |
+| `-l, --list` | なし | デバイスを開かずに一覧表示。`--device` 指定で一覧結果は絞り込まれません。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
 | `--detach-kernel-driver` | なし | カーネルのドライバ (`smsusb` など) が掴んでいても切り離して使う。既定では、`siano-ts` が使うインターフェースをカーネルのドライバが掴んでいれば奪わずに `interface N is bound to a kernel driver` と表示して終了する (live handoff は安全と判定していないため)。Windows など libusb が判定できない環境では従来どおり開く。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
-| `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。最初の選局成功後に一度だけ設定する。 |
-| `--firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
+| `-p, --pid` | `PID` | 受信する PID (複数回指定可、最大64個)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。明示した `0x2000` も ACK を待たずに設定する。最初の選局成功後に一度だけ設定する。 |
+| `-F, --firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
 | `-v, --verbose` | なし | 制御メッセージ種別を標準エラー出力へ表示。 |
+| `--fail-on-drop` | なし | TS キューの最初の満杯を検知した時点で出力を止め、終了コード `8` で終了する。省略時は従来どおり drop 数を記録して受信を続け、終了時に drop があれば `8` を返す。 |
 | `-h, --help` | なし | ヘルプを表示して終了。 |
 
-`--list` は `px4-userland` の `px4d --list` に揃えた `key=value` 形式です。対応 RIO デバイス 1 台につき `model= usb= bus= address= port= status=ready receivers=1` の行と、受信機の `receiver=0 device=1 local=0 system=ISDB-T` の行を出力します（Siano はシリアル番号を持たないため `serial=` はありません）。対応外の Siano デバイスは `rejected model= usb= bus= address= port= status=unsupported` の行になります。`bus` と `address` は usbfs のノード（Linux では `/dev/bus/usb/BBB/AAA`）、`port` は Linux の `/sys/bus/usb/devices` での名前（`バス-ポート.ポート…`）で、ポートの並びが分からないときは `-` です。PX-S1UD のようにシリアルの無い機材は `port` で見分けられ、`--fd` で渡すノードも `bus` と `address` から分かります。いずれもデバイスを開かずに得られる値です。デバイスが無いときは何も出力せず終了します。
+`--list` は `px4-userland` の `px4d --list` に揃えた `key=value` 形式です。対応 RIO デバイス 1 台につき `model= usb= bus= address= port= status=ready receivers=1` の行と、受信機の `receiver=0 device=1 local=0 system=ISDB-T` の行を出力します（Siano はシリアル番号を持たないため `serial=` はありません）。`--device` は受信時の選択に使い、一覧出力は絞り込みません。対応外の Siano デバイスは `rejected model= usb= bus= address= port= status=unsupported` の行になります。`bus` と `address` は usbfs のノード（Linux では `/dev/bus/usb/BBB/AAA`）、`port` は Linux の `/sys/bus/usb/devices` での名前（`バス-ポート.ポート…`）で、ポートの並びが分からないときは `-` です。PX-S1UD のようにシリアルの無い機材は `port` で見分けられ、`--fd` で渡すノードも `bus` と `address` から分かります。いずれもデバイスを開かずに得られる値です。デバイスが無いときは何も出力せず終了します。
 
 ```
 $ ./siano-ts --list
@@ -168,7 +169,7 @@ MPEG-TS ストリームデータは標準出力または `-o` で指定したフ
 | 10 | ファームウェア欠損またはロード拒否 |
 | 70 | メモリ確保またはスレッド生成失敗 |
 
-終了時に `TS queue dropped` が出力された場合は code `8` を返します。
+既定では終了時に `TS queue dropped` が出力された場合は code `8` を返します。`--fail-on-drop` を指定すると最初のdrop時に writer を起こし、プロセスを終了させます。
 
 同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USBノードとVHCI側のimport済みノードを区別するため、VHCI側ノードを事前にopenして`--fd`で渡す経路を実機検証している。これは同一ホスト内での検証記録であり、LAN経由のusbip構成に関する要件を示すものではない。
 
@@ -180,7 +181,7 @@ USB ノードの読み書き権限とは別に、Linux では USB イベント�
 
 ### PID フィルタの ACK 応答
 
-`--pid` 未指定時に設定されるキャッチオール PID (`0x2000`) に対し、ファームウェアから ACK 応答が返らない場合がありますが、ストリーム受信は正常に継続します。
+キャッチオール PID (`0x2000`) に対し、ファームウェアから ACK 応答が返らない場合があります。未指定時と `--pid 0x2000` のどちらも ACK を待たずに設定し、ストリーム受信を継続します。
 
 ## ビルド
 

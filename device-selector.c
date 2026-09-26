@@ -43,7 +43,7 @@ int siano_parse_device_selector(const char *text, struct siano_device_selector *
     }
     if (*cursor == ':') {
         cursor++;
-        if (first == 0 || first > UINT8_MAX ||
+        if (first > UINT8_MAX ||
             parse_number(&cursor, UINT8_MAX, &second) < 0 || second == 0 || *cursor != '\0')
             return -EINVAL;
         selector->kind = SIANO_DEVICE_SELECTOR_BUS_ADDRESS;
@@ -53,7 +53,7 @@ int siano_parse_device_selector(const char *text, struct siano_device_selector *
     }
     if (*cursor == '-') {
         cursor++;
-        if (first == 0 || first > UINT8_MAX ||
+        if (first > UINT8_MAX ||
             parse_number(&cursor, UINT8_MAX, &second) < 0 || second == 0)
             return -EINVAL;
         selector->kind = SIANO_DEVICE_SELECTOR_PORT;
