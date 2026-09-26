@@ -60,7 +60,7 @@ Linux ディストリビューション別の実機検証済み構成例は [Lin
 
 > [!WARNING]
 > - チューナー接続前にカーネルモジュール（`smsusb`、`smsdvb`、`smsmdtv`）をblacklistへ登録する。
-> - 稼働中のチューナーをカーネルから `siano-ts` へ動的に切り替える運用（live handoff）は安全と判定していない。
+> - 稼働中のチューナーをカーネルから `siano-ts` へ動的に切り替える運用（live handoff）は安全と判定していない。`siano-ts` は既定では**カーネルのドライバが掴んでいるデバイスを奪わず**、理由を表示して終了する（奪うのは `--detach-kernel-driver` を付けたときだけ）。
 > - すでにbind済みの場合は、blacklistを反映したうえでOSを再起動する。
 > - 詳細は [AppArmor文書の競合説明](docs/platforms/apparmor.md#smsusbとの競合) を参照する。
 
@@ -136,6 +136,7 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
 | `--device` | `N` | 列挙された対応 RIO デバイスの N 番目を使用 (0 起算、既定値: 0)。 |
 | `-l, --list` | なし | デバイスを開かずに一覧表示。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
+| `--detach-kernel-driver` | なし | カーネルのドライバ (`smsusb` など) が掴んでいても切り離して使う。既定では、`siano-ts` が使うインターフェースをカーネルのドライバが掴んでいれば奪わずに `interface N is bound to a kernel driver` と表示して終了する (live handoff は安全と判定していないため)。Windows など libusb が判定できない環境では従来どおり開く。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
 | `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。最初の選局成功後に一度だけ設定する。 |
 | `--firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
