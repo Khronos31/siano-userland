@@ -20,7 +20,9 @@ if ./siano-ts --control --channel 27 --freq 100 >/dev/null 2>&1; then
     exit 1
 fi
 if list_output=$(./siano-ts --list 2>tests/.list-err); then
-    printf '%s\n' "$list_output" | grep -Eq '0 devices|supported RIO device'
+    if [ -n "$list_output" ]; then
+        printf '%s\n' "$list_output" | grep -Eq '^(model=|receiver=0 device=1 local=0 system=ISDB-T)'
+    fi
 else
     if grep -q 'libusb_init' tests/.list-err; then
         echo "CLI tests: --list skipped (no USB backend)"
