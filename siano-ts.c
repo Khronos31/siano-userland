@@ -104,6 +104,8 @@ struct version_info {
 struct siano_device {
     libusb_context *usb;
     libusb_device_handle *handle;
+    /* --detach-kernel-driver: take the interface from a bound kernel driver. */
+    bool detach_kernel_driver;
     int interface_number;
     uint8_t in_ep;
     uint8_t tx_ep;
@@ -129,6 +131,7 @@ struct siano_device {
 struct options {
     bool list;
     bool control;
+    bool detach_kernel_driver;
     bool verbose;
     int device_index;
     int device_fd;
@@ -165,6 +168,8 @@ static void usage(FILE *stream, const char *program)
             "  -v, --verbose         log control message types\n"
             "  -l, --list            list Siano USB devices without opening them\n"
             "      --control         accept channel/tune/quit commands on stdin\n"
+            "      --detach-kernel-driver\n"
+            "                        take the device from a bound kernel driver (e.g. smsusb)\n"
             "  -h, --help            show this help\n"
             "A leftover integer argument is treated as --fd (termux-usb -e).\n",
             program);
@@ -238,6 +243,9 @@ static int apply_option(int option, const char *value_text, struct options *opti
     case 2:
         options->control = true;
         return 0;
+    case 3:
+        options->detach_kernel_driver = true;
+        return 0;
     case 'h':
         usage(stdout, program);
         fflush(stdout);
@@ -287,6 +295,7 @@ static int parse_options(int argc, char **argv, struct options *options)
         {"verbose", no_argument, NULL, 'v'},
         {"list", no_argument, NULL, 'l'},
         {"control", no_argument, NULL, 2},
+        {"detach-kernel-driver", no_argument, NULL, 3},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -1442,7 +1451,6 @@ static int inspect_and_claim(struct siano_device *device)
                 descriptor.idProduct, name);
         return -ENODEV;
     }
-    (void)libusb_set_auto_detach_kernel_driver(device->handle, 1);
     rc = libusb_get_active_config_descriptor(usb_device, &config);
     if (rc < 0) {
         fprintf(stderr, "active USB config: %s\n", libusb_error_name(rc));
@@ -1487,6 +1495,26 @@ static int inspect_and_claim(struct siano_device *device)
         return -ENODEV;
     }
     device->tx_ep = 2; /* smsusb_sendrequest() uses usb_sndbulkpipe(..., 2). */
+    /*
+     * Do not take the device from a bound kernel driver unless asked.  Handing
+     * a running tuner over from smsusb is not judged safe (README), and a
+     * program that did not mean to would silently break the DVB user of it.
+     * Only the interface claimed below matters: that is where smsusb binds
+     * (smsusb_probe() accepts only the board's intf_num, 0 for the supported
+     * IDs, and only on one-interface configs), and auto-detach below applies
+     * to exactly that interface.  libusb reports LIBUSB_ERROR_NOT_SUPPORTED
+     * where it cannot tell (e.g. Windows); go on there, as before.
+     */
+    if (!device->detach_kernel_driver
+        && libusb_kernel_driver_active(device->handle, device->interface_number) == 1) {
+        fprintf(stderr, "interface %d is bound to a kernel driver (e.g. smsusb); not taking it over.\n"
+                        "If it is smsusb, blacklist smsusb, smsdvb and smsmdtv and reboot.\n"
+                        "To take it anyway, pass --detach-kernel-driver.\n",
+                device->interface_number);
+        return -EBUSY;
+    }
+    if (device->detach_kernel_driver)
+        (void)libusb_set_auto_detach_kernel_driver(device->handle, 1);
     rc = libusb_claim_interface(device->handle, device->interface_number);
     if (rc < 0) {
         fprintf(stderr, "libusb_claim_interface(%d): %s\n", device->interface_number,
@@ -1691,6 +1719,7 @@ int main(int argc, char **argv)
         libusb_exit(usb);
         return 1;
     }
+    device->detach_kernel_driver = options.detach_kernel_driver;
     try_lock_pages();
     try_realtime(pthread_self(), WRITER_THREAD_PRIORITY, "writer");
     if (options.device_fd >= 0)
