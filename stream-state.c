@@ -3,6 +3,19 @@
 
 #include <libusb.h>
 
+int siano_stream_disconnect_error(int error)
+{
+    if (error == LIBUSB_ERROR_NO_DEVICE || error == LIBUSB_ERROR_IO ||
+        error == LIBUSB_ERROR_PIPE)
+        return LIBUSB_ERROR_NO_DEVICE;
+    return error;
+}
+
+bool siano_pid_filter_requires_ack(uint16_t pid)
+{
+    return pid != 0x2000;
+}
+
 int siano_stream_state_init(struct siano_stream_state *state)
 {
     state->stopping = false;
@@ -29,7 +42,7 @@ bool siano_stream_state_fail(struct siano_stream_state *state, int error)
     pthread_mutex_lock(&state->mutex);
     if (!state->stopping) {
         state->stopping = true;
-        state->error = error;
+        state->error = siano_stream_disconnect_error(error);
         transitioned = true;
     }
     pthread_mutex_unlock(&state->mutex);

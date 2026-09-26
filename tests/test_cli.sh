@@ -3,6 +3,27 @@ set -eu
 
 ./siano-ts --help | grep -q -- '--fd'
 ./siano-ts --help | grep -q -- '--control'
+./siano-ts --help | grep -q -- '-F, --firmware'
+./siano-ts --help | grep -q -- '-d, --device'
+./siano-ts --help | grep -q -- '-p, --pid'
+./siano-ts --help | grep -q -- '--fail-on-drop'
+./siano-ts --help | grep -q 'not filtered by --device'
+for zero_form in short long; do
+    case "$zero_form" in
+        short) set -- -t 0 ;;
+        long) set -- --time 0 ;;
+    esac
+    if ./siano-ts --channel 27 "$@" >/dev/null 2>tests/.cli-error; then
+        echo "--time 0 ($zero_form form) should be rejected" >&2
+        exit 1
+    else
+        status=$?
+    fi
+    test "${status:-0}" -eq 2 || {
+        echo "--time 0 ($zero_form form) should return usage exit 2" >&2
+        exit 1
+    }
+done
 if ./siano-ts --list --fd 3 >/dev/null 2>&1; then
     echo "--list --fd should be rejected" >&2
     exit 1
@@ -45,7 +66,16 @@ if ./siano-ts --channel 27 --firmware /definitely/missing/isdbt_rio.inp \
     >/dev/null 2>tests/.cli-error; then
     echo "missing firmware unexpectedly succeeded" >&2
     exit 1
+else
+    test "$?" -eq 10 || {
+        echo "missing firmware should return exit 10" >&2
+        exit 1
+    }
 fi
-grep -q 'Usage:' tests/.cli-error
+grep -q "firmware '/definitely/missing/isdbt_rio.inp'" tests/.cli-error
+if grep -q 'Usage:' tests/.cli-error; then
+    echo "missing firmware should not print full usage" >&2
+    exit 1
+fi
 rm -f tests/.cli-error
 echo "CLI tests: PASS"

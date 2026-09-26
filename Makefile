@@ -12,15 +12,17 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 all: siano-ts
 
-siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o device-selector.o exit-codes.o
+siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o control-input.o device-selector.o exit-codes.o queue-policy.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h device-selector.h detach-decision.h exit-codes.h usb-location.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h usb-location.h queue-policy.h write-policy.h
 protocol.o: protocol.c protocol.h
 stream-state.o: stream-state.c stream-state.h
 control-parse.o: control-parse.c control-parse.h
+control-input.o: control-input.c control-input.h
 device-selector.o: device-selector.c device-selector.h
 exit-codes.o: exit-codes.c exit-codes.h
+queue-policy.o: queue-policy.c queue-policy.h
 
 test-protocol: tests/test_protocol.o protocol.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -42,6 +44,11 @@ test-control-parse: tests/test_control_parse.o control-parse.o
 
 tests/test_control_parse.o: tests/test_control_parse.c control-parse.h
 
+test-control-input: tests/test_control_input.o control-input.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_control_input.o: tests/test_control_input.c control-input.h
+
 test-usb-location: tests/test_usb_location.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
@@ -62,19 +69,33 @@ test-exit-codes: tests/test_exit_codes.o exit-codes.o
 
 tests/test_exit_codes.o: tests/test_exit_codes.c exit-codes.h
 
-test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location test-detach-decision test-device-selector test-exit-codes
+test-queue-policy: tests/test_queue_policy.o queue-policy.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_queue_policy.o: tests/test_queue_policy.c queue-policy.h siano-os.h
+
+test-write-policy: tests/test_write_policy.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_write_policy.o: tests/test_write_policy.c write-policy.h
+
+test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy
 	./test-protocol
 	./test-clock
 	./test-stream-state
 	./test-control-parse
+	./test-control-input
 	./test-usb-location
 	./test-detach-decision
 	./test-device-selector
 	./test-exit-codes
+	./test-queue-policy
+	./test-write-policy
 	./tests/test_cli.sh
 	./tests/test-mdev.sh
 
 packaging-test:
+	python3 scripts/check-release-version.py --self-test
 	python3 scripts/audit-artifact.py --self-test
 	python3 scripts/package-source.py --self-test
 	python3 scripts/check-workflow-invariants.py
@@ -83,4 +104,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location test-detach-decision test-device-selector test-exit-codes *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy *.o tests/*.o tests/.cli-error tests/.list-err

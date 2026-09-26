@@ -48,6 +48,8 @@ def check_windows(text: str, path: Path) -> list[str]:
         errors.append(f"{path}: Windows job must run the reproducibility helper")
     if "siano-ts.exe --help" not in job:
         errors.append(f"{path}: Windows job must smoke-test the second build")
+    if "nmake /f Makefile.win test" not in job:
+        errors.append(f"{path}: Windows job must execute the MSVC C unit tests")
     if "audit-artifact.py --platform windows-x64" not in job:
         errors.append(f"{path}: Windows job must audit the second build")
     if "uses: actions/upload-artifact@" not in job or "name: bin-windows-x64" not in job:
@@ -63,12 +65,35 @@ def check_windows(text: str, path: Path) -> list[str]:
     return errors
 
 
+def check_release_version_guard(release: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        preflight = workflow_job(release, "preflight")
+    except ValueError as error:
+        return [f"release.yml: {error}"]
+    if "git fetch --force --tags origin" not in preflight:
+        errors.append("release.yml: preflight must fetch authoritative tags")
+    if "scripts/check-release-version.py" not in preflight or "GITHUB_SHA" not in preflight:
+        errors.append("release.yml: preflight must compare VERSION tag with source commit")
+    if "actions/checkout@" not in preflight or "fetch-depth: 0" not in preflight:
+        errors.append("release.yml: preflight must checkout source with complete history")
+    return errors
+
+
 def check_windows_makefile(text: str) -> list[str]:
     errors: list[str] = []
     if not re.search(r"(?m)^CFLAGS\s*=.*\s/Brepro(?:\s|$)", text):
         errors.append("Makefile.win: CFLAGS must enable /Brepro")
     if not re.search(r"(?m)^\s*\$\(CC\).*?/link\s+/Brepro(?:\s|$)", text):
         errors.append("Makefile.win: link command must enable /Brepro")
+    if not re.search(r"(?m)^test:.*\btest-control-input\.exe\b", text):
+        errors.append("Makefile.win: Windows test target must build control-input pipe tests")
+    if not re.search(r"(?m)^\s*\.\\test-control-input\.exe\s*$", text):
+        errors.append("Makefile.win: Windows test target must run control-input pipe tests")
+    if not re.search(r"(?m)^test:.*\btest-write-policy\.exe\b", text):
+        errors.append("Makefile.win: Windows test target must build write boundary tests")
+    if not re.search(r"(?m)^\s*\.\\test-write-policy\.exe\s*$", text):
+        errors.append("Makefile.win: Windows test target must run write boundary tests")
     return errors
 
 
@@ -90,6 +115,9 @@ def check_windows_baseline(baseline: Path, helper: Path) -> list[str]:
         errors.append(f"{helper}: must hash the generated EXE with SHA-256")
     if "baselineHash" not in helper_text or "actualHash" not in helper_text:
         errors.append(f"{helper}: must compare the generated hash with the baseline hash")
+    for source in ("queue-policy.c", "queue-policy.h", "control-input.c", "control-input.h", "write-policy.h"):
+        if source not in helper_text:
+            errors.append(f"{helper}: must include the Windows build input {source}")
     return errors
 
 
@@ -294,6 +322,7 @@ def main() -> int:
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    errors.extend(check_release_version_guard(release))
     errors.extend(check_windows(release, ROOT / ".github/workflows/release.yml"))
     errors.extend(check_android_packageable(
         ci, release,

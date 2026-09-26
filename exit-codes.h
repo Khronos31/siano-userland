@@ -6,5 +6,7 @@
 #include <libusb.h>
 
 int siano_exit_code(int rc);
+int siano_list_result(long long device_count);
+int siano_report_output_error(int error);
 
 #endif

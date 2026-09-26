@@ -215,6 +215,7 @@ jobs:
       - name: Build, prove reproducibility, and run Windows target
         shell: pwsh
         run: |
+          nmake /f Makefile.win test
           .\scripts\reproducible-windows-build.ps1
           .\siano-ts.exe --help | Out-Null
           New-Item -ItemType Directory -Force -Path evidence | Out-Null

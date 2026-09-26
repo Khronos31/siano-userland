@@ -3,6 +3,7 @@
 #define SIANO_STREAM_STATE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include "siano-os.h"
@@ -32,6 +33,8 @@ bool siano_stream_state_is_stopping(struct siano_stream_state *state);
 int siano_stream_state_error(struct siano_stream_state *state);
 int siano_stream_state_stream_result(struct siano_stream_state *state,
                                      int queue_result);
+int siano_stream_disconnect_error(int error);
+bool siano_pid_filter_requires_ack(uint16_t pid);
 enum siano_transfer_action siano_transfer_classify_status(int status,
                                                           bool stopping);
 int siano_transfer_status_error(int status);

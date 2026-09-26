@@ -35,6 +35,7 @@
 #include <time.h>
 #include <BaseTsd.h>
 #include "siano-clock.h"
+#include "queue-policy.h"
 
 typedef SSIZE_T ssize_t;
 
@@ -218,13 +219,15 @@ static inline int pthread_create(pthread_t *thread, void *attr,
     (void)attr;
     pack = malloc(sizeof(*pack));
     if (!pack)
-        return -1;
+        return siano_thread_create_error(true);
     pack->fn = fn;
     pack->arg = arg;
     handle = CreateThread(NULL, 0, siano_win_thread_start, pack, 0, NULL);
     if (!handle) {
+        DWORD error = GetLastError();
         free(pack);
-        return -1;
+        return siano_thread_create_error(error == ERROR_NOT_ENOUGH_MEMORY ||
+                                         error == ERROR_OUTOFMEMORY);
     }
     *thread = handle;
     return 0;
