@@ -5,20 +5,22 @@ CFLAGS ?= -O2
 # _FILE_OFFSET_BITS=64: 32-bit glibc open()+write() past 2GiB (EFBIG) without
 # O_LARGEFILE. No-op on LP64, musl, and Bionic (which already sets O_LARGEFILE).
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
-CFLAGS += $(shell $(PKG_CONFIG) --cflags libusb-1.0)
+CPPFLAGS += $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 .PHONY: all clean test packaging-test linux-static
 
 all: siano-ts
 
-siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o
+siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o device-selector.o exit-codes.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h usb-location.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h device-selector.h detach-decision.h exit-codes.h usb-location.h
 protocol.o: protocol.c protocol.h
 stream-state.o: stream-state.c stream-state.h
 control-parse.o: control-parse.c control-parse.h
+device-selector.o: device-selector.c device-selector.h
+exit-codes.o: exit-codes.c exit-codes.h
 
 test-protocol: tests/test_protocol.o protocol.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -45,12 +47,30 @@ test-usb-location: tests/test_usb_location.o
 
 tests/test_usb_location.o: tests/test_usb_location.c usb-location.h
 
-test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location
+test-detach-decision: tests/test_detach_decision.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_detach_decision.o: tests/test_detach_decision.c detach-decision.h
+
+test-device-selector: tests/test_device_selector.o device-selector.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+tests/test_device_selector.o: tests/test_device_selector.c device-selector.h usb-location.h
+
+test-exit-codes: tests/test_exit_codes.o exit-codes.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_exit_codes.o: tests/test_exit_codes.c exit-codes.h
+
+test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location test-detach-decision test-device-selector test-exit-codes
 	./test-protocol
 	./test-clock
 	./test-stream-state
 	./test-control-parse
 	./test-usb-location
+	./test-detach-decision
+	./test-device-selector
+	./test-exit-codes
 	./tests/test_cli.sh
 	./tests/test-mdev.sh
 
@@ -63,4 +83,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location *.o tests/*.o tests/.cli-error
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-usb-location test-detach-decision test-device-selector test-exit-codes *.o tests/*.o tests/.cli-error

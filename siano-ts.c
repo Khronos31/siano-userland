@@ -13,6 +13,9 @@
 
 #include "protocol.h"
 #include "control-parse.h"
+#include "device-selector.h"
+#include "detach-decision.h"
+#include "exit-codes.h"
 #include "usb-location.h"
 
 #ifdef _WIN32
@@ -133,7 +136,8 @@ struct options {
     bool control;
     bool detach_kernel_driver;
     bool verbose;
-    int device_index;
+    struct siano_device_selector device_selector;
+    const char *device_spec;
     int device_fd;
     int duration;
     bool have_duration;
@@ -161,12 +165,12 @@ static void usage(FILE *stream, const char *program)
             "  -f, --freq HZ         tune frequency in Hz\n"
             "  -t, --time SECONDS    stop after duration (default: until SIGINT)\n"
             "      --firmware PATH   isdbt_rio.inp\n"
-            "      --device N        RIO device index\n"
+            "      --device SPEC     index, USB port path (B-A.P...), or bus:address\n"
             "      --fd FD           use an already-open USB fd (Termux/Android)\n"
             "      --pid PID         add PID filter (repeatable)\n"
             "  -o, --output PATH     write TS to PATH instead of stdout\n"
             "  -v, --verbose         log control message types\n"
-            "  -l, --list            list Siano USB devices without opening them\n"
+            "  -l, --list            list devices (select with --device index/port/bus:address)\n"
             "      --control         accept channel/tune/quit commands on stdin\n"
             "      --detach-kernel-driver\n"
             "                        take the device from a bound kernel driver (e.g. smsusb)\n"
@@ -216,9 +220,9 @@ static int apply_option(int option, const char *value_text, struct options *opti
         options->firmware = (char *)value_text;
         return 0;
     case 'd':
-        if (parse_unsigned(value_text, INT_MAX, &value) < 0)
+        if (siano_parse_device_selector(value_text, &options->device_selector) < 0)
             return -EINVAL;
-        options->device_index = (int)value;
+        options->device_spec = value_text;
         return 0;
     case 1:
         if (parse_unsigned(value_text, INT_MAX, &value) < 0)
@@ -275,7 +279,9 @@ static int finish_options(int argc, char **argv, int leftover, struct options *o
         return -EINVAL;
     if (options->list && options->detach_kernel_driver)
         return -EINVAL;
-    if (options->device_fd >= 0 && options->device_index != 0)
+    if (options->device_fd >= 0 &&
+        (options->device_selector.kind != SIANO_DEVICE_SELECTOR_INDEX ||
+         options->device_selector.index != 0))
         return -EINVAL;
     if (!options->list && !options->control &&
         !options->have_channel && !options->have_frequency)
@@ -303,8 +309,10 @@ static int parse_options(int argc, char **argv, struct options *options)
     };
 
     memset(options, 0, sizeof(*options));
-    options->device_index = 0;
     options->device_fd = -1;
+    options->device_selector.kind = SIANO_DEVICE_SELECTOR_INDEX;
+    options->device_selector.index = 0;
+    options->device_spec = "0";
 #ifdef _WIN32
     {
         int i = 1;
@@ -970,7 +978,7 @@ static int load_family2_firmware(struct siano_device *device, const char *path,
         fprintf(stderr, "invalid firmware header in '%s': %s\n", path,
                 strerror(-rc));
         free(file_data);
-        return rc;
+        return -EBADMSG;
     }
     fprintf(stderr, "firmware: checksum=0x%08x length=%u start=0x%08x\n",
             header.check_sum, header.length, header.start_address);
@@ -1507,14 +1515,25 @@ static int inspect_and_claim(struct siano_device *device)
      * to exactly that interface.  libusb reports LIBUSB_ERROR_NOT_SUPPORTED
      * where it cannot tell (e.g. Windows); go on there, as before.
      */
-    if (!device->detach_kernel_driver
-        && libusb_kernel_driver_active(device->handle, device->interface_number) == 1) {
-        fprintf(stderr, "interface %d is bound to a kernel driver (e.g. smsusb); not taking it over.\n"
-                        "If it is smsusb, blacklist smsusb, smsdvb and smsmdtv and reboot.\n"
-                        "To take it anyway, pass --detach-kernel-driver.\n",
-                device->interface_number);
-        (void)siano_stream_state_fail(&device->state, EBUSY);
-        return -EBUSY;
+    if (!device->detach_kernel_driver) {
+        const int bound = libusb_kernel_driver_active(device->handle,
+                                                     device->interface_number);
+        enum detach_decision decision = classify_kernel_driver_query(bound);
+
+        if (decision == REFUSE_BOUND) {
+            fprintf(stderr, "interface %d is bound to a kernel driver (e.g. smsusb); not taking it over.\n"
+                            "If it is smsusb, blacklist smsusb, smsdvb and smsmdtv and reboot.\n"
+                            "To take it anyway, pass --detach-kernel-driver.\n",
+                    device->interface_number);
+            (void)siano_stream_state_fail(&device->state, EBUSY);
+            return -EBUSY;
+        }
+        if (decision == REFUSE_UNKNOWN) {
+            fprintf(stderr, "cannot query kernel driver state on interface %d: %s\n",
+                    device->interface_number, libusb_error_name(bound));
+            (void)siano_stream_state_fail(&device->state, EIO);
+            return -EIO;
+        }
     }
     if (device->detach_kernel_driver)
         (void)libusb_set_auto_detach_kernel_driver(device->handle, 1);
@@ -1533,11 +1552,31 @@ static int inspect_and_claim(struct siano_device *device)
     return 0;
 }
 
-static int open_rio(struct siano_device *device, int requested_index)
+static bool selector_matches(const struct siano_device_selector *selector,
+                             libusb_device *candidate)
+{
+    if (selector->kind == SIANO_DEVICE_SELECTOR_BUS_ADDRESS)
+        return libusb_get_bus_number(candidate) == selector->bus &&
+               libusb_get_device_address(candidate) == selector->address;
+    if (selector->kind == SIANO_DEVICE_SELECTOR_PORT) {
+        uint8_t ports[8];
+        int count = libusb_get_port_numbers(candidate, ports, (int)sizeof(ports));
+
+        return libusb_get_bus_number(candidate) == selector->bus &&
+               count == (int)selector->port_count &&
+               memcmp(ports, selector->ports, selector->port_count) == 0;
+    }
+    return false;
+}
+
+static int open_rio(struct siano_device *device,
+                    const struct siano_device_selector *selector,
+                    const char *selector_text)
 {
     libusb_device **list;
     ssize_t count;
-    int found = 0;
+    unsigned found = 0;
+    unsigned matched = 0;
     libusb_device *selected = NULL;
     int rc;
 
@@ -1551,13 +1590,23 @@ static int open_rio(struct siano_device *device, int requested_index)
             continue;
         if (!is_rio_id(descriptor.idVendor, descriptor.idProduct))
             continue;
-        if (found++ == requested_index) {
+        if (selector->kind == SIANO_DEVICE_SELECTOR_INDEX) {
+            if (found++ == selector->index) {
+                selected = list[i];
+                break;
+            }
+        } else if (selector_matches(selector, list[i])) {
             selected = list[i];
-            break;
+            matched++;
         }
     }
+    if (matched > 1) {
+        fprintf(stderr, "RIO device %s is ambiguous\n", selector_text);
+        libusb_free_device_list(list, 1);
+        return -EINVAL;
+    }
     if (!selected) {
-        fprintf(stderr, "RIO device index %d not found\n", requested_index);
+        fprintf(stderr, "RIO device %s not found\n", selector_text);
         libusb_free_device_list(list, 1);
         return -ENODEV;
     }
@@ -1599,11 +1648,14 @@ static int open_from_fd(struct siano_device *device, int fd)
 #endif
 }
 
-static void close_device(struct siano_device *device)
+static void close_device(struct siano_device *device, uint64_t *drops)
 {
     if (device->event_thread_started)
         stop_streaming(device);
     ts_queue_close(&device->ts);
+    pthread_mutex_lock(&device->ts.mutex);
+    *drops = device->ts.drops;
+    pthread_mutex_unlock(&device->ts.mutex);
     if (device->handle) {
         if (device->interface_number >= 0)
             libusb_release_interface(device->handle, device->interface_number);
@@ -1622,6 +1674,7 @@ static int init_device_state(struct siano_device *device, libusb_context *usb,
     memset(device, 0, sizeof(*device));
     device->usb = usb;
     device->verbose = verbose;
+    device->interface_number = -1;
     if (siano_stream_state_init(&device->state) != 0 ||
         pthread_mutex_init(&device->response_mutex, NULL) != 0)
         return -1;
@@ -1655,6 +1708,7 @@ int main(int argc, char **argv)
     bool pid_filters_added = false;
     int state_error;
     int rc;
+    uint64_t drops = 0;
 
 #ifdef _WIN32
     SetConsoleCtrlHandler(on_console, TRUE);
@@ -1686,7 +1740,7 @@ int main(int argc, char **argv)
         rc = resolve_firmware(options.firmware, &firmware_path);
         if (rc < 0) {
             usage(stderr, argv[0]);
-            return 2;
+            return siano_exit_code(rc);
         }
     }
 #ifdef SIANO_HAVE_WRAP_SYS_DEVICE
@@ -1707,20 +1761,20 @@ int main(int argc, char **argv)
     if (options.list) {
         rc = list_devices(usb);
         libusb_exit(usb);
-        return rc;
+        return siano_exit_code(rc);
     }
     device = calloc(1, sizeof(*device));
     if (!device) {
         free(firmware_path);
         libusb_exit(usb);
-        return 1;
+        return 70;
     }
     if (init_device_state(device, usb, options.verbose) < 0) {
         fprintf(stderr, "failed to initialize device state\n");
         free(device);
         free(firmware_path);
         libusb_exit(usb);
-        return 1;
+        return 70;
     }
     device->detach_kernel_driver = options.detach_kernel_driver;
     try_lock_pages();
@@ -1728,7 +1782,7 @@ int main(int argc, char **argv)
     if (options.device_fd >= 0)
         rc = open_from_fd(device, options.device_fd);
     else
-        rc = open_rio(device, options.device_index);
+        rc = open_rio(device, &options.device_selector, options.device_spec);
     if (rc < 0)
         goto out;
     rc = start_streaming(device);
@@ -1769,16 +1823,22 @@ int main(int argc, char **argv)
                            stream_ts(device, output_fd, options.duration);
 out:
     state_error = siano_stream_state_error(&device->state);
-    if (device->ts.drops != 0)
+    close_device(device, &drops);
+    if (drops != 0)
         fprintf(stderr, "TS queue dropped %llu chunk(s)\n",
-                (unsigned long long)device->ts.drops);
+                (unsigned long long)drops);
     if (close_output)
         close(output_fd);
-    close_device(device);
     free(device);
     free(firmware_path);
     libusb_exit(usb);
     if (rc < 0 && !stop_requested && state_error == 0)
         fprintf(stderr, "siano-ts: %s\n", strerror(-rc));
-    return stop_requested ? 0 : (rc < 0 ? 1 : 0);
+    if (drops != 0)
+        return 8;
+    if (stop_requested)
+        return 0;
+    if (state_error == LIBUSB_ERROR_NO_DEVICE)
+        return 7;
+    return siano_exit_code(rc);
 }

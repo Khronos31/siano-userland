@@ -9,10 +9,10 @@ LIBS = $(LIBUSB_DIR)\libusb-1.0.lib
 
 all: siano-ts.exe
 
-siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj control-parse.obj
-	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj /link /Brepro $(LIBS)
+siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj control-parse.obj device-selector.obj exit-codes.obj
+	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj device-selector.obj exit-codes.obj /link /Brepro $(LIBS)
 
-siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h siano-os.h siano-clock.h usb-location.h
+siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h device-selector.h detach-decision.h exit-codes.h siano-os.h siano-clock.h usb-location.h
 	$(CC) $(CFLAGS) /c siano-ts.c
 
 protocol.obj: protocol.c protocol.h
@@ -24,5 +24,11 @@ stream-state.obj: stream-state.c stream-state.h siano-os.h
 control-parse.obj: control-parse.c control-parse.h
 	$(CC) $(CFLAGS) /c control-parse.c
 
+device-selector.obj: device-selector.c device-selector.h
+	$(CC) $(CFLAGS) /c device-selector.c
+
+exit-codes.obj: exit-codes.c exit-codes.h siano-os.h
+	$(CC) $(CFLAGS) /c exit-codes.c
+
 clean:
-	del /q siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj 2>nul
+	del /q siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj device-selector.obj exit-codes.obj 2>nul
