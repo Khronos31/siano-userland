@@ -378,32 +378,35 @@ static bool is_rio_id(uint16_t vendor, uint16_t product)
 static const char *device_name(uint16_t vendor, uint16_t product, bool *supported)
 {
     *supported = is_rio_id(vendor, product);
-    if (*supported)
-        return "Siano Rio (ISDB-T)";
+    if (*supported) {
+        if (vendor == 0x3275 && product == 0x0080)
+            return "PX-S1UD";
+        if (vendor == 0x187f && product == 0x0600)
+            return "Siano-Rio-0600";
+        return "Siano-Rio-0302";
+    }
     if (vendor == 0x187f) {
         switch (product) {
-        case 0x0010: return "Siano Stellar ROM (unsupported)";
-        case 0x0100: return "Siano Stellar (unsupported)";
-        case 0x0200: return "Siano Nova A (unsupported)";
-        case 0x0201: return "Siano Nova B (unsupported)";
-        case 0x0300: return "Siano Vega (unsupported)";
-        case 0x0301: return "Siano Venice (unsupported)";
-        case 0x0310: return "Siano Ming (unsupported)";
-        case 0x0500: return "Siano Pele (unsupported)";
-        case 0x0700: return "Siano Denver 2160 (unsupported)";
-        case 0x0800: return "Siano Denver 1530 (unsupported)";
-        default: return "Siano device (unsupported)";
+        case 0x0010: return "Siano-Stellar-ROM";
+        case 0x0100: return "Siano-Stellar";
+        case 0x0200: return "Siano-Nova-A";
+        case 0x0201: return "Siano-Nova-B";
+        case 0x0300: return "Siano-Vega";
+        case 0x0301: return "Siano-Venice";
+        case 0x0310: return "Siano-Ming";
+        case 0x0500: return "Siano-Pele";
+        case 0x0700: return "Siano-Denver-2160";
+        case 0x0800: return "Siano-Denver-1530";
+        default: return "Siano-device";
         }
     }
-    return "USB device";
+    return "USB-device";
 }
 
 static int list_devices(libusb_context *usb)
 {
     libusb_device **list;
     ssize_t count;
-    size_t rio_count = 0;
-    size_t known_count = 0;
 
     count = libusb_get_device_list(usb, &list);
     if (count < 0) {
@@ -420,7 +423,6 @@ static int list_devices(libusb_context *usb)
         name = device_name(descriptor.idVendor, descriptor.idProduct, &supported);
         if (descriptor.idVendor != 0x187f && descriptor.idVendor != 0x3275)
             continue;
-        known_count++;
         /* Hub depth is at most 7; a longer path reads as "port=-". */
         uint8_t ports[7];
         int port_count = libusb_get_port_numbers(list[i], ports, (int)sizeof(ports));
@@ -430,20 +432,15 @@ static int list_devices(libusb_context *usb)
                                       port_count) < 0)
             location[0] = '\0';
         if (supported) {
-            printf("%zu: %04x:%04x %s%s\n", rio_count, descriptor.idVendor,
-                   descriptor.idProduct, name, location);
-            rio_count++;
+            printf("model=%s usb=%04x:%04x%s status=ready receivers=1\n",
+                   name, descriptor.idVendor, descriptor.idProduct, location);
+            printf("receiver=0 device=1 local=0 system=ISDB-T\n");
         } else {
-            printf("-: %04x:%04x %s%s\n", descriptor.idVendor,
-                   descriptor.idProduct, name, location);
+            printf("rejected model=%s usb=%04x:%04x%s status=unsupported\n",
+                   name, descriptor.idVendor, descriptor.idProduct, location);
         }
     }
     libusb_free_device_list(list, 1);
-    if (known_count == 0)
-        printf("0 devices\n");
-    else
-        printf("%zu supported RIO device(s), %zu known Siano device(s)\n",
-               rio_count, known_count);
     return 0;
 }
 

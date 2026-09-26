@@ -135,19 +135,19 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 | `--control` | なし | 標準入力の `channel N` / `tune HZ` / `quit` で選局・終了。初期選局は省略可能。TS は stdout、診断は stderr。`-t` / `--list` とは併用不可。 |
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
 | `--device` | `N` | 列挙された対応 RIO デバイスの N 番目を使用 (0 起算、既定値: 0)。 |
-| `-l, --list` | なし | デバイスを開かずに一覧表示。各行の末尾に `bus=` / `address=` / `port=` を付ける（下記）。 |
+| `-l, --list` | なし | デバイスを開かずに一覧表示。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
 | `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。最初の選局成功後に一度だけ設定する。 |
 | `--firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
 | `-v, --verbose` | なし | 制御メッセージ種別を標準エラー出力へ表示。 |
 | `-h, --help` | なし | ヘルプを表示して終了。 |
 
-`--list` の各行は `番号: VID:PID 機種名 bus=B address=A port=P` の形です（対応外の Siano デバイスは番号の代わりに `-`）。`bus` と `address` は usbfs のノード（Linux では `/dev/bus/usb/BBB/AAA`）、`port` は Linux の `/sys/bus/usb/devices` での名前（`バス-ポート.ポート…`）で、ポートの並びが分からないときは `-` です。PX-S1UD のようにシリアルの無い機材は `port` で見分けられ、`--fd` で渡すノードも `bus` と `address` から分かります。いずれもデバイスを開かずに得られる値です。
+`--list` は `px4-userland` の `px4d --list` に揃えた `key=value` 形式です。対応 RIO デバイス 1 台につき `model= usb= bus= address= port= status=ready receivers=1` の行と、受信機の `receiver=0 device=1 local=0 system=ISDB-T` の行を出力します（Siano はシリアル番号を持たないため `serial=` はありません）。対応外の Siano デバイスは `rejected model= usb= bus= address= port= status=unsupported` の行になります。`bus` と `address` は usbfs のノード（Linux では `/dev/bus/usb/BBB/AAA`）、`port` は Linux の `/sys/bus/usb/devices` での名前（`バス-ポート.ポート…`）で、ポートの並びが分からないときは `-` です。PX-S1UD のようにシリアルの無い機材は `port` で見分けられ、`--fd` で渡すノードも `bus` と `address` から分かります。いずれもデバイスを開かずに得られる値です。デバイスが無いときは何も出力せず終了します。
 
 ```
 $ ./siano-ts --list
-0: 3275:0080 Siano Rio (ISDB-T) bus=1 address=4 port=1-2
-1 supported RIO device(s), 1 known Siano device(s)
+model=PX-S1UD usb=3275:0080 bus=1 address=4 port=1-2 status=ready receivers=1
+receiver=0 device=1 local=0 system=ISDB-T
 ```
 
 MPEG-TS ストリームデータは標準出力または `-o` で指定したファイルへ出力されます。診断やログはすべて標準エラー出力 (stderr) へ出力されるため、標準出力をパイプ等で安全に中継できます。
