@@ -273,6 +273,8 @@ static int finish_options(int argc, char **argv, int leftover, struct options *o
         return -EINVAL;
     if (options->list && options->device_fd >= 0)
         return -EINVAL;
+    if (options->list && options->detach_kernel_driver)
+        return -EINVAL;
     if (options->device_fd >= 0 && options->device_index != 0)
         return -EINVAL;
     if (!options->list && !options->control &&
@@ -1511,6 +1513,7 @@ static int inspect_and_claim(struct siano_device *device)
                         "If it is smsusb, blacklist smsusb, smsdvb and smsmdtv and reboot.\n"
                         "To take it anyway, pass --detach-kernel-driver.\n",
                 device->interface_number);
+        (void)siano_stream_state_fail(&device->state, EBUSY);
         return -EBUSY;
     }
     if (device->detach_kernel_driver)

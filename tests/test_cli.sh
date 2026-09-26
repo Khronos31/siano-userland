@@ -7,6 +7,10 @@ if ./siano-ts --list --fd 3 >/dev/null 2>&1; then
     echo "--list --fd should be rejected" >&2
     exit 1
 fi
+if ./siano-ts --list --detach-kernel-driver >/dev/null 2>&1; then
+    echo "--list --detach-kernel-driver should be rejected" >&2
+    exit 1
+fi
 if ! ./siano-ts --help | grep -q -- '--detach-kernel-driver'; then
     echo "--help should mention --detach-kernel-driver" >&2
     exit 1
@@ -30,15 +34,6 @@ if list_output=$(./siano-ts --list 2>tests/.list-err); then
 else
     if grep -q 'libusb_init' tests/.list-err; then
         echo "CLI tests: --list skipped (no USB backend)"
-    else
-        cat tests/.list-err >&2
-        exit 1
-    fi
-fi
-rm -f tests/.list-err
-if ! ./siano-ts --detach-kernel-driver --list >/dev/null 2>tests/.list-err; then
-    if grep -q 'libusb_init' tests/.list-err; then
-        echo "CLI tests: --detach-kernel-driver --list skipped (no USB backend)"
     else
         cat tests/.list-err >&2
         exit 1
