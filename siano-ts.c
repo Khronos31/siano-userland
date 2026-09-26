@@ -13,6 +13,7 @@
 
 #include "protocol.h"
 #include "control-parse.h"
+#include "usb-location.h"
 
 #ifdef _WIN32
 #include "siano-os.h"
@@ -420,13 +421,21 @@ static int list_devices(libusb_context *usb)
         if (descriptor.idVendor != 0x187f && descriptor.idVendor != 0x3275)
             continue;
         known_count++;
+        /* Hub depth is at most 7; a longer path reads as "port=-". */
+        uint8_t ports[7];
+        int port_count = libusb_get_port_numbers(list[i], ports, (int)sizeof(ports));
+        char location[64];
+        if (siano_format_usb_location(location, sizeof(location), libusb_get_bus_number(list[i]),
+                                      libusb_get_device_address(list[i]), ports,
+                                      port_count) < 0)
+            location[0] = '\0';
         if (supported) {
-            printf("%zu: %04x:%04x %s\n", rio_count, descriptor.idVendor,
-                   descriptor.idProduct, name);
+            printf("%zu: %04x:%04x %s%s\n", rio_count, descriptor.idVendor,
+                   descriptor.idProduct, name, location);
             rio_count++;
         } else {
-            printf("-: %04x:%04x %s\n", descriptor.idVendor,
-                   descriptor.idProduct, name);
+            printf("-: %04x:%04x %s%s\n", descriptor.idVendor,
+                   descriptor.idProduct, name, location);
         }
     }
     libusb_free_device_list(list, 1);

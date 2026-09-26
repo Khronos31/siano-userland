@@ -23,7 +23,8 @@ $sourceFiles = @(
     'siano-os.h',
     'siano-ts.c',
     'stream-state.c',
-    'stream-state.h'
+    'stream-state.h',
+    'usb-location.h'
 )
 
 function New-CleanBuild([string]$name) {
