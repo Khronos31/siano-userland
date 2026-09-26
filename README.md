@@ -44,7 +44,7 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 ### ランタイム
 
 - **Linux**: ソースビルドは glibc / musl に対応します。配布バイナリは libusb 1.0.30 を静的リンクした、libc 非依存のバイナリです。
-- **macOS**: `libusb` (libusb-1.0 共有ライブラリ)
+- **macOS**: 追加ランタイム不要。配布バイナリ (arm64) は libusb 1.0.30 を静的リンクしており、Homebrew などの libusb は不要です (動的に読み込むのは macOS のシステムライブラリとフレームワークだけです)。`MACOSX_DEPLOYMENT_TARGET=11.0` でビルドしています。
 - **Android (Termux)**: 追加ランタイム不要 (Bionic 向けに libusb を静的リンク済み)。配布対象 ABI は aarch64 / armv7a / x86_64 です。
 - **Windows**: WinUSB ドライバ、`libusb-1.0.dll` (配布アーカイブに同梱)
 
@@ -192,6 +192,8 @@ USB ノードの読み書き権限とは別に、Linux では USB イベント�
 make
 make test
 ```
+
+配布バイナリと同じく libusb を静的リンクしたビルドは、Linux では `scripts/build-linux-static.sh` (Alpine)、macOS (arm64) では `scripts/build-macos-static.sh` で作れます。どちらも固定した libusb 1.0.30 のソースを取得・検証してビルドするため、libusb の開発用パッケージは不要です。手順は [packaging/REBUILD.md](packaging/REBUILD.md) を参照してください。
 
 ### Windows
 

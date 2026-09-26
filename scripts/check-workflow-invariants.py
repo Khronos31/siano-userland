@@ -93,21 +93,48 @@ def check_windows_baseline(baseline: Path, helper: Path) -> list[str]:
     return errors
 
 
-def check_macos_strip(text: str, path: Path) -> list[str]:
+def check_macos_strip(text: str, path: Path, build_script: str) -> list[str]:
     errors: list[str] = []
     try:
         job = workflow_job(text, "macos")
     except ValueError as error:
         return [f"{path}: {error}"]
-    if "xcrun --find strip" not in job or "-S -x ./siano-ts" not in job:
-        errors.append(f"{path}: macOS job must use Apple strip -S -x")
-    if "-N ./siano-ts" in job:
-        errors.append(f"{path}: macOS job must not use Apple strip -N")
-    if "./siano-ts --help" not in job:
-        errors.append(f"{path}: macOS job must smoke-test the stripped binary")
+    if "scripts/build-macos-static.sh" not in job:
+        errors.append(f"{path}: macOS job must build with scripts/build-macos-static.sh")
+    if "brew install" in job:
+        errors.append(f"{path}: macOS job must not install Homebrew libusb")
+    if "otool -L build/darwin-arm64/siano-ts" not in job:
+        errors.append(f"{path}: macOS job must print the release binary's dylib load commands")
     if ("command -v otool" not in job or "command -v lipo" not in job or
             "command -v nm" not in job):
         errors.append(f"{path}: macOS job must verify native otool/lipo/nm availability")
+    if "xcrun --find strip" not in build_script or '-S -x "$build_root/siano-ts"' not in build_script:
+        errors.append("build-macos-static.sh: must use Apple strip -S -x")
+    if re.search(r'strip_bin"[^\n]*\s-N\b', build_script):
+        errors.append("build-macos-static.sh: must not use Apple strip -N")
+    if '"$build_root/siano-ts" --help' not in build_script:
+        errors.append("build-macos-static.sh: must smoke-test the stripped binary")
+    if "audit-artifact.sh\" --platform darwin-arm64" not in build_script:
+        errors.append("build-macos-static.sh: must audit the stripped binary")
+    return errors
+
+
+def check_macos_release(release: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        relink_job = workflow_job(release, "source-relink-darwin-arm64")
+        package_job = workflow_job(release, "package")
+    except ValueError as error:
+        return [f"release.yml: {error}"]
+    if "runs-on: macos-14" not in relink_job or "test-static-relink.sh" not in relink_job or \
+            "--arch arm64" not in relink_job:
+        errors.append("release.yml: macOS relink job must run test-static-relink.sh --arch arm64 on macos-14")
+    if "source-relink-darwin-arm64" not in package_job.split("needs:", 1)[-1].split("runs-on:", 1)[0]:
+        errors.append("release.yml: package job must depend on the macOS relink job")
+    darwin_lines = [line for line in package_job.splitlines()
+                    if "scripts/package-artifact.sh --platform darwin-arm64" in line]
+    if len(darwin_lines) != 1 or "--libusb-source-archive" not in darwin_lines[0]:
+        errors.append("release.yml: macOS package must carry the libusb source archive")
     return errors
 
 
@@ -261,7 +288,8 @@ def main() -> int:
         ROOT / "scripts/reproducible-windows-build.ps1"))
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     errors.extend(check_windows(ci, ROOT / ".github/workflows/ci.yml"))
-    errors.extend(check_macos_strip(ci, ROOT / ".github/workflows/ci.yml"))
+    macos_build = (ROOT / "scripts/build-macos-static.sh").read_text(encoding="utf-8")
+    errors.extend(check_macos_strip(ci, ROOT / ".github/workflows/ci.yml", macos_build))
     errors.extend(check_ci_packaging(ci, ROOT / ".github/workflows/ci.yml"))
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
@@ -271,7 +299,8 @@ def main() -> int:
         ci, release,
         (ROOT / "scripts/audit-artifact.py").read_text(encoding="utf-8"),
         (ROOT / "scripts/package-artifact.py").read_text(encoding="utf-8")))
-    errors.extend(check_macos_strip(release, ROOT / ".github/workflows/release.yml"))
+    errors.extend(check_macos_strip(release, ROOT / ".github/workflows/release.yml", macos_build))
+    errors.extend(check_macos_release(release))
     for job_id in RC_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(release, ROOT / ".github/workflows/release.yml", job_id, "release-candidate"))
     if errors:

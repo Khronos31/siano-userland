@@ -242,6 +242,8 @@ def main() -> int:
             "libusb_license": "LGPL-2.1-or-later",
             "linux_linkage": "static",
             "linux_libusb_backend": "netlink",
+            "darwin_linkage": "static",
+            "darwin_libusb_backend": "darwin",
             "firmware_url": FIRMWARE_URL, "firmware_sha256": FIRMWARE_SHA256,
             "firmware_license_url": FIRMWARE_LICENSE_URL,
             "firmware_license_sha256": FIRMWARE_LICENSE_SHA256, "files": {},

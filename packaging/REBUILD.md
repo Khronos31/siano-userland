@@ -36,6 +36,41 @@ complete pinned libusb source, `libusb/COPYING` in the binary archive, and this
 relink recipe. These materials are provided so libusb can be modified and the
 executable relinked as required by LGPL section 6(a).
 
+## macOS static binary
+
+The macOS arm64 release binary is built on arm64 macOS with the same pinned
+libusb 1.0.30 source, using the darwin (IOKit) backend.
+`repository/scripts/build-macos-static.sh` is the exact build script. It needs
+the Xcode command line tools and no Homebrew packages; the builds run in a
+clean environment so a Homebrew libusb cannot be picked up:
+
+```sh
+cd repository
+SOURCE_REF=<source-ref> \
+  LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
+  scripts/build-macos-static.sh
+```
+
+libusb is configured with `--disable-shared --enable-static
+--disable-examples-build --disable-tests-build` and
+`MACOSX_DEPLOYMENT_TARGET=11.0`. The resulting `libusb-1.0.a` is passed
+directly to the final link together with `-framework IOKit -framework
+CoreFoundation -framework Security`, which libusb's darwin backend requires.
+The script then applies Apple `strip -S -x`, runs `siano-ts --help`, and
+audits the result: every image named by the Mach-O dylib load commands (as
+listed by `otool -L`) must be a macOS system library under `/usr/lib/` or
+`/System/Library/Frameworks/`, no libusb dylib may be loaded, and the
+`LC_BUILD_VERSION` minimum must be macOS 11.0. The build options and the
+actual libusb source checksum are recorded in
+`build/darwin-arm64/evidence/build.properties`. To relink with a modified
+libusb, pass the modified source tarball as `LIBUSB_SOURCE_ARCHIVE` together
+with `ALLOW_UNPINNED_LIBUSB=1`.
+
+The static macOS executable includes libusb under the LGPL-2.1-or-later, with
+the same materials as the Linux binaries: the corresponding source archive,
+`libusb/COPYING` in the binary archive, and this relink recipe (LGPL section
+6(a)).
+
 ## Clean relink test
 
 Run the following from an Alpine environment. It extracts the corresponding
@@ -50,10 +85,12 @@ repository/scripts/test-static-relink.sh \
   --arch x86_64
 ```
 
+The same test runs on arm64 macOS with `--arch arm64`, using
+`build-macos-static.sh` instead of the Alpine build.
+
 ## Other targets
 
-macOS uses the platform's host `libusb-1.0` shared library. Windows uses the
-libusb 1.0.30 WinUSB package identified in `libusb/NOTICE.txt`; the downloaded
+Windows uses the libusb 1.0.30 WinUSB package identified in `libusb/NOTICE.txt`; the downloaded
 7z is verified during the build and is not embedded in the ZIP.
 
 Android uses libusb 1.0.30 statically. The exact source archive is included as
@@ -82,7 +119,7 @@ separately licensed input from the pinned URL and verify its SHA256 before
 passing it to `--firmware`. The license text and its pinned URL/SHA256 are
 recorded in `LICENCE.siano` and `DEPENDENCY-NOTICE.txt`.
 
-The macOS distribution workflow applies Apple `strip -S -x` to `siano-ts`,
+The macOS build script applies Apple `strip -S -x` to `siano-ts`,
 smoke-tests `siano-ts --help`, and then audits the Mach-O load commands for
 DWARF and local symbols. It does not use `strip -N`, which removes all nlist
 entries and is not required for debug-symbol removal.

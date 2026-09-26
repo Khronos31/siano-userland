@@ -208,8 +208,18 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
         ]
         explanation = f"Linux embeds a statically linked libusb {LIBUSB_VERSION} built without udev; see libusb/COPYING and the corresponding source archive."
     else:
-        fields += ["dependency.libusb.linkage=dynamic", "dependency.libusb.provider=host"]
-        explanation = "macOS builds use the host-provided dynamic libusb library."
+        fields += [
+            f"dependency.libusb.version={LIBUSB_VERSION}",
+            "dependency.libusb.linkage=static",
+            "dependency.libusb.license=LGPL-2.1-or-later",
+            "dependency.libusb.backend=darwin",
+            f"corresponding-source=siano-ts-{version}-source.tar.gz",
+            f"corresponding-source.path=third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
+            f"libusb.source.url={LIBUSB_SOURCE_URL}",
+            f"libusb.source.sha256={LIBUSB_SOURCE_SHA256}",
+        ]
+        explanation = (f"macOS embeds a statically linked libusb {LIBUSB_VERSION}; only macOS system libraries "
+                       "and frameworks are loaded dynamically. See libusb/COPYING and the corresponding source archive.")
     body = "\n".join(fields)
     with template.open("r", encoding="utf-8", newline="") as handle:
         text = handle.read()
@@ -232,8 +242,9 @@ def main() -> int:
     if not _audit.VERSION_RE.fullmatch(args.version):
         fail("version must be strict N.N.N")
     validate_source_ref(args.source_ref)
-    if (args.platform.startswith("android") or args.platform.startswith("linux-")) and not args.libusb_source_archive:
-        fail("Android and static Linux packages require --libusb-source-archive")
+    if (args.platform.startswith("android") or args.platform.startswith("linux-") or
+            args.platform == "darwin-arm64") and not args.libusb_source_archive:
+        fail("Android, static Linux, and macOS packages require --libusb-source-archive")
     if args.platform == "windows-x64" and (not args.windows_package or not args.libusb_source_archive):
         fail("Windows package requires --windows-package and --libusb-source-archive")
     firmware = args.firmware.resolve()
@@ -298,8 +309,9 @@ def main() -> int:
             ndk_hashes = {key: sha256(stage / f"evidence/ndk/{name}") for key, name in {
                 "source_properties": "source.properties", "notice": "NOTICE",
                 "notice_toolchain": "NOTICE.toolchain"}.items()}
-        if args.platform.startswith("linux-"):
+        if args.platform.startswith("linux-") or args.platform == "darwin-arm64":
             copy_regular(build / "evidence/build.properties", stage / "evidence/build.properties")
+        if args.platform.startswith("linux-"):
             for name in ("siano-ts-mdev.conf", "siano-ts-mdev.sh", "siano-ts-mdev.start"):
                 copy_regular(repo_root / "packaging/mdev" / name, stage / "mdev" / name)
         if args.platform == "windows-x64":
@@ -329,7 +341,7 @@ def main() -> int:
                          "license_url": FIRMWARE_LICENSE_URL, "license_sha256": FIRMWARE_LICENSE_SHA256},
         }
         metadata = {
-            "darwin-arm64": ("arm64", "dynamic", "darwin"),
+            "darwin-arm64": ("arm64", "static", "darwin"),
             "android-aarch64": ("aarch64", "static", "bionic"),
             "android-armv7a": ("armv7a", "static", "bionic"),
             "android-x86_64": ("x86_64", "static", "bionic"),
@@ -350,6 +362,11 @@ def main() -> int:
                     "udev": "disabled", "backend": "netlink",
                 },
             })
+        if args.platform == "darwin-arm64":
+            manifest["libusb"] = {
+                "version": LIBUSB_VERSION, "source_ref": LIBUSB_SOURCE_URL,
+                "source_sha256": LIBUSB_SOURCE_SHA256, "linkage": "static", "backend": "darwin",
+            }
         if args.platform.startswith("android") or args.platform == "windows-x64":
             manifest["libusb"] = {
                 "version": LIBUSB_VERSION, "source_ref": LIBUSB_SOURCE_URL,

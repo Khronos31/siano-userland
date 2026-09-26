@@ -106,28 +106,20 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Build and audit
+      - name: Build with static libusb, test, and audit
         run: |
           command -v otool
           command -v lipo
           command -v nm
-          brew install libusb pkgconf
-          libusb_prefix=$(brew --prefix libusb)
-          export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          make test
-          strip_bin=$(xcrun --find strip)
-          "$strip_bin" -S -x ./siano-ts
-          ./siano-ts --help >/dev/null
-          mkdir -p evidence
-          scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" \
-            --evidence-output evidence/binary-audit.json
+          SOURCE_REF="$GITHUB_SHA" scripts/build-macos-static.sh
+          otool -L build/darwin-arm64/siano-ts
+          PKG_CONFIG="$GITHUB_WORKSPACE/build/darwin-arm64/pkg-config-libusb" make test
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-darwin-arm64
           path: |
-            siano-ts
-            evidence/binary-audit.json
+            build/darwin-arm64/siano-ts
+            build/darwin-arm64/evidence
           if-no-files-found: error
 
   android:
@@ -277,9 +269,25 @@ jobs:
             "$tmp/repository/scripts/test-static-relink.sh" --source-archive "$archive" --arch aarch64
           '
 
+  source-relink-darwin-arm64:
+    name: Clean source rebuild and relink (macOS arm64)
+    needs: source
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc-source
+          path: source
+      - name: Rebuild and prove modified libusb was linked
+        run: |
+          archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
+          tmp=$(mktemp -d)
+          tar -xzf "$archive" -C "$tmp"
+          "$tmp/repository/scripts/test-static-relink.sh" --source-archive "$archive" --arch arm64
+
   package:
     name: Package candidate archives
-    needs: [linux-static, linux-static-arm64, macos, android, windows, source, source-relink-x86_64, source-relink-aarch64]
+    needs: [linux-static, linux-static-arm64, macos, android, windows, source, source-relink-x86_64, source-relink-aarch64, source-relink-darwin-arm64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -315,7 +323,7 @@ jobs:
             out="$1"
             scripts/package-artifact.sh --platform linux-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform linux-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-linux-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
-            scripts/package-artifact.sh --platform darwin-arm64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-darwin-arm64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --output-dir "$out"
+            scripts/package-artifact.sh --platform darwin-arm64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-darwin-arm64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform android-aarch64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-aarch64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform android-armv7a --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-armv7a --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"
             scripts/package-artifact.sh --platform android-x86_64 --version "$version" --source-ref "$GITHUB_SHA" --build-dir dist/bin-android-x86_64 --firmware "$RUNNER_TEMP/isdbt_rio.inp" --libusb-source-archive "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" --output-dir "$out"

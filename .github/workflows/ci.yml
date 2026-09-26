@@ -235,28 +235,21 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install libusb
-        run: brew install libusb pkgconf
-      - name: Build and test
+      - name: Build with static libusb, test, and audit
         run: |
           command -v otool
           command -v lipo
           command -v nm
-          libusb_prefix=$(brew --prefix libusb)
-          export PKG_CONFIG_PATH="$libusb_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          make test
-          strip_bin=$(xcrun --find strip)
-          "$strip_bin" -S -x ./siano-ts
-          ./siano-ts --help >/dev/null
-          scripts/audit-artifact.sh --platform darwin-arm64 --binary ./siano-ts \
-            --source-ref "$GITHUB_SHA" --evidence-output evidence/binary-audit.json
+          SOURCE_REF="$GITHUB_SHA" scripts/build-macos-static.sh
+          otool -L build/darwin-arm64/siano-ts
+          PKG_CONFIG="$GITHUB_WORKSPACE/build/darwin-arm64/pkg-config-libusb" make test
           make packaging-test
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-darwin-arm64
           path: |
-            siano-ts
-            evidence/binary-audit.json
+            build/darwin-arm64/siano-ts
+            build/darwin-arm64/evidence
           if-no-files-found: error
 
   android:

@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Rebuild the exact corresponding-source archive and relink against a
 # deliberately changed, harmless libusb source. This is an offline test.
+# --arch x86_64 or aarch64 runs the Linux build in Alpine; --arch arm64 runs
+# the macOS build on arm64 macOS.
 set -eu
 
 usage() {
-	echo "usage: $0 --source-archive ARCHIVE --arch x86_64|aarch64" >&2
+	echo "usage: $0 --source-archive ARCHIVE --arch x86_64|aarch64|arm64" >&2
 	exit 2
 }
 
@@ -19,7 +21,11 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 [ -n "$source_archive" ] && [ -f "$source_archive" ] || usage
-case "$arch" in x86_64|aarch64) ;; *) usage ;; esac
+case "$arch" in
+x86_64|aarch64) build_script=build-linux-static.sh ;;
+arm64) build_script=build-macos-static.sh ;;
+*) usage ;;
+esac
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
@@ -30,7 +36,7 @@ mkdir -p "$tmp/source" "$tmp/modified"
 tar -xzf "$source_archive" -C "$tmp/source"
 source_root=$tmp/source/repository
 libusb_archive=$tmp/source/third_party/libusb-1.0.30.tar.bz2
-[ -x "$source_root/scripts/build-linux-static.sh" ] || { echo "source archive has no static build script" >&2; exit 1; }
+[ -x "$source_root/scripts/$build_script" ] || { echo "source archive has no $build_script" >&2; exit 1; }
 
 source_ref=$(python3 - "$tmp/source/source-manifest.json" <<'PY'
 import json
@@ -44,9 +50,9 @@ PY
 build_one() {
 	input_archive=$1
 	out=$2
-	SOURCE_REF="$source_ref" LINUX_ARCH="$arch" LINUX_BUILD_DIR="$out" \
+	SOURCE_REF="$source_ref" LINUX_ARCH="$arch" LINUX_BUILD_DIR="$out" MACOS_BUILD_DIR="$out" \
 		LIBUSB_SOURCE_ARCHIVE="$input_archive" ALLOW_UNPINNED_LIBUSB=1 \
-		"$source_root/scripts/build-linux-static.sh"
+		"$source_root/scripts/$build_script"
 }
 
 build_one "$libusb_archive" "$tmp/baseline"

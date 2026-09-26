@@ -74,12 +74,28 @@ LINUX_MDEV = {
     "mdev/siano-ts-mdev.conf", "mdev/siano-ts-mdev.sh", "mdev/siano-ts-mdev.start",
 }
 LINUX_ARCHITECTURES = {"linux-x86_64": "x86_64", "linux-aarch64": "aarch64"}
+# Mach-O load commands that make dyld load another image at launch.
+MACHO_DYLIB_COMMANDS = {
+    0x0000000C,  # LC_LOAD_DYLIB
+    0x80000018,  # LC_LOAD_WEAK_DYLIB
+    0x8000001F,  # LC_REEXPORT_DYLIB
+    0x00000020,  # LC_LAZY_LOAD_DYLIB
+    0x80000023,  # LC_LOAD_UPWARD_DYLIB
+}
+MACHO_CPU_TYPE_ARM64 = 0x0100000C
+DARWIN_SYSTEM_DYLIB_PREFIXES = ("/usr/lib/", "/System/Library/Frameworks/")
+DARWIN_DEPLOYMENT_TARGET = "11.0"
+DARWIN_REQUIRED_DYLIBS = {
+    "/usr/lib/libSystem.B.dylib",
+    "/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit",
+}
 SOURCE_REQUIRED = {
     "BUILD-RELINK.md", "DEPENDENCY-NOTICE.txt", "README.md", "COPYING",
     "LICENCE.siano", "source-manifest.json", "SHA256SUMS",
     "third_party/libusb-1.0.30.tar.bz2",
     "repository/Makefile",
     "repository/scripts/build-linux-static.sh",
+    "repository/scripts/build-macos-static.sh",
     "repository/scripts/test-static-relink.sh",
     "repository/packaging/REBUILD.md",
 }
@@ -199,6 +215,22 @@ def notice_fields(data: bytes) -> dict[str, str]:
     return fields
 
 
+def parse_build_properties(data: bytes, label: str) -> dict[str, str]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"{label} build.properties is not UTF-8: {error}")
+    property_map: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            fail(f"{label} build.properties is malformed")
+        key, value = line.split("=", 1)
+        if key in property_map:
+            fail(f"duplicate {label} build property: {key}")
+        property_map[key] = value
+    return property_map
+
+
 def verify_checksums(payloads: dict[str, bytes]) -> None:
     if "SHA256SUMS" not in payloads:
         fail("SHA256SUMS is missing")
@@ -295,6 +327,19 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
         }
         if libusb != expected_libusb:
             fail("manifest Linux libusb provenance/linkage mismatch")
+    elif platform == "darwin-arm64":
+        for key, value in {"architecture": "arm64", "libc": "darwin", "linkage": "static"}.items():
+            if manifest.get(key) != value:
+                fail(f"macOS manifest metadata mismatch: {key}")
+        expected_libusb = {
+            "version": LIBUSB_VERSION,
+            "source_ref": LIBUSB_SOURCE_URL,
+            "source_sha256": LIBUSB_SOURCE_SHA256,
+            "linkage": "static",
+            "backend": "darwin",
+        }
+        if manifest.get("libusb") != expected_libusb:
+            fail("manifest macOS libusb provenance/linkage mismatch")
     elif platform.startswith("android") or platform == "windows-x64":
         expected_metadata = {
             "architecture": ANDROID_ABI_METADATA[platform]["abi"]
@@ -322,6 +367,8 @@ def expected_members(platform: str) -> set[str]:
     result = set(COMMON) | ({"siano-ts.exe"} if platform == "windows-x64" else {"siano-ts"})
     if platform in LINUX_ARCHITECTURES:
         result |= {"libusb/COPYING", "evidence/build.properties"} | LINUX_MDEV
+    elif platform == "darwin-arm64":
+        result |= {"libusb/COPYING", "evidence/build.properties"}
     elif platform.startswith("android"):
         result |= {
             "libusb/COPYING", f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2",
@@ -460,21 +507,13 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         for key, value in expected_fields.items():
             if fields.get(key) != value:
                 fail(f"dependency notice field mismatch: {key}")
-        properties = payloads["evidence/build.properties"].decode("utf-8")
         required_properties = {
             "target_os": "linux", "target_arch": LINUX_ARCHITECTURES[platform],
             "libc": "none", "build_libc": "musl", "linkage": "static", "libusb_version": LIBUSB_VERSION,
             "libusb_source_url": LIBUSB_SOURCE_URL, "libusb_source_sha256": LIBUSB_SOURCE_SHA256,
             "libusb_backend": "netlink",
         }
-        property_map = {}
-        for line in properties.splitlines():
-            if "=" not in line:
-                fail("Linux build.properties is malformed")
-            key, value = line.split("=", 1)
-            if key in property_map:
-                fail(f"duplicate Linux build property: {key}")
-            property_map[key] = value
+        property_map = parse_build_properties(payloads["evidence/build.properties"], "Linux")
         for key, value in required_properties.items():
             if property_map.get(key) != value:
                 fail(f"Linux build property mismatch: {key}")
@@ -516,12 +555,30 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         # to the project EXE's CodeView policy.
         audit_pe_x64_bytes(payloads["libusb-1.0.dll"], "libusb-1.0.dll")
     else:
-        if manifest.get("architecture") != "arm64" or manifest.get("linkage") != "dynamic" or \
-                manifest.get("libc") != "darwin":
-            fail("macOS manifest metadata mismatch")
-        for key, value in {"dependency.libusb.linkage": "dynamic", "dependency.libusb.provider": "host"}.items():
+        expected_fields = {
+            "dependency.libusb.version": LIBUSB_VERSION,
+            "dependency.libusb.linkage": "static",
+            "dependency.libusb.license": "LGPL-2.1-or-later",
+            "dependency.libusb.backend": "darwin",
+            "corresponding-source": f"siano-ts-{manifest['version']}-source.tar.gz",
+            "corresponding-source.path": f"third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
+            "libusb.source.url": LIBUSB_SOURCE_URL,
+            "libusb.source.sha256": LIBUSB_SOURCE_SHA256,
+        }
+        for key, value in expected_fields.items():
             if fields.get(key) != value:
                 fail(f"dependency notice field mismatch: {key}")
+        property_map = parse_build_properties(payloads["evidence/build.properties"], "macOS")
+        required_properties = {
+            "target_os": "darwin", "target_arch": "arm64", "linkage": "static",
+            "libusb_version": LIBUSB_VERSION, "libusb_source_url": LIBUSB_SOURCE_URL,
+            "libusb_source_sha256": LIBUSB_SOURCE_SHA256, "libusb_backend": "darwin",
+            "macos_deployment_target": DARWIN_DEPLOYMENT_TARGET,
+        }
+        for key, value in required_properties.items():
+            if property_map.get(key) != value:
+                fail(f"macOS build property mismatch: {key}")
+        audit_darwin_macho(payloads[binary_name], binary_name)
     verify_binary_evidence(payloads, manifest)
     verify_checksums(payloads)
     return {"archive": str(path.resolve()), "platform": platform, "members": sorted(payloads), "manifest": manifest}
@@ -710,6 +767,83 @@ def audit_android_binary(path: Path, platform: str, repo_root: Path) -> None:
          metadata["abi"], metadata["interpreter"]], env=env)
 
 
+def macho_load_commands(data: bytes, label: str) -> list[tuple[int, int, int]]:
+    """Return (cmd, offset, cmdsize) for every load command of a thin arm64 Mach-O."""
+    if len(data) < 32:
+        fail(f"macOS binary is too short for a Mach-O header: {label}")
+    magic, cputype, _subtype, _filetype, ncmds, sizeofcmds = struct.unpack_from("<IiiIII", data, 0)
+    if magic != 0xFEEDFACF:
+        fail(f"macOS binary is not a thin 64-bit Mach-O: {label}")
+    if cputype != MACHO_CPU_TYPE_ARM64:
+        fail(f"macOS binary is not arm64: {label}")
+    end = 32 + sizeofcmds
+    if end > len(data):
+        fail(f"macOS load commands exceed the file: {label}")
+    offset = 32
+    commands: list[tuple[int, int, int]] = []
+    for _ in range(ncmds):
+        if offset + 8 > end:
+            fail(f"macOS load command table is truncated: {label}")
+        cmd, cmdsize = struct.unpack_from("<II", data, offset)
+        if cmdsize < 8 or offset + cmdsize > end:
+            fail(f"macOS load command has an invalid size: {label}")
+        commands.append((cmd, offset, cmdsize))
+        offset += cmdsize
+    return commands
+
+
+def darwin_dylibs(data: bytes, label: str) -> list[str]:
+    """Return the install names of every image dyld loads for a thin arm64 Mach-O."""
+    names: list[str] = []
+    for cmd, offset, cmdsize in macho_load_commands(data, label):
+        if cmd in MACHO_DYLIB_COMMANDS:
+            if cmdsize < 24:
+                fail(f"macOS dylib load command is truncated: {label}")
+            (name_offset,) = struct.unpack_from("<I", data, offset + 8)
+            if not 24 <= name_offset < cmdsize:
+                fail(f"macOS dylib load command has an invalid name offset: {label}")
+            raw = data[offset + name_offset:offset + cmdsize].split(b"\0", 1)[0]
+            try:
+                names.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                fail(f"macOS dylib install name is not UTF-8: {label}")
+    return names
+
+
+def darwin_minos(data: bytes, label: str) -> str:
+    """Return the macOS minimum version from the single LC_BUILD_VERSION command."""
+    versions = []
+    for cmd, offset, cmdsize in macho_load_commands(data, label):
+        if cmd == 0x32:  # LC_BUILD_VERSION
+            if cmdsize < 24:
+                fail(f"macOS LC_BUILD_VERSION is truncated: {label}")
+            platform, minos = struct.unpack_from("<II", data, offset + 8)
+            if platform != 1:  # PLATFORM_MACOS
+                fail(f"macOS binary is not built for the macOS platform: {label}")
+            versions.append(f"{minos >> 16}.{(minos >> 8) & 0xFF}")
+    if len(versions) != 1:
+        fail(f"macOS binary must contain exactly one LC_BUILD_VERSION: {label}")
+    return versions[0]
+
+
+def audit_darwin_macho(data: bytes, label: str) -> None:
+    audit_darwin_dylibs(darwin_dylibs(data, label), label)
+    minos = darwin_minos(data, label)
+    if minos != DARWIN_DEPLOYMENT_TARGET:
+        fail(f"macOS binary minimum version is {minos}, expected {DARWIN_DEPLOYMENT_TARGET}: {label}")
+
+
+def audit_darwin_dylibs(names: list[str], label: str) -> None:
+    for name in names:
+        if "libusb" in name.lower():
+            fail(f"macOS binary loads a libusb dylib instead of linking it statically: {name}: {label}")
+        if not name.startswith(DARWIN_SYSTEM_DYLIB_PREFIXES):
+            fail(f"macOS binary loads a non-system dylib: {name}: {label}")
+    missing = DARWIN_REQUIRED_DYLIBS - set(names)
+    if missing:
+        fail(f"macOS binary lacks the system images static libusb needs: {sorted(missing)}: {label}")
+
+
 def audit_darwin_load_commands(load_commands: str, label: str) -> int:
     if re.search(r"(?m)^\s*segname\s+__DWARF\s*$", load_commands):
         fail(f"macOS binary contains DWARF sections: {label}")
@@ -780,8 +914,12 @@ def audit_binary(path: Path, platform: str, source_ref: str, repo_root: Path,
         audit_linux_elf_text(header, dynamic, program_headers, platform, str(path), sections)
     elif platform == "darwin-arm64":
         otool = shutil.which("otool")
-        if not otool or "libusb-1.0" not in run([otool, "-L", str(path)]):
-            fail(f"macOS dynamic libusb dependency missing: {path}")
+        if not otool:
+            fail("otool is required to audit macOS binaries")
+        audit_darwin_macho(path.read_bytes(), str(path))
+        # The first line of otool -L is the binary's own path.
+        if "libusb" in "\n".join(run([otool, "-L", str(path)]).splitlines()[1:]).lower():
+            fail(f"otool reports a libusb dylib dependency: {path}")
         lipo = shutil.which("lipo")
         if not lipo or run([lipo, "-archs", str(path)]).split() != ["arm64"]:
             fail(f"macOS binary is not arm64-only: {path}")
@@ -808,7 +946,8 @@ def audit_source_archive(path: Path) -> dict:
     if sha256_bytes(payloads[f"third_party/libusb-{LIBUSB_VERSION}.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
         fail("source archive libusb checksum mismatch")
     rebuild = payloads["BUILD-RELINK.md"].decode("utf-8")
-    for required_text in ("--disable-shared", "--enable-static", "--disable-udev", "test-static-relink.sh"):
+    for required_text in ("--disable-shared", "--enable-static", "--disable-udev", "test-static-relink.sh",
+                          "build-macos-static.sh"):
         if required_text not in rebuild:
             fail(f"BUILD-RELINK.md is missing the static/relink recipe: {required_text}")
     manifest = parse_json(payloads["source-manifest.json"], "source-manifest.json")
@@ -819,6 +958,8 @@ def audit_source_archive(path: Path) -> dict:
         "libusb_license": "LGPL-2.1-or-later",
         "linux_linkage": "static",
         "linux_libusb_backend": "netlink",
+        "darwin_linkage": "static",
+        "darwin_libusb_backend": "darwin",
         "firmware_url": FIRMWARE_URL, "firmware_sha256": FIRMWARE_SHA256,
         "firmware_license_url": FIRMWARE_LICENSE_URL,
         "firmware_license_sha256": FIRMWARE_LICENSE_SHA256,
@@ -1171,6 +1312,41 @@ def self_test() -> None:
             pass
         else:
             fail("macOS optional local-symbol self-test did not fail")
+
+    def synthetic_macho(dylibs: list[str], cputype: int = MACHO_CPU_TYPE_ARM64,
+                        command: int = 0x0000000C, minos: int = 0x000B0000) -> bytes:
+        commands = struct.pack("<IIIIII", 0x32, 24, 1, minos, 0x000E0500, 0)
+        for name in dylibs:
+            encoded = name.encode("utf-8") + b"\0"
+            size = (24 + len(encoded) + 7) & ~7
+            commands += struct.pack("<IIIIII", command, size, 24, 2, 0, 0)
+            commands += encoded.ljust(size - 24, b"\0")
+        header = struct.pack("<IiiIIIII", 0xFEEDFACF, cputype, 0, 2, len(dylibs) + 1, len(commands), 0, 0)
+        return header + commands
+
+    system_dylibs = sorted(DARWIN_REQUIRED_DYLIBS) + [
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+    ]
+    if darwin_dylibs(synthetic_macho(system_dylibs), "synthetic-static-libusb") != system_dylibs:
+        fail("macOS dylib parser self-test returned the wrong install names")
+    audit_darwin_macho(synthetic_macho(system_dylibs), "synthetic-static-libusb")
+    for label, fixture in (
+            ("homebrew-libusb", synthetic_macho(
+                system_dylibs + ["/opt/homebrew/opt/libusb/lib/libusb-1.0.0.dylib"])),
+            ("weak-libusb", synthetic_macho(
+                system_dylibs + ["/usr/lib/libusb-1.0.0.dylib"], command=0x80000018)),
+            ("rpath-dylib", synthetic_macho(system_dylibs + ["@rpath/libfoo.dylib"])),
+            ("no-iokit", synthetic_macho(["/usr/lib/libSystem.B.dylib"])),
+            ("x86_64", synthetic_macho(system_dylibs, cputype=0x01000007)),
+            ("minos-14", synthetic_macho(system_dylibs, minos=0x000E0000)),
+            ("truncated", synthetic_macho(system_dylibs)[:40])):
+        try:
+            audit_darwin_macho(fixture, label)
+        except AuditError:
+            pass
+        else:
+            fail(f"macOS dylib self-test did not fail: {label}")
 
     binary_payloads = {"siano-ts": b"binary"}
     binary_manifest = {"platform": "linux-x86_64", "source_ref": "a" * 40}
