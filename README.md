@@ -134,8 +134,8 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 | `-t, --time` | `SECONDS` | 指定秒数の受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
 | `--control` | なし | 標準入力の `channel N` / `tune HZ` / `quit` で選局・終了。初期選局は省略可能。TS は stdout、診断は stderr。`-t` / `--list` とは併用不可。 |
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
-| `--device` | `N` | 列挙された対応 RIO デバイスの N 番目を使用 (0 起算、既定値: 0)。 |
-| `-l, --list` | なし | デバイスを開かずに一覧表示。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
+| `--device` | `SPEC` | 対応 RIO デバイスを選択。インデックス (0 起算)、ポートパス (`1-2` / `1-4.3`)、bus:address (`1:4`) を受理。既定値はインデックス `0`。 |
+| `-l, --list` | なし | デバイスを開かずに一覧表示。`--device` はインデックス・ポートパス・bus:address を受理。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
 | `--detach-kernel-driver` | なし | カーネルのドライバ (`smsusb` など) が掴んでいても切り離して使う。既定では、`siano-ts` が使うインターフェースをカーネルのドライバが掴んでいれば奪わずに `interface N is bound to a kernel driver` と表示して終了する (live handoff は安全と判定していないため)。Windows など libusb が判定できない環境では従来どおり開く。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
 | `--pid` | `PID` | 受信する PID (複数回指定可)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。最初の選局成功後に一度だけ設定する。 |
@@ -152,6 +152,23 @@ receiver=0 device=1 local=0 system=ISDB-T
 ```
 
 MPEG-TS ストリームデータは標準出力または `-o` で指定したファイルへ出力されます。診断やログはすべて標準エラー出力 (stderr) へ出力されるため、標準出力をパイプ等で安全に中継できます。
+
+### 終了コード
+
+| code | 意味 |
+|---:|---|
+| 0 | 正常終了、SIGINT/SIGTERM、または `--control` の `quit` |
+| 1 | その他のエラー |
+| 2 | 引数不正 |
+| 3 | RIO デバイスが見つからない |
+| 4 | デバイス使用中、またはカーネルドライバー bind 済み |
+| 5 | 選局・ロック待ちタイムアウト |
+| 7 | 受信中の USB 切断 |
+| 8 | TS キュー満杯による drop |
+| 10 | ファームウェア欠損またはロード拒否 |
+| 70 | メモリ確保またはスレッド生成失敗 |
+
+終了時に `TS queue dropped` が出力された場合は code `8` を返します。
 
 同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USBノードとVHCI側のimport済みノードを区別するため、VHCI側ノードを事前にopenして`--fd`で渡す経路を実機検証している。これは同一ホスト内での検証記録であり、LAN経由のusbip構成に関する要件を示すものではない。
 
