@@ -171,6 +171,8 @@ MPEG-TS ストリームデータは標準出力または `-o` で指定したフ
 
 既定では終了時に `TS queue dropped` が出力された場合は code `8` を返します。`--fail-on-drop` を指定すると最初のdrop時に writer を起こし、プロセスを終了させます。
 
+受信中の USB 切断は現行実装では code `7` を返します（`stream-state.c` と `exit-codes.c`）。v0.1.5 の実機記録は変更前コードによる exit 1 であり、v0.1.5 以降の exact candidate で再確認する（[検証手順](docs/release-validation.md) の C8）までは、この経路の実機 claim を `未認定` として扱います。
+
 同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USBノードとVHCI側のimport済みノードを区別するため、VHCI側ノードを事前にopenして`--fd`で渡す経路を実機検証している。これは同一ホスト内での検証記録であり、LAN経由のusbip構成に関する要件を示すものではない。
 
 ## 注意事項

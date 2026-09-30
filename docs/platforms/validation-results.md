@@ -2,6 +2,12 @@
 
 本ドキュメントは、特定のrevisionにおいて実施した実測記録であり、将来のバージョンやあらゆる動作環境における動作を保証するものではありません。
 
+## 記録方法
+
+Stable release の検証記録は本ファイルへ日付付きで追記する。新しい records directory や template framework、汎用検証スクリプトは作らない。release record には candidate version/commit/workflow run、8 archive（7 binary + source）の checksum と audit、baseline tag と各 archive の byte-identity 判定、変更の hunk-level class（platform guard 単位を含む）、claim ごとの `継承` / `今回再検証` / `未認定` / `対象外`、canary/soak の選定理由（環境ID E01–E17、固定順の位置、単一OS規則による非該当）、各 test の環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、未実施/非該当の物理操作と理由を記録する。canonical 環境ID と手順の正本は [`../release-validation.md`](../release-validation.md)。Android ad-hoc APK は dtv-android 所管であり本記録に含めない。
+
+各記録は歴史的な測定であり、current candidate の pass として流用しない。exact candidate 未試験の claim は `未認定` と記す。
+
 ## 2026-09-12 v0.1.5 受入記録
 
 - **検証対象コミット / ベースライン**: branch `main`、commit `6c5715ca87f75adbf799253573afc84e2beb23d5` (short `6c5715c`)、VERSION `0.1.5`（実機試験済み runtime/packaging baseline）
