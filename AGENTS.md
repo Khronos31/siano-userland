@@ -21,7 +21,7 @@
 
 ## Stable release validation
 
-- [`docs/release-validation.md`](docs/release-validation.md) の順に実施する。全OS・全機種の一律回帰はしない。canary は毎回、long soak は trigger が成立する場合のみ実施し、release あたり最大1つの OS/runtime に限る。時間経過や release 回数だけを理由にした周期gateを設けない。
+- [`docs/release-validation.md`](docs/release-validation.md) の順に実施する。配布する各主要OS/architecture binary artifactについて、final candidateの実機確認を毎回行う。短時間確認の一連の操作に総時間上限を設けない。5分はユーザーの物理操作（USB抜去・再挿入）の応答待ち上限であり、各操作を要求するときはHAOS側でCodexは`beep`、Claude Codeは`vibe`を実行する。5分を超える連続負荷試験はsoakとして分ける。安定性に影響し得る変更のsoak有無・時間（10分/30分/2時間）・対象OSはユーザーが決める。エージェントは選ばず、判断材料を示して決定を待つ。
 - 検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外`。記録は [`docs/platforms/validation-results.md`](docs/platforms/validation-results.md) へ追記し、新しい records directory や template framework、汎用検証スクリプトを作らない。
 - README の claim は記録された証拠を超えない。未実施の項目を実施済みと表現しない。
 
