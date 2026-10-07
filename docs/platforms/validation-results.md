@@ -92,7 +92,13 @@ Linux/Macの比較対象は、実際に未読pipeの詰まりを確認してか�
 
 候補準備時の独立レビューで、パケットを100 bytes出力した後の成功retuneが未送信88 bytesを破棄し、継続する出力のpacket境界をずらす組合せを確認した。成功retuneでは開始済みpacketの残りだけをbounded pumpで完了し、他の旧データを破棄する実装へ修正。100-byte出力、zero-write、失敗retune、繰り返し成功retune、部分再開、新チャンネル出力の組合せを新規テストで検証した。snapshot09（SHA-256 `1947aa9e3677d83b41704432f9857a90e70081fdd52ca976bcd2485113fe6e2f`）でLinuxの全testとASan/UBSan、Macのnative全test、Windowsのnative build/全testが合格。既存のassertionは保持した。この追加修正後の実機受信・制御は最終候補の検証対象で、上表の旧snapshot実機結果から追加pathの合格を継承しない。
 
-通常・復帰TSの検査は188-byte alignmentと各packetのsync byteまで。TEI・continuity・内容decodeはこの機能確認では未確認。Android3 ABI、Linux aarch64、全7配布archiveの最終実機matrix、Windowsの新canonical固定hashは未認定。
+通常・復帰TSの検査は188-byte alignmentと各packetのsync byteまで。TEI・continuity・内容decodeはこの機能確認では未確認。Android3 ABI、Linux aarch64、全7配布archiveの最終実機matrixは未認定。
+
+### Windows canonical hash取得とCI準備
+
+commit `b43a72abc0cae546706441f4675bc1111d52b456` の [CI run 37690731443](https://github.com/Khronos31/siano-userland/actions/runs/37690731443) は、Windowsのnative全testと2回のclean buildの全byte比較を通過し、新EXE SHA-256 `f5bddcb5a181632a4906545a3cc28e9a44b917c4f9d73cd9e1f448fbbf1075f0` と旧固定hashの不一致で失敗した。`windows-2022` image `20260927.320.1`、VCTools `14.44.35207`、nmake `14.44.35229.0`、pinned libusb 1.0.30を使用。新hashを `packaging/windows-baseline.sha256` へ登録し、後続CIで改めて照合する。取得元のrunを合格扱いせず、最終candidateには全job成功を要求する。
+
+同runのLinux source/static x86_64・aarch64、配布Linux archiveのglibc/musl起動、Android3 ABIは合格。Macはstatic製品build、output統合test、channel testまで合格したが、CLI testのシェルへの新規dylib注入がarm64/arm64e不一致で失敗した。既存CLI testの期待値を保持して起動方法を修正し、後続CIで再検証する。製品のUSB実機検証結果には数えない。
 
 ## CIのみ
 
