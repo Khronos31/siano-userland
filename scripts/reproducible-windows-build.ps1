@@ -24,6 +24,8 @@ $sourceFiles = @(
     'detach-decision.h',
     'exit-codes.c',
     'exit-codes.h',
+    'output-writer.c',
+    'output-writer.h',
     'protocol.c',
     'protocol.h',
     'queue-policy.c',
@@ -34,7 +36,8 @@ $sourceFiles = @(
     'stream-state.c',
     'stream-state.h',
     'usb-location.h',
-    'write-policy.h'
+    'write-policy.h',
+    'tests/test_output_integration_win.c'
 )
 
 function New-CleanBuild([string]$name) {
@@ -46,7 +49,9 @@ function New-CleanBuild([string]$name) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "required Windows build input is missing: $source"
         }
-        Copy-Item -LiteralPath $source -Destination (Join-Path $build $file)
+        $destination = Join-Path $build $file
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $destination
     }
 
     $libusb = Join-Path $root 'libusb'

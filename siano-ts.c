@@ -23,6 +23,7 @@
 #include "stream-state.h"
 #include "queue-policy.h"
 #include "control-input.h"
+#include "output-writer.h"
 #include "write-policy.h"
 
 #include <errno.h>
@@ -65,11 +66,15 @@
 #define MAX_URBS 32U
 #endif
 #define USB_TRANSFER_SIZE 16384U
+_Static_assert(USB_TRANSFER_SIZE <= SIANO_OUTPUT_FEED_MAX,
+               "output pump feed buffer must hold one USB transfer");
 #define TS_QUEUE_SLOTS 256U
 #define CONTROL_TIMEOUT_MS 10000U
 #define LOCK_TIMEOUT_MS 10000U
 #define EVENT_THREAD_PRIORITY 20
 #define WRITER_THREAD_PRIORITY 10
+/* Upper bound on one pending output step; removed from any stop-event latency. */
+#define OUTPUT_WAIT_MS 50
 
 /* Darwin condvars are CLOCK_REALTIME and lack pthread_condattr_setclock. */
 #ifndef SIANO_COND_CLOCK
@@ -183,7 +188,7 @@ static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,
             "Usage: %s [options]\n"
-            "  -c, --channel N       ISDB-T physical channel (13..62)\n"
+            "  -c, --channel N       ISDB-T physical channel (13..62 or T13..T62)\n"
             "  -f, --freq HZ         tune frequency in Hz\n"
             "  -t, --time SECONDS    stop after duration (default: until SIGINT)\n"
             "  -F, --firmware PATH   isdbt_rio.inp\n"
@@ -215,6 +220,20 @@ static int parse_unsigned(const char *text, unsigned long max, unsigned long *va
     return 0;
 }
 
+/* mirakc-style terrestrial channel: uppercase T plus two decimal digits. */
+static int parse_channel(const char *text, unsigned long *value)
+{
+    if (text[0] == 'T') {
+        if (text[1] < '0' || text[1] > '9' ||
+            text[2] < '0' || text[2] > '9' || text[3] != '\0')
+            return -EINVAL;
+        *value = (unsigned long)(text[1] - '0') * 10U +
+                 (unsigned long)(text[2] - '0');
+        return 0;
+    }
+    return parse_unsigned(text, 62, value);
+}
+
 static int apply_option(int option, const char *value_text, struct options *options,
                         const char *program)
 {
@@ -222,7 +241,7 @@ static int apply_option(int option, const char *value_text, struct options *opti
 
     switch (option) {
     case 'c':
-        if (parse_unsigned(value_text, 62, &value) < 0 || value < 13)
+        if (parse_channel(value_text, &value) < 0 || value < 13 || value > 62)
             return -EINVAL;
         options->channel = (unsigned)value;
         options->have_channel = true;
@@ -1297,64 +1316,26 @@ static int tune(struct siano_device *device, uint32_t frequency)
     return -ETIMEDOUT;
 }
 
-static int write_all(int fd, const uint8_t *data, size_t length)
+static bool ts_queue_overflowed(struct ts_queue *queue)
 {
-    while (length != 0) {
-#ifdef _WIN32
-        size_t request_length = siano_write_request_size(length, (size_t)UINT_MAX);
-        ssize_t written = write(fd, data, (unsigned int)request_length);
-#else
-        size_t request_length = siano_write_request_size(length, SIZE_MAX);
-        ssize_t written = write(fd, data, request_length);
-#endif
-        if (written < 0) {
-            if (errno == EINTR)
-                continue;
-            return -errno;
-        }
-        if (written == 0)
-            return -EIO;
-        data += written;
-        length -= (size_t)written;
-    }
-    return 0;
+    bool overflowed;
+
+    pthread_mutex_lock(&queue->mutex);
+    overflowed = queue->overflowed;
+    pthread_mutex_unlock(&queue->mutex);
+    return overflowed;
 }
 
-/* URB payloads are not a multiple of 188. Emit only aligned TS packets. */
-static int write_aligned_ts(int fd, uint8_t *hold, size_t *hold_len,
-                            const uint8_t *data, size_t length)
+/* Consulted while output is pending so stop events are not deferred by a
+ * stalled consumer. Uses the same error priority as the existing loops. */
+static int stream_pending_check(struct siano_device *device)
 {
-    uint8_t scratch[USB_TRANSFER_SIZE + 188U];
-    size_t n = 0;
-    const uint8_t *p;
+    int error = siano_stream_state_error(&device->state);
 
-    if (*hold_len != 0) {
-        memcpy(scratch, hold, *hold_len);
-        memcpy(scratch + *hold_len, data, length);
-        n = *hold_len + length;
-        p = scratch;
-        *hold_len = 0;
-    } else {
-        p = data;
-        n = length;
-    }
-
-    while (n >= 188U) {
-        if (p[0] == 0x47 && (n < 376U || p[188] == 0x47)) {
-            int rc = write_all(fd, p, 188U);
-            if (rc < 0)
-                return rc;
-            p += 188U;
-            n -= 188U;
-        } else {
-            p++;
-            n--;
-        }
-    }
-    if (n != 0) {
-        memcpy(hold, p, n);
-        *hold_len = n;
-    }
+    if (error < 0)
+        return error;
+    if (ts_queue_overflowed(&device->ts))
+        return -ENOBUFS;
     return 0;
 }
 
@@ -1380,30 +1361,43 @@ static int configure_pid_filters(struct siano_device *device,
     return 0;
 }
 
-static int stream_ts(struct siano_device *device, int output_fd, int duration)
+static int stream_ts(struct siano_device *device, struct siano_output_pump *pump,
+                     int duration)
 {
     struct timespec deadline;
     uint8_t data[USB_TRANSFER_SIZE];
-    uint8_t hold[188];
-    size_t hold_len = 0;
 
     if (duration > 0) {
         clock_gettime(CLOCK_MONOTONIC, &deadline);
         deadline.tv_sec += duration;
     }
     while (!stop_requested) {
-        size_t length;
-        int rc = ts_pop(&device->ts, data, &length);
+        bool pending = false;
 
-        rc = siano_stream_state_stream_result(&device->state, rc);
-        if (rc < 0 && rc != -EAGAIN)
-            return rc;
-        if (rc == 0) {
-            rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
+        if (!siano_output_pump_busy(pump)) {
+            size_t length;
+            int rc = ts_pop(&device->ts, data, &length);
+
+            rc = siano_stream_state_stream_result(&device->state, rc);
+            if (rc < 0 && rc != -EAGAIN)
+                return rc;
+            if (rc == 0)
+                siano_output_pump_feed(pump, data, length);
+        }
+        if (siano_output_pump_busy(pump)) {
+            int rc = siano_output_pump_step(pump);
+
             if (rc < 0) {
                 if (siano_report_output_error(rc))
                     fprintf(stderr, "TS output: %s\n", strerror(-rc));
                 return rc;
+            }
+            if (rc == SIANO_OUTPUT_PENDING) {
+                int error = stream_pending_check(device);
+
+                if (error < 0)
+                    return error;
+                pending = true;
             }
         }
         if (duration > 0) {
@@ -1413,13 +1407,29 @@ static int stream_ts(struct siano_device *device, int output_fd, int duration)
                 (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
                 break;
         }
+        if (pending)
+            siano_output_wait(&pump->output, OUTPUT_WAIT_MS);
     }
     return 0;
 }
 
+/* A successful tune drops queued old chunks and unstarted bytes, but lets a
+ * partially emitted packet finish before output from the new channel. A failed
+ * tune retains the original queue and pump state. */
+static bool stream_retune_finish(struct siano_device *device,
+                                 struct siano_output_pump *pump, int tune_result)
+{
+    bool succeeded = ts_queue_retune_finish(&device->ts, &pump->hold_len,
+                                            tune_result);
+
+    if (succeeded)
+        siano_output_pump_retune(pump);
+    return succeeded;
+}
+
 static int handle_control_line(struct siano_device *device, const struct options *options,
                                bool *pid_filters_added, const char *line, bool *quit,
-                               size_t *hold_len)
+                               struct siano_output_pump *pump)
 {
     uint32_t value = 0;
     uint32_t frequency;
@@ -1447,13 +1457,12 @@ static int handle_control_line(struct siano_device *device, const struct options
     }
     ts_queue_retune_begin(&device->ts);
     rc = tune(device, frequency);
+    (void)stream_retune_finish(device, pump, rc);
     if (rc < 0) {
-        (void)ts_queue_retune_finish(&device->ts, hold_len, rc);
         if (!stop_requested)
             fprintf(stderr, "control: tune failed: %s\n", strerror(-rc));
         return 0;
     }
-    (void)ts_queue_retune_finish(&device->ts, hold_len, rc);
     if (!*pid_filters_added) {
         rc = configure_pid_filters(device, options);
         if (rc < 0)
@@ -1465,13 +1474,11 @@ static int handle_control_line(struct siano_device *device, const struct options
 }
 
 static int stream_ts_control(struct siano_device *device, const struct options *options,
-                             bool *pid_filters_added, int output_fd)
+                             bool *pid_filters_added, struct siano_output_pump *pump)
 {
     struct siano_control_input control;
     uint8_t data[USB_TRANSFER_SIZE];
-    uint8_t hold[188];
     char line[128];
-    size_t hold_len = 0;
     size_t line_len = 0;
     bool line_overflow = false;
     bool quit = false;
@@ -1486,18 +1493,31 @@ static int stream_ts_control(struct siano_device *device, const struct options *
         return rc;
 
     while (!stop_requested && !quit) {
-        size_t length;
-        rc = ts_pop(&device->ts, data, &length);
+        bool pending = false;
 
-        rc = siano_stream_state_stream_result(&device->state, rc);
-        if (rc < 0 && rc != -EAGAIN)
-            return rc;
-        if (rc == 0) {
-            rc = write_aligned_ts(output_fd, hold, &hold_len, data, length);
+        if (!siano_output_pump_busy(pump)) {
+            size_t length;
+            rc = ts_pop(&device->ts, data, &length);
+
+            rc = siano_stream_state_stream_result(&device->state, rc);
+            if (rc < 0 && rc != -EAGAIN)
+                return rc;
+            if (rc == 0)
+                siano_output_pump_feed(pump, data, length);
+        }
+        if (siano_output_pump_busy(pump)) {
+            rc = siano_output_pump_step(pump);
             if (rc < 0) {
                 if (siano_report_output_error(rc))
                     fprintf(stderr, "TS output: %s\n", strerror(-rc));
                 return rc;
+            }
+            if (rc == SIANO_OUTPUT_PENDING) {
+                int error = stream_pending_check(device);
+
+                if (error < 0)
+                    return error;
+                pending = true;
             }
         }
         rc = siano_control_input_ready(&control);
@@ -1512,6 +1532,7 @@ static int stream_ts_control(struct siano_device *device, const struct options *
                 return (int)count;
             if (count == 0)
                 break;
+            pending = false;
             for (ssize_t i = 0; i < count && !quit; i++) {
                 if (input[i] == '\n') {
                     if (line_overflow) {
@@ -1519,7 +1540,7 @@ static int stream_ts_control(struct siano_device *device, const struct options *
                     } else {
                         line[line_len] = '\0';
                         rc = handle_control_line(device, options, pid_filters_added,
-                                                 line, &quit, &hold_len);
+                                                 line, &quit, pump);
                         if (rc < 0)
                             return rc;
                     }
@@ -1532,6 +1553,8 @@ static int stream_ts_control(struct siano_device *device, const struct options *
                 }
             }
         }
+        if (pending && !quit)
+            siano_output_wait(&pump->output, OUTPUT_WAIT_MS);
     }
     return 0;
 }
@@ -1824,12 +1847,14 @@ int main(int argc, char **argv)
 {
     struct options options;
     struct siano_device *device;
+    struct siano_output_pump pump;
     libusb_context *usb = NULL;
     char *firmware_path = NULL;
     uint32_t frequency;
     int output_fd = STDOUT_FILENO;
     bool close_output = false;
     bool pid_filters_added = false;
+    bool pump_initialized = false;
     int state_error;
     int rc;
     uint64_t drops = 0;
@@ -1942,9 +1967,19 @@ int main(int argc, char **argv)
         }
         close_output = true;
     }
-    rc = options.control ? stream_ts_control(device, &options, &pid_filters_added, output_fd) :
-                           stream_ts(device, output_fd, options.duration);
+    rc = siano_output_pump_init(&pump, output_fd);
+    if (rc < 0) {
+        fprintf(stderr, "output: %s\n", strerror(-rc));
+        goto out;
+    }
+    pump_initialized = true;
+    rc = options.control ? stream_ts_control(device, &options, &pid_filters_added, &pump) :
+                           stream_ts(device, &pump, options.duration);
+    siano_output_pump_destroy(&pump);
+    pump_initialized = false;
 out:
+    if (pump_initialized)
+        siano_output_pump_destroy(&pump);
     state_error = siano_stream_state_error(&device->state);
     close_device(device, &drops);
     if (drops != 0)

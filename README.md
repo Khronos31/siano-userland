@@ -107,6 +107,9 @@ Fedora 44（SELinux Enforcing）における検証要約、証明範囲、再検
 # 地上波 27ch を選局し、MPEG-TS を標準出力へ出力
 ./siano-ts --channel 27
 
+# mirakc 表記の T27 でも同じ (T27 は 27 と同義)
+./siano-ts --channel T27
+
 # 地上波 27ch を 30 秒間受信し、ファイルへ保存
 ./siano-ts -c 27 -t 30 -o /tmp/output.ts
 
@@ -129,7 +132,7 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 
 | オプション | 引数 | 説明 |
 |---|---|---|
-| `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。`-f` と排他。`--control` なしの受信では `-f` とどちらか一方が必須。 |
+| `-c, --channel` | `N` | ISDB-T 物理チャンネル (13..62)。mirakc 表記の `T13`..`T62` も受理する (`T27` は `27` と同義)。`-f` と排他。`--control` なしの受信では `-f` とどちらか一方が必須。 |
 | `-f, --freq` | `HZ` | 受信周波数を Hz 単位で指定。`-c` と排他。`--control` なしの受信では `-c` とどちらか一方が必須。 |
 | `-t, --time` | `SECONDS` | 1以上の秒数を指定して受信後に終了。省略時は SIGINT (Ctrl+C) まで継続。 |
 | `--control` | なし | 標準入力の `channel N` / `tune HZ` / `quit` で選局・終了。初期選局は省略可能。TS は stdout、診断は stderr。`-t` / `--list` とは併用不可。 |
@@ -171,7 +174,9 @@ MPEG-TS ストリームデータは標準出力または `-o` で指定したフ
 
 既定では終了時に `TS queue dropped` が出力された場合は code `8` を返します。`--fail-on-drop` を指定すると最初のdrop時に writer を起こし、プロセスを終了させます。
 
-受信中の USB 切断は現行実装では code `7` を返します（`stream-state.c` と `exit-codes.c`）。v0.1.5 の実機記録は変更前コードによる exit 1 であり、v0.1.5 以降の exact candidate で再確認する（[検証手順](docs/release-validation.md) の C8）までは、この経路の実機 claim を `未認定` として扱います。
+標準出力の pipe が詰まった場合、Linux/macOS/Android と Windows の byte-mode pipe では未書き込み位置を保持して再開します。正常な選局変更時は、キューと未開始パケットを破棄し、すでに一部を書き込んだ旧パケットだけは残りを非ブロッキング pump で完了してから新チャンネルの出力を始めます。停止や致命的エラーでは、すでに pipe へ書き込まれたバイトを取り消せず、最終パケットが途中で終わることがあります。通常ファイルへの書き込みと Windows の console はブロッキングのままです。Windows の `CreatePipe` が `PIPE_WAIT` のまま起動前に満杯になっていると、出力初期化時に `PIPE_NOWAIT` へ切り替えられず起動エラーになる場合があります。`siano-ts` は TS 出力を始める前に出力を初期化します。
+
+受信中の USB 切断は code `7` を返します（`stream-state.c` と `exit-codes.c`）。終了時に queue drop も記録された場合は、既定の優先順位により code `8` を返します。配布候補ごとの実機確認は[検証手順](docs/release-validation.md)に従います。
 
 同一Linuxホスト内でlocalhost usbipを使用する場合、export元の物理USBノードとVHCI側のimport済みノードを区別するため、VHCI側ノードを事前にopenして`--fd`で渡す経路を実機検証している。これは同一ホスト内での検証記録であり、LAN経由のusbip構成に関する要件を示すものではない。
 

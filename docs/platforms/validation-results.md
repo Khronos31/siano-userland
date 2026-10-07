@@ -74,6 +74,26 @@ Stable release の検証記録は本ファイルへ日付付きで追記する�
 | Latitude 5300 / AnduinOS（AppArmor enforce） | Stable v0.1.5 x86_64 archive | 合格。USB拒否gate、complain、enforce各試験完走。2台30分受信で両系統のalignment/sync/TEI/queue drop/libusb error 0件、AppArmor拒否0件。受信中物理切断（切断側exit 1有限終了、残存側受信継続・exit 0）、OS再起動なしの再接続復帰（2台60秒全エラー0）、cleanup pass。live handoff時のpage dumpは別個のfailとして保持。 | profileは利用者側で用意する。live handoffは行わない（smsusb unbind時page dump fail）。詳細は [AppArmorで実行する際の注意](apparmor.md) を参照。 |
 
 
+## 2026-10-08 v0.1.10修正の機能確認（配布候補は未認定）
+
+対象は `c0703d9` を基点とする #15（出力詰まり時の終了・制御）と #25（CLIの `T13`..`T62`）。#27は次版の対象。以下はソースからのnative buildによる機能確認であり、最終CI archiveの必須matrixを代替しない。
+
+POSIXのソースsnapshot SHA-256は `9b4ecb3de1801de5581990acf3182a4e80dfb4fe68140cd8c91aa8a23eaf644e`。Windowsはsnapshot07（SHA-256 `eb416b5c52f72113930a5a084291e39a9614964b2dc9845bb76e8ab3818dcc88`）を使用。snapshot08の追加変更はPOSIX側のテストmockとMakefileで、Windows製品コードは同一。比較対象は公開v0.1.9。raw記録はHAOSの `/config/.work/siano-p0-channel-task/` に保持した。
+
+| 環境 | 今回再検証した機能 | 結果・境界 |
+|---|---|---|
+| GEEKOM A6 / Windows build 26300.9457 / WinUSB / x64 | native全test、通常受信、未読stdoutのままtime・quit・fail-on-drop・実OS Ctrl+Break、物理切断と復帰 | 修正版は有限終了。Ctrl+Break exit0 / 26.21ms、quit exit0 / 48.24ms、time3 exit8 / lockから3.025秒、fail-on-drop exit8。切断はraw USB PIPE、drop19930、自然exit8。再接続後T27/10秒はexit0、21616240 bytes、188-byte remainder/sync異常0、残留0。 |
+| Latitude 5300 / AnduinOS 2.0.4 / kernel 7.0.0-34-generic / glibc x64 | native全test、通常受信、未読stdoutのままSIGINT・SIGTERM・time・quit・fail-on-drop、物理切断と復帰 | 修正版は有限終了。SIGINT/SIGTERM exit0 / 25.186・25.239ms、quit exit0 / 50.404ms、time3 exit8 / lockから3.034167秒、fail-on-drop exit8。切断はraw USB IO、drop68442、自然exit8。再接続後T27/10秒はexit0、21586160 bytes、remainder/sync異常0、残留0。 |
+| Mac mini / macOS 26.6.2 (25G83) / arm64 | native全test、通常受信、未読stdoutのままSIGINT・SIGTERM・time・quit・fail-on-drop、物理切断と復帰 | 修正版は有限終了。SIGINT/SIGTERM exit0 / 34.959・32.192ms、quit exit0 / 66.951ms、time3およびfail-on-drop exit8。切断はraw USB IO、drop61806、自然exit8。再接続後T27/10秒はexit0、21804240 bytes、remainder/sync異常0、残留0。USB portは切断前2-3、復帰時2-4。 |
+
+Linux/Macの比較対象は、実際に未読pipeの詰まりを確認してからsignal/quitを送った各5ケースで30秒以内に終了せず、所有PIDをwatchdogで回収した。Windowsのtime/quit/fail-on-drop/Ctrl+Breakも同様。修正版の切断試験は全環境でwatchdogなしの自然終了を確認した。物理抜去時刻は計測しておらず、抜去から終了までの遅延は未測定。raw IO/PIPEは内部でNO_DEVICEへ写像され、drop優先によりexit8となるため、dropなしの切断exit7は最終配布候補で確認する。
+
+未読pipeの実測占有量はWindows3948 bytes、Linux63168 bytes、Mac65424 bytes。Linux/Macでは188-byte writeを別pipeで校正し、製品stdoutは読み取らなかった。Linuxの初回は校正前の閾値が不適切でsignal/quit送信前に前提条件を満たせず、未完了として保持し、校正後に別試行で再検証した。Windowsの初回物理操作待ちは5分期限切れで未完了として保持した。補助PID0受信は比較対象・修正版ともfilter ACK timeoutで失敗し、通常受信や切断試験の合格根拠に含めない。
+
+候補準備時の独立レビューで、パケットを100 bytes出力した後の成功retuneが未送信88 bytesを破棄し、継続する出力のpacket境界をずらす組合せを確認した。成功retuneでは開始済みpacketの残りだけをbounded pumpで完了し、他の旧データを破棄する実装へ修正。100-byte出力、zero-write、失敗retune、繰り返し成功retune、部分再開、新チャンネル出力の組合せを新規テストで検証した。snapshot09（SHA-256 `1947aa9e3677d83b41704432f9857a90e70081fdd52ca976bcd2485113fe6e2f`）でLinuxの全testとASan/UBSan、Macのnative全test、Windowsのnative build/全testが合格。既存のassertionは保持した。この追加修正後の実機受信・制御は最終候補の検証対象で、上表の旧snapshot実機結果から追加pathの合格を継承しない。
+
+通常・復帰TSの検査は188-byte alignmentと各packetのsync byteまで。TEI・continuity・内容decodeはこの機能確認では未確認。Android3 ABI、Linux aarch64、全7配布archiveの最終実機matrix、Windowsの新canonical固定hashは未認定。
+
 ## CIのみ
 
 - Linux x86_64/aarch64 × glibc/muslはbuild、artifact audit、最終archive起動をCIで確認。aarch64/muslのUSB実機は未確認。

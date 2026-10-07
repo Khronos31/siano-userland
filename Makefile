@@ -10,12 +10,26 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 .PHONY: all clean test packaging-test linux-static
 
+# Test-only libusb interposition for dynamically linked libusb; static libusb
+# cannot be replaced this way. macOS uses interpose entries in an injected dylib.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+LIBUSB_MOCK := tests/libusb-mock.dylib
+LIBUSB_MOCK_LDFLAGS := -dynamiclib
+LIBUSB_MOCK_LINK_LIBS := $(LDLIBS)
+LIBUSB_MOCK_LOAD := DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=$(CURDIR)/$(LIBUSB_MOCK)
+else
+LIBUSB_MOCK := tests/libusb-mock.so
+LIBUSB_MOCK_LDFLAGS := -shared
+LIBUSB_MOCK_LOAD := LD_PRELOAD=$(CURDIR)/$(LIBUSB_MOCK)
+endif
+
 all: siano-ts
 
-siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o control-input.o device-selector.o exit-codes.o queue-policy.o
+siano-ts: siano-ts.o protocol.o stream-state.o control-parse.o control-input.o device-selector.o exit-codes.o queue-policy.o output-writer.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h usb-location.h queue-policy.h write-policy.h
+siano-ts.o: siano-ts.c protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h usb-location.h queue-policy.h output-writer.h write-policy.h
 protocol.o: protocol.c protocol.h
 stream-state.o: stream-state.c stream-state.h
 control-parse.o: control-parse.c control-parse.h
@@ -23,6 +37,7 @@ control-input.o: control-input.c control-input.h
 device-selector.o: device-selector.c device-selector.h
 exit-codes.o: exit-codes.c exit-codes.h
 queue-policy.o: queue-policy.c queue-policy.h
+output-writer.o: output-writer.c output-writer.h write-policy.h
 
 test-protocol: tests/test_protocol.o protocol.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -79,7 +94,15 @@ test-write-policy: tests/test_write_policy.o
 
 tests/test_write_policy.o: tests/test_write_policy.c write-policy.h
 
-test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy
+test-output-integration: tests/test_output_integration.o protocol.o stream-state.o control-parse.o control-input.o device-selector.o exit-codes.o queue-policy.o output-writer.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/test_output_integration.o: tests/test_output_integration.c siano-ts.c output-writer.h protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h usb-location.h queue-policy.h write-policy.h
+
+$(LIBUSB_MOCK): tests/libusb-mock.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -fPIC $(LIBUSB_MOCK_LDFLAGS) -o $@ tests/libusb-mock.c $(LIBUSB_MOCK_LINK_LIBS)
+
+test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy test-output-integration $(LIBUSB_MOCK)
 	./test-protocol
 	./test-clock
 	./test-stream-state
@@ -91,7 +114,9 @@ test: siano-ts test-protocol test-clock test-stream-state test-control-parse tes
 	./test-exit-codes
 	./test-queue-policy
 	./test-write-policy
-	./tests/test_cli.sh
+	./test-output-integration
+	./tests/test_channel.sh
+	$(LIBUSB_MOCK_LOAD) ./tests/test_cli.sh
 	./tests/test-mdev.sh
 
 packaging-test:
@@ -104,4 +129,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy *.o tests/*.o tests/.cli-error tests/.list-err
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy test-output-integration tests/libusb-mock.so tests/libusb-mock.dylib *.o tests/*.o tests/.cli-error tests/.list-err tests/.channel-err
