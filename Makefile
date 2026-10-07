@@ -9,19 +9,20 @@ CPPFLAGS += $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LDLIBS += $(shell $(PKG_CONFIG) --libs libusb-1.0) -pthread
 
 .PHONY: all clean test packaging-test linux-static
+.DEFAULT_GOAL := all
 
-# Test-only libusb interposition for dynamically linked libusb; static libusb
-# cannot be replaced this way. macOS uses interpose entries in an injected dylib.
+# Linux CLI tests use a preload mock for dynamically linked libusb. On Darwin,
+# test_cli.sh runs without interposition; its --list check performs read-only
+# USB enumeration. No static libusb interposition is claimed.
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-LIBUSB_MOCK := tests/libusb-mock.dylib
-LIBUSB_MOCK_LDFLAGS := -dynamiclib
-LIBUSB_MOCK_LINK_LIBS := $(LDLIBS)
-LIBUSB_MOCK_LOAD := DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=$(CURDIR)/$(LIBUSB_MOCK)
+LIBUSB_MOCK :=
+LIBUSB_MOCK_LOAD :=
 else
 LIBUSB_MOCK := tests/libusb-mock.so
-LIBUSB_MOCK_LDFLAGS := -shared
 LIBUSB_MOCK_LOAD := LD_PRELOAD=$(CURDIR)/$(LIBUSB_MOCK)
+$(LIBUSB_MOCK): tests/libusb-mock.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -fPIC -shared -o $@ tests/libusb-mock.c
 endif
 
 all: siano-ts
@@ -99,9 +100,6 @@ test-output-integration: tests/test_output_integration.o protocol.o stream-state
 
 tests/test_output_integration.o: tests/test_output_integration.c siano-ts.c output-writer.h protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h usb-location.h queue-policy.h write-policy.h
 
-$(LIBUSB_MOCK): tests/libusb-mock.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -fPIC $(LIBUSB_MOCK_LDFLAGS) -o $@ tests/libusb-mock.c $(LIBUSB_MOCK_LINK_LIBS)
-
 test: siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy test-output-integration $(LIBUSB_MOCK)
 	./test-protocol
 	./test-clock
@@ -129,4 +127,4 @@ linux-static:
 	scripts/build-linux-static.sh
 
 clean:
-	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy test-output-integration tests/libusb-mock.so tests/libusb-mock.dylib *.o tests/*.o tests/.cli-error tests/.list-err tests/.channel-err
+	rm -f siano-ts test-protocol test-clock test-stream-state test-control-parse test-control-input test-usb-location test-detach-decision test-device-selector test-exit-codes test-queue-policy test-write-policy test-output-integration tests/libusb-mock.so *.o tests/*.o tests/.cli-error tests/.list-err tests/.channel-err

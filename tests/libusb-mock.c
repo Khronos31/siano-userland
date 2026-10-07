@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Test-only libusb preload. `make test` injects this so the existing
- * test_cli.sh `--list` check runs against an empty device list and never
- * enumerates the host's production USB devices. It intentionally implements
- * only the entry points the --list path uses.
+ * Test-only libusb preload for Linux's dynamically linked CLI test. Linux
+ * `make test` injects this so the existing test_cli.sh `--list` check runs
+ * against an empty device list. Darwin runs that check without interposition;
+ * it performs read-only enumeration, and static libusb is not interposed.
+ * This mock implements only the entry points the --list path uses.
  */
 #include <libusb.h>
 #include <stdio.h>
