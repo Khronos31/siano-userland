@@ -160,7 +160,11 @@ rawは `/config/.work/siano-p0-channel-task/` に保持。soak basenameは `wind
 
 macOSの復帰TS SHA-256は `0c4ade7f4d976da6380583a4739977c0ed3904501ee4a98212813c224f52e4da`。切断試験はUTC23:54:47Z→23:56:46Z、PID94481がLIBUSB_ERROR_PIPEから自然exit7。復帰試験は23:58:03Z→23:58:36Z、自然exit0。両試験にtimeout/dropはなく、終了後に製品プロセスなしと再列挙readyを確認した。受信中の別の`--list`でもreadyを確認したため、他プロセス使用中は常に列挙されないとは結論しない。利用者が報告した別プロセス使用時の非表示の原因は未確定。
 
-final archiveの7/7必須実機確認と、利用者が選択した2件のsoakは完了した。タグ付け・公開は未実施。公開後のasset byte一致確認は公開工程で行う。
+公開前の記録commit時点で、final archiveの7/7必須実機確認と、利用者が選択した2件のsoakは完了していた。タグ付け・公開と公開後のasset byte一致確認は、以下の公開工程で実施した。
+
+### 公開と公開後照合
+
+2026-10-08 09:03 JSTに利用者が公開を承認した。`v0.1.10` は候補source commit `89c240b8af021d55d81b3b90fce79a3690605811` に付け、UTC00:03:55～00:03:56に[Stable Release](https://github.com/Khronos31/siano-userland/releases/tag/v0.1.10)へcandidate run `37691200913` の8 archiveと`SHA256SUMS`を公開した。再buildは行っていない。公開後に新しい空directory `/config/.work/siano-p0-channel-task/published-v0.1.10-9azQRyle/` へ全9 assetを取得し、`sha256sum -c SHA256SUMS` は8/8成功、candidateとの`cmp`はchecksumファイルを含む9/9 byte一致。タグの参照先も候補source commitと一致した。release notesの検証記録リンクは記録commit `be0f3e6eccb45fb8b366fc3c313d790801275348` に固定している。
 
 ## CIのみ
 
