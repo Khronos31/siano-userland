@@ -100,6 +100,68 @@ commit `b43a72abc0cae546706441f4675bc1111d52b456` の [CI run 37690731443](https
 
 同runのLinux source/static x86_64・aarch64、配布Linux archiveのglibc/musl起動、Android3 ABIは合格。Macはstatic製品build、output統合test、channel testまで合格したが、CLI testのシェルへの新規dylib注入がarm64/arm64e不一致で失敗した。既存CLI testの期待値を保持して起動方法を修正し、後続CIで再検証する。製品のUSB実機検証結果には数えない。
 
+## 2026-10-08 v0.1.10 final candidate（7/7、実機検証完了）
+
+配布候補は commit `89c240b8af021d55d81b3b90fce79a3690605811`、version `0.1.10`。通常 [CI 37691193910](https://github.com/Khronos31/siano-userland/actions/runs/37691193910) と [candidate生成 37691200913](https://github.com/Khronos31/siano-userland/actions/runs/37691200913) は全job成功。各archiveは2回の生成でbyte一致し、取得後のchecksumも一致した。WindowsのEXEは canonical pin `f5bddcb5a181632a4906545a3cc28e9a44b917c4f9d73cd9e1f448fbbf1075f0` と一致。先行の失敗CIやソースsnapshotの実機結果を、以下の配布archiveの認定へ置き換えてはいない。
+
+| `siano-ts-0.1.10-` に続くarchive名 | SHA-256 |
+|---|---|
+| `linux-x86_64.tar.gz` | `c7b6a86d86d90f82af63b8cf95ab80b0690826d385aabb21f8377b9145266458` |
+| `linux-aarch64.tar.gz` | `203cfd4388a0b0acf06a713eae2e7c9b31c3793aa48441db8d5d24f6937436e0` |
+| `darwin-arm64.tar.gz` | `c1699b1125d30696aa42bbbaa5d9313763edd579a9be1055a316d2d51f94d992` |
+| `android-aarch64.tar.gz` | `9d2df017f8680f93e83aa7af477baf36cdfa1a959b665d71a7871543c20a9cb4` |
+| `android-armv7a.tar.gz` | `2b5aa8590fdfe9468d028512e06625a96d816042f52d34bc71e64bc60a1ba44a` |
+| `android-x86_64.tar.gz` | `23ac088214a42afe8563ca59daccbb7c9554ff508dab5b8ccaf8fd2460749b53` |
+| `windows-x64.zip` | `1cf4d28afb1994d98323b0112342e76cb2a7e5ad3bd87e3fb18c72af6aa1016d` |
+| `source.tar.gz` | `5512fe690a392c888f4fb460bc81d27c0e773cdf8a1c7df5238f1e506717f6a7` |
+
+### 配布archiveの短時間実機確認
+
+各行は同じ候補archiveのbinaryと同梱firmware（SHA-256 `054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818`）を使用した。PX-S1UD 1台で、接続中に受信を継続したまま利用者がUSBを抜き、自然exit7・drop0・watchdogなしを確認。再接続後は再列挙または新しいTermux USB fdで `T27` を30秒受信し、自然exit0・drop0・残留なしを確認した。物理抜去の瞬間は計測しておらず、抜去から終了までの遅延は未測定。2台構成の残存側受信試験には数えない。
+
+Linux/macOS/Windowsの起動引数は `B -F FW -d PORT -c T27 -o TS`、復帰時に `-t 30` を追加した。Termuxは `termux-usb -r -e` のコールバックから `B --fd 7 -F FW -c T27 -o TS` を起動し、同様に復帰時 `-t 30` を追加。Termux欄のnodeはFDを取得したUSB nodeであり、選択はfdによる。
+
+| 状態 | artifact / 環境 | USB portまたはnode（切断前→復帰後） | 復帰TS / 終了UTC（2026-10-07） | raw記録のbasename |
+|---|---|---|---|---|
+| 今回再検証・合格 | Linux aarch64 / Switch、Fedora 42、kernel 4.9.140-l4t+、非root | `1-1.3`、bus1 address68→69 | 64,972,800 bytes / 345,600 packets / 21:55:17.381Z | `switch-hotplug-0651` / `switch-recovery-0654` |
+| 今回再検証・合格 | Android aarch64 / Pixel 9a、Android 17 API37、kernel 6.1.162-android14-11-g2ec90535fa34-ab15810641 | `/001/002`→`/001/002`（各回新fd） | 64,758,480 bytes / 344,460 packets / 22:08:13.440Z | `termux-hotplug-20261007T220512Z-e2b200723d28492eb4bc1f1e39d7a6da` / `termux-recovery-20261007T220740Z-04c798cb590346879f0a7daad8f33b43` |
+| 今回再検証・合格 | Android armv7a / Google TV Streamer、Android 14 API34、kernel 5.15.180-android14-11-gf55c0c36ffcd-ab13512086 | `/001/015`→`/001/016` | 64,969,040 bytes / 345,580 packets / 22:24:00.738Z | `termux-hotplug-20261007T222058Z-9d8656a8ce0543b998a1d53794df1308` / `termux-recovery-20261007T222328Z-8036c53b8f0447f1a065b5c592e236c1` |
+| 今回再検証・合格 | Android x86_64 / Bliss OS、Android 13 API33、kernel 6.1.112-gloria-xanmod1 | `1-2.3`、`/001/009`→`/001/012` | 64,758,480 bytes / 344,460 packets / 22:48:28.639Z | `termux-hotplug-20261007T224527Z-82c5b0e9f66a4d71a9893d27427225ef` / `termux-recovery-20261007T224756Z-b0f14720c3df4b2ab4a0a8c070db4917` |
+| 今回再検証・合格 | Linux x86_64 / Latitude 5300、AnduinOS 2.0.4、kernel 7.0.0-34-generic、非root/video | `1-3`、bus1 address92→93、未bind | 64,758,480 bytes / 344,460 packets / 22:53:06Z | `latitude-hotplug-0751` / `latitude-recovery-0752` |
+| 今回再検証・合格 | Windows x64 / GEEKOM A6、Windows 11 version10.0.26300.0、WinUSB service、driver6.1.7600.16385 | `5-1.2`、bus5 address3→3 | 64,984,080 bytes / 345,660 packets / 23:08:32.132Z | `windows-hotplug-20261007T230619Z-18b8bef6452041a4aa67a26aa81138dc` / `windows-recovery-20261007T230759Z-ed95bee00e894c8fab5d6c5c7d95804b` |
+| 今回再検証・合格 | macOS arm64 / Mac mini、macOS 26.6.2 (25G83)、非root | `2-3`、bus2 address1→1 | 64,758,480 bytes / 344,460 packets / 23:58:36Z | `mac-hotplug-0854` / `mac-recovery-0857` |
+
+全7環境の復帰TSは解析hostへコピーし、両hostのSHA-256一致を確認後、TSDuck `3.45-4798` で全体を検査した。188-byte remainder・invalid sync・TEI・PIDごとのcontinuity discontinuity・suspect ignoredはすべて0。Androidの`mlockall`/realtime scheduling拒否とmacOSの`mlockall`未実装は非致命。Androidで出力詰まりの実機matrixを追加実施したというclaimはしない。
+
+復帰TSのSHA-256は、表の順に `fb35510dba1ccd60260611d1b9d28b61c5114774f8acc54b06cd47147199e254`、`09001e98d97747937cb98466a3a13e6f28dff60fa43c5a1f604e738c7ec3e321`、`24bcd60e14e0405481119388b50d7f63ec41d2cd654e3373c9df0a4b23f24c07`、`b72c92f31d06514b65aab9111dd0a94551a7206ecfce5b5352de90c001fd9680`、`60944b0a1d235332702666fed33781b89d8185476614ef42da77bb088c577998`、`70512ccec9022fb632295346e367c42a7000272a4fc6161bc568e80191a0ed78`。
+
+未完了試行も保持した。Google TVの最初の抜去待ちは利用者の操作が5分に間に合わず、所有PIDを回収したため未完了であり、製品の失敗や合格には数えない（`termux-hotplug-20261007T221020Z-16ee0640971d4823ac503884dee91fdf`）。Blissの最初の起動はkernel driverにbind済みのため、候補が奪取を拒否してlock前に自然exit4（`termux-hotplug-20261007T222842Z-260899a3b3ee4550973300dd94ec40b4`）。その後、利用者がS1UDを外したことを確認してADB rootから `smsdvb`・`smsusb`・`smsmdtv` を順に外し、未bindの再接続で試験した。live unbind・detach flag・再起動・永続設定変更は行っていない。試験後はS1UDを移動してから元の3モジュールを正常ロードし、復元を確認した。ADBのunroot操作は接続喪失で確認できなかったが、08:51 JSTに利用者がBlissをシャットダウン済みと報告した。試験中のADBプロセスは終了しているため、そのプロセスの権限復元確認を目的とする再起動は不要。unrootの成功を確認したという記録にはしない。
+
+### final candidateの追加機能確認
+
+Linux x86_64とaarch64では、校正済みの未読stdout pipeでSIGINT・SIGTERM・time3・control quit・fail-on-dropの5ケースを今回再検証し、全て自然有限終了。x86_64はSIGINT0/25.176ms、SIGTERM0/25.317ms、quit0/75.701ms、time3はdrop1471/exit8、fail-on-dropはdrop1/exit8。aarch64はSIGINT0/25.311ms、SIGTERM0/25.315ms、quit0/50.455ms、time3はdrop1469/exit8、fail-on-dropはdrop1/exit8。time3はいずれもlockから2.5～5秒の範囲。dropを伴うexit8は仕様どおり。
+
+E03/Linux x86_64とE17/Windowsでは同じopenを維持し、`--control -c T27` から20秒間隔でnumeric `channel 22`→`channel 27`→`quit` を送信した。両方でopenは1回、選局成功3回、自然exit0、drop0、残留0。Linuxは `latitude-control-0754`（622,220 packets / SHA-256 `28d8ca138617c4352c9c85191088bbcebcb64e6dac76639f56c6f3b00a90ad27`）、Windowsは `windows-control-20261007T230849Z-84692b6714524f788800714d34bfae9d`（645,960 packets / SHA-256 `273219de4665ccced653d27904fa8413e5f6825c2ff03bfa386c421b4d06ecf1`）。コピーのhash一致とTSDuckのinvalid sync・TEI 0を確認。continuity eventはLinux40件、Windows44件で、PATのTSID変化と各PIDの初出packet位置から、全件が再選局後の各PIDの先頭packetであることを確認した。以後のdiscontinuityは0。規範のretune境界除外を適用した結果であり、raw continuity 0とは表現しない。
+
+この健康なfile出力の実機試験は、100-byte partial writeを強制した試験ではない。その組合せの根拠は、最終実装のPOSIX/Windows offline testとnative/CI testに限る。変更影響は主にC6（出力・drop・停止）、C10（retune）、C12（CLI）で、Windows canonical pinとDarwin runner修正はC3、記録はC13として扱う。
+
+### 利用者が選択した10分soak
+
+2026-10-08 08:12 JSTに利用者が、WindowsとLinux x86_64で各10分の提案を採用した。PX-S1UD 1台をWindowsからLatitudeへ順に移動し、それぞれのfinal archiveのbinary・同梱firmware・`T27`・`-t 600`・通常file出力を使用。各回の全TSをhash一致後にTSDuck `3.45-4798` で検査し、remainder・invalid sync・TEI・continuity discontinuity・dropは0、自然exit0、watchdogなし、残留なし、終了後`--list`はready。helperの資源判定は自動合格にせず、親担当が記録系列を確認した。
+
+| 環境 / port | 受信開始→終了観測UTC（2026-10-07） | TS / SHA-256 | 資源記録と親担当の判定 |
+|---|---|---|---|
+| Windows / `5-1.2` | 23:18:34.122Z→23:28:39.169Z | 1,295,128,240 bytes / 6,888,980 packets / `ae4f1302c6b5ea3a2a848118025f558da6a6b2866049072080121df48971aee2` | 121点、最大間隔5.016秒。WorkingSet 10,727,424～12,103,680 bytes、private 5,574,656～6,172,672 bytes、handles105～112。最後の約195秒はWorkingSet12,062,720/private6,086,656/handles110で横ばい。初期増加と小幅な上下の後に安定。**安定・合格**。 |
+| Linux x86_64 / `1-3`、address94 | 23:34:47.139Z→23:44:49.910Z | 1,295,297,440 bytes / 6,889,880 packets / `1581f247b62213ff79d66868bc0819ce3740f21af5d425bdfe857378e0789125` | 121点、最大間隔5.001秒、取得失敗0。起動直後RSS5,600KiB/FD8から、5秒以降はRSS5,432KiB・VmSize5,476KiB・FD9が最後まで横ばい。**安定・合格**。 |
+
+WindowsのresourceはRSS相当のWorkingSetとhandle数であり、LinuxのFD数とは同一の量ではない。観測lockから終了までWindows603.235秒、Linux600.158秒。前者には5秒間隔の終了観測遅れが含まれ、製品の内部timerを短縮したものではない。RSS/FD/handleの絶対値に新しい合否閾値は設けていない。終了時まで安定化しない持続増加はなかった。
+
+rawは `/config/.work/siano-p0-channel-task/` に保持。soak basenameは `windows-soak-20261007T231834Z-692ca082dd894a1d941169d407c93149` と `linux-soak-20261007T233447Z-3aa6e281c4dd438bb8d99957b57e7038`、各 `.json`・`.samples.jsonl`・`.stderr.log`・`.ts` を保存した。各hostの実行rootは `siano-rc-37691200913`。08:32 JSTのLinux準備ではUSBが見えず試験を開始せず、08:34の利用者の抜き挿し後にreadyを確認して開始した。
+
+macOSの復帰TS SHA-256は `0c4ade7f4d976da6380583a4739977c0ed3904501ee4a98212813c224f52e4da`。切断試験はUTC23:54:47Z→23:56:46Z、PID94481がLIBUSB_ERROR_PIPEから自然exit7。復帰試験は23:58:03Z→23:58:36Z、自然exit0。両試験にtimeout/dropはなく、終了後に製品プロセスなしと再列挙readyを確認した。受信中の別の`--list`でもreadyを確認したため、他プロセス使用中は常に列挙されないとは結論しない。利用者が報告した別プロセス使用時の非表示の原因は未確定。
+
+final archiveの7/7必須実機確認と、利用者が選択した2件のsoakは完了した。タグ付け・公開は未実施。公開後のasset byte一致確認は公開工程で行う。
+
 ## CIのみ
 
 - Linux x86_64/aarch64 × glibc/muslはbuild、artifact audit、最終archive起動をCIで確認。aarch64/muslのUSB実機は未確認。
