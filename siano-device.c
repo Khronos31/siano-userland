@@ -1184,20 +1184,14 @@ static bool selector_matches(const struct siano_device_selector *selector,
     }
     return false;
 }
-int open_rio(struct siano_device *device,
-                    const struct siano_device_selector *selector,
-                    const char *selector_text)
+static int select_rio(libusb_device **list, ssize_t count,
+                      const struct siano_device_selector *selector,
+                      const char *selector_text, libusb_device **out)
 {
-    libusb_device **list;
-    ssize_t count;
     unsigned found = 0;
     unsigned matched = 0;
     libusb_device *selected = NULL;
-    int rc;
 
-    count = libusb_get_device_list(device->usb, &list);
-    if (count < 0)
-        return (int)count;
     for (ssize_t i = 0; i < count; i++) {
         struct libusb_device_descriptor descriptor;
 
@@ -1217,13 +1211,66 @@ int open_rio(struct siano_device *device,
     }
     if (matched > 1) {
         fprintf(stderr, "RIO device %s is ambiguous\n", selector_text);
-        libusb_free_device_list(list, 1);
         return -EINVAL;
     }
     if (!selected) {
         fprintf(stderr, "RIO device %s not found\n", selector_text);
-        libusb_free_device_list(list, 1);
         return -ENODEV;
+    }
+    *out = selected;
+    return 0;
+}
+int locate_rio(libusb_context *usb, const struct siano_device_selector *selector,
+               const char *selector_text, struct siano_rio_facts *facts)
+{
+    libusb_device **list;
+    ssize_t count;
+    libusb_device *selected = NULL;
+    struct libusb_device_descriptor descriptor;
+    int rc;
+
+    if (selector == NULL || facts == NULL)
+        return -EINVAL;
+    memset(facts, 0, sizeof(*facts));
+    count = libusb_get_device_list(usb, &list);
+    if (count < 0)
+        return (int)count;
+    rc = select_rio(list, count, selector, selector_text, &selected);
+    if (rc == 0) {
+        rc = libusb_get_device_descriptor(selected, &descriptor);
+        if (rc < 0) {
+            libusb_free_device_list(list, 1);
+            return rc;
+        }
+        facts->vendor_id = descriptor.idVendor;
+        facts->product_id = descriptor.idProduct;
+        facts->bus = libusb_get_bus_number(selected);
+        facts->address = libusb_get_device_address(selected);
+        facts->has_bus = true;
+        facts->has_address = true;
+        int port_count = libusb_get_port_numbers(selected, facts->ports,
+                                                 (int)sizeof(facts->ports));
+        facts->port_count = port_count > 0 ? (unsigned)port_count : 0U;
+    }
+    libusb_free_device_list(list, 1);
+    return rc;
+}
+int open_rio(struct siano_device *device,
+                    const struct siano_device_selector *selector,
+                    const char *selector_text)
+{
+    libusb_device **list;
+    ssize_t count;
+    libusb_device *selected = NULL;
+    int rc;
+
+    count = libusb_get_device_list(device->usb, &list);
+    if (count < 0)
+        return (int)count;
+    rc = select_rio(list, count, selector, selector_text, &selected);
+    if (rc != 0) {
+        libusb_free_device_list(list, 1);
+        return rc;
     }
     rc = libusb_open(selected, &device->handle);
     libusb_free_device_list(list, 1);

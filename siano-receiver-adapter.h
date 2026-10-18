@@ -66,6 +66,7 @@ public:
     Result release_final(const Attachment&) noexcept;
 
     siano_device& device() noexcept { return device_; }
+    bool stream_attached() const noexcept { return stream_attached_; }
 
 private:
     static Result from_errno(int) noexcept;

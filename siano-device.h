@@ -121,6 +121,21 @@ int init_device_state_capture(struct siano_device *device, libusb_context *usb,
 int open_rio(struct siano_device *device,
              const struct siano_device_selector *selector,
              const char *selector_text);
+/* Read-only USB facts of the selected RIO function.  It never opens or claims
+ * the device; a daemon uses it before startup claim to build the public
+ * identity and the function descriptor. */
+struct siano_rio_facts {
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint8_t bus;
+    uint8_t address;
+    uint8_t ports[8];
+    unsigned port_count;
+    bool has_bus;
+    bool has_address;
+};
+int locate_rio(libusb_context *usb, const struct siano_device_selector *selector,
+               const char *selector_text, struct siano_rio_facts *facts);
 int open_from_fd(struct siano_device *device, int fd);
 int start_streaming(struct siano_device *device);
 int set_device_mode(struct siano_device *device, const char *firmware);
