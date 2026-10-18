@@ -76,9 +76,14 @@ struct siano_output_pump {
     size_t packet_resume_off;
     bool writing;
     bool busy;
+    int (*packet_sink)(void *, const uint8_t[SIANO_OUTPUT_PACKET]);
+    void *packet_sink_user;
 };
 
 int siano_output_pump_init(struct siano_output_pump *pump, int fd);
+int siano_output_pump_init_sink(
+    struct siano_output_pump *pump,
+    int (*sink)(void *, const uint8_t[SIANO_OUTPUT_PACKET]), void *user);
 void siano_output_pump_destroy(struct siano_output_pump *pump);
 void siano_output_pump_reset(struct siano_output_pump *pump);
 void siano_output_pump_retune(struct siano_output_pump *pump);

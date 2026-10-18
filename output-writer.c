@@ -216,6 +216,18 @@ int siano_output_pump_init(struct siano_output_pump *pump, int fd)
     return siano_output_begin(&pump->output, fd);
 }
 
+int siano_output_pump_init_sink(
+    struct siano_output_pump *pump,
+    int (*sink)(void *, const uint8_t[SIANO_OUTPUT_PACKET]), void *user)
+{
+    if (!sink)
+        return -EINVAL;
+    memset(pump, 0, sizeof(*pump));
+    pump->packet_sink = sink;
+    pump->packet_sink_user = user;
+    return 0;
+}
+
 void siano_output_pump_destroy(struct siano_output_pump *pump)
 {
     siano_output_end(&pump->output);
@@ -288,6 +300,17 @@ int siano_output_pump_step(struct siano_output_pump *pump)
 {
     while (pump->busy) {
         if (pump->writing) {
+            if (pump->packet_sink) {
+                int rc = pump->packet_sink(pump->packet_sink_user,
+                                           pump->scratch + pump->send_off);
+
+                if (rc != 0)
+                    return rc < 0 ? rc : -EIO;
+                pump->send_off += SIANO_OUTPUT_PACKET;
+                pump->packet_off = 0;
+                pump->writing = false;
+                continue;
+            }
             size_t written = 0;
             size_t request = SIANO_OUTPUT_PACKET - pump->packet_off;
             size_t data_offset = pump->packet_off - pump->packet_resume_off;
