@@ -29,6 +29,9 @@ extern "C" {
 #ifndef SIANO_TS_PATH
 #error "SIANO_TS_PATH must name the built siano-ts client"
 #endif
+#ifndef SIANOCTL_PATH
+#error "SIANOCTL_PATH must name the built sianoctl client"
+#endif
 #ifndef SIANO_RUNTIME_VERSION
 #define SIANO_RUNTIME_VERSION "0.0.0-dev"
 #endif
@@ -38,6 +41,7 @@ extern "C" int test_libusb_deliver(struct libusb_transfer*, const std::uint8_t*,
 extern "C" int test_libusb_pending(struct libusb_transfer*);
 extern "C" unsigned test_libusb_tune_requests(void);
 extern "C" std::uint32_t test_libusb_last_tune_hz(void);
+extern "C" unsigned test_libusb_control_requests(void);
 extern "C" int test_libusb_deliver_control_to(struct libusb_transfer*, std::uint16_t);
 
 namespace {
@@ -144,6 +148,57 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+int run_status(const std::string& runtime_dir, const std::string& instance,
+               std::string& output)
+{
+    std::fprintf(stderr, "PROOF status_argv=%s --instance %s --runtime-dir %s status\n",
+                 SIANOCTL_PATH, instance.c_str(), runtime_dir.c_str());
+    int output_pipe[2];
+    if (pipe(output_pipe) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(output_pipe[0]);
+        if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+        close(output_pipe[1]);
+        const char* argv[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
+                              "--runtime-dir", runtime_dir.c_str(), "status", nullptr};
+        execv(SIANOCTL_PATH, const_cast<char* const*>(argv));
+        _exit(127);
+    }
+    close(output_pipe[1]);
+    std::array<char, 4096U> buffer{};
+    ssize_t count = 0;
+    while ((count = read(output_pipe[0], buffer.data(), buffer.size())) > 0)
+        output.append(buffer.data(), static_cast<std::size_t>(count));
+    close(output_pipe[0]);
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+}
+
+bool check_status(std::string_view json, const std::string& instance,
+                  const std::array<std::uint8_t, 16U>& epoch, const char* receiver_state)
+{
+    constexpr char hex[] = "0123456789abcdef";
+    std::array<char, 33U> epoch_text{};
+    for (std::size_t i = 0U; i < epoch.size(); ++i) {
+        epoch_text[i * 2U] = hex[(epoch[i] >> 4U) & 15U];
+        epoch_text[i * 2U + 1U] = hex[epoch[i] & 15U];
+    }
+    const std::string expected_epoch(epoch_text.data(), 32U);
+    return json.size() > 2U && json.front() == '{' && json.back() == '\n' &&
+           json.find("\"name\":\"userland.status\"") != std::string_view::npos &&
+           json.find("\"product\":\"siano-userland\"") != std::string_view::npos &&
+           json.find("\"version\":\"0.0.0-dev\"") != std::string_view::npos &&
+           json.find("\"epoch\":\"" + expected_epoch + "\"") != std::string_view::npos &&
+           json.find("\"instance\":\"" + instance + "\"") != std::string_view::npos &&
+           json.find("\"descriptor\":{\"id\":\"0\"") != std::string_view::npos &&
+           json.find(std::string("\"state\":\"") + receiver_state + "\"") !=
+               std::string_view::npos &&
+           json.find("\"measurements\":{}") != std::string_view::npos &&
+           json.find("\"readers\":[]") != std::string_view::npos;
+}
+
 std::string make_private_dir()
 {
     std::array<char, 64U> templ{};
@@ -212,9 +267,23 @@ int main()
     std::thread server([&]() {
         while (serving.load()) {
             const auto polled = owned.poll_once(Timeout{50U});
-            if (!polled) break;
+            if (!polled) {
+                std::fprintf(stderr, "PROOF server poll error=%u\n",
+                             static_cast<unsigned>(polled.error()));
+                break;
+            }
         }
     });
+
+    std::string idle_status;
+    const unsigned idle_controls = test_libusb_control_requests();
+    if (run_status(runtime_dir, instance, idle_status) != 0 ||
+        !check_status(idle_status, instance, epoch.value(), "free") ||
+        test_libusb_control_requests() != idle_controls) {
+        std::fprintf(stderr, "PROOF idle status failed: %s", idle_status.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "PROOF idle_status=%s", idle_status.c_str());
 
     // 2. Real client process over the real AF_UNIX endpoints; bottom USB is
     //    the loopback.  A feeder injects SIGNAL_DETECTED and K BDA packets
@@ -223,18 +292,44 @@ int main()
     std::thread feeder([&]() {
         for (unsigned i = 0U; i < 5000U && !family->stream_attached(); ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (!family->stream_attached()) return;
+        if (!family->stream_attached()) {
+            std::fprintf(stderr, "PROOF attach wait expired tune_requests=%u\n",
+                         test_libusb_tune_requests());
+            return;
+        }
+        std::string streaming_status;
+        const unsigned controls_before_status = test_libusb_control_requests();
+        if (run_status(runtime_dir, instance, streaming_status) != 0 ||
+            !check_status(streaming_status, instance, epoch.value(), "streaming") ||
+            test_libusb_control_requests() != controls_before_status) {
+            std::fprintf(stderr, "PROOF streaming status failed controls=%u/%u: %s",
+                         controls_before_status, test_libusb_control_requests(),
+                         streaming_status.c_str());
+            return;
+        }
+        std::fprintf(stderr, "PROOF streaming_status=%s", streaming_status.c_str());
         for (std::size_t i = 0U; i < MAX_URBS; ++i) {
-            if (!wait_transfer_pending(device.transfers[i])) return;
+            if (!wait_transfer_pending(device.transfers[i])) {
+                std::fprintf(stderr, "PROOF transfer not pending index=%zu\n", i);
+                return;
+            }
             if (test_libusb_deliver_control_to(device.transfers[i],
-                                               MSG_SMS_SIGNAL_DETECTED_IND) != 0) return;
-            if (!wait_transfer_pending(device.transfers[i])) return;
+                                               MSG_SMS_SIGNAL_DETECTED_IND) != 0) {
+                std::fprintf(stderr, "PROOF signal delivery failed index=%zu\n", i);
+                return;
+            }
+            if (!wait_transfer_pending(device.transfers[i])) {
+                std::fprintf(stderr, "PROOF transfer resubmit missing index=%zu\n", i);
+                return;
+            }
         }
         fed.store(deliver_ts(device, 0x41U, kPackets));
+        if (!fed.load()) std::fprintf(stderr, "PROOF TS delivery failed\n");
     });
 
     const std::string output_path = runtime_dir + "/capture.ts";
     const int client_status = run_client(runtime_dir, instance, output_path, "count", "5");
+    std::fprintf(stderr, "PROOF client_status=%d\n", client_status);
     feeder.join();
     serving.store(false);
     server.join();

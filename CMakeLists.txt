@@ -169,6 +169,14 @@ target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(sianod PRIVATE siano_runtime)
 
+add_executable(sianoctl ${SIANO_PX4_ROOT}/tools/px4ctl.cpp)
+target_compile_features(sianoctl PRIVATE cxx_std_17)
+target_compile_definitions(sianoctl PRIVATE
+    PX4CTL_TOOL_NAME="sianoctl" PX4CTL_PRODUCT_SLUG="siano-userland"
+    PX4CTL_PRODUCT_ENUM=siano PX4CTL_PRODUCT_VERSION="${SIANO_RUNTIME_VERSION}")
+target_link_libraries(sianoctl PRIVATE siano_px4_runtime dtv::json dtv::identity)
+siano_enable_project_warnings(sianoctl)
+
 add_executable(siano_wire_ts siano-wire-ts.cpp)
 set_target_properties(siano_wire_ts PROPERTIES OUTPUT_NAME siano-ts)
 target_compile_features(siano_wire_ts PRIVATE cxx_std_17)
@@ -193,9 +201,11 @@ add_executable(siano_runtime_v1_proof
 target_compile_features(siano_runtime_v1_proof PRIVATE cxx_std_17)
 target_compile_definitions(siano_runtime_v1_proof PRIVATE
     SIANO_TS_PATH="$<TARGET_FILE:siano_wire_ts>"
+    SIANOCTL_PATH="$<TARGET_FILE:sianoctl>"
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(siano_runtime_v1_proof PRIVATE
     siano_runtime PkgConfig::LIBUSB Threads::Threads)
+add_dependencies(siano_runtime_v1_proof sianoctl siano_wire_ts)
 
 # Held-callback close proof.  It compiles the accepted S composition with the
 # existing test seam so one packet sink can be held while the real context
