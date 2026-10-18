@@ -1,17 +1,56 @@
 cmake_minimum_required(VERSION 3.16)
 project(siano_public_runtime LANGUAGES C CXX)
 
-# The canonical runtime is the pinned P runtime source subset.  It is a
-# read-only input referenced by path; S does not vendor a copy.  A build
-# without the explicit override is a configuration error so the local source
-# override is always visible.
-if(NOT DTV_USERLAND_CORE_SOURCE_DIR)
-    message(FATAL_ERROR "Pass the explicit DTV_USERLAND_CORE_SOURCE_DIR source override")
+include(FetchContent)
+
+set(DTV_USERLAND_CORE_SOURCE_DIR "" CACHE PATH
+    "Explicit local dtv-userland-core source override")
+set(SIANO_PX4_USERLAND_SOURCE_DIR "" CACHE PATH
+    "Explicit local PX4 userland source override")
+set(SIANO_RUNTIME_VERSION "0.0.0-dev" CACHE STRING
+    "Siano runtime version (default is an unreleased development build)")
+
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dtv-userland-core.revision" DTV_CORE_REVISION)
+string(STRIP "${DTV_CORE_REVISION}" DTV_CORE_REVISION)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmake/px4-userland.revision" PX4_USERLAND_REVISION)
+string(STRIP "${PX4_USERLAND_REVISION}" PX4_USERLAND_REVISION)
+foreach(_revision IN ITEMS DTV_CORE_REVISION PX4_USERLAND_REVISION)
+    string(LENGTH "${${_revision}}" _revision_length)
+    if(NOT _revision_length EQUAL 40 OR NOT "${${_revision}}" MATCHES "^[0-9a-f]+$")
+        message(FATAL_ERROR "${_revision} must contain a full 40-hex commit")
+    endif()
+endforeach()
+
+if(DTV_USERLAND_CORE_SOURCE_DIR)
+    set(DTV_CORE_SOURCE "${DTV_USERLAND_CORE_SOURCE_DIR}")
+    message(WARNING "dtv-userland-core: using explicit local source ${DTV_CORE_SOURCE}; build is not pinned")
+else()
+    FetchContent_Declare(dtv_userland_core
+        GIT_REPOSITORY "git@github.com:Khronos31/dtv-userland-core.git"
+        GIT_TAG "${DTV_CORE_REVISION}")
+    FetchContent_GetProperties(dtv_userland_core)
+    if(NOT dtv_userland_core_POPULATED)
+        FetchContent_Populate(dtv_userland_core)
+    endif()
+    set(DTV_CORE_SOURCE "${dtv_userland_core_SOURCE_DIR}")
 endif()
-if(NOT SIANO_PX4_USERLAND_SOURCE_DIR)
-    message(FATAL_ERROR "Pass the explicit SIANO_PX4_USERLAND_SOURCE_DIR source override")
+
+if(SIANO_PX4_USERLAND_SOURCE_DIR)
+    set(SIANO_PX4_SOURCE "${SIANO_PX4_USERLAND_SOURCE_DIR}")
+    message(WARNING "PX4 userland: using explicit local source ${SIANO_PX4_SOURCE}; build is not pinned")
+else()
+    FetchContent_Declare(px4_userland
+        GIT_REPOSITORY "git@github.com:Khronos31/px4-userland.git"
+        GIT_TAG "${PX4_USERLAND_REVISION}")
+    FetchContent_GetProperties(px4_userland)
+    if(NOT px4_userland_POPULATED)
+        FetchContent_Populate(px4_userland)
+    endif()
+    set(SIANO_PX4_SOURCE "${px4_userland_SOURCE_DIR}")
 endif()
-set(SIANO_PX4_ROOT "${SIANO_PX4_USERLAND_SOURCE_DIR}/userland")
+set(SIANO_PX4_ROOT "${SIANO_PX4_SOURCE}/userland")
+file(WRITE "${CMAKE_BINARY_DIR}/dependency-sources.txt"
+    "dtv-userland-core=${DTV_CORE_SOURCE}\nexpected=${DTV_CORE_REVISION}\nPX4 userland=${SIANO_PX4_SOURCE}\nexpected=${PX4_USERLAND_REVISION}\n")
 
 # The version is a required cache value: this tree carries no VERSION file and
 # the new entry must not fake a v1 release.
@@ -19,11 +58,14 @@ if(NOT SIANO_RUNTIME_VERSION)
     message(FATAL_ERROR "Pass SIANO_RUNTIME_VERSION (development value; do not claim v1)")
 endif()
 
+if(NOT EXISTS "${DTV_CORE_SOURCE}/CMakeLists.txt")
+    message(FATAL_ERROR "dtv-userland-core source has no CMakeLists.txt: ${DTV_CORE_SOURCE}")
+endif()
 set(DTV_USERLAND_BUILD_CAPTURE ON CACHE BOOL "Build packet capture storage" FORCE)
 set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
 set(DTV_USERLAND_BUILD_TESTING OFF CACHE BOOL "Build core tests" FORCE)
-add_subdirectory(${DTV_USERLAND_CORE_SOURCE_DIR} core)
+add_subdirectory(${DTV_CORE_SOURCE} core)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -85,6 +127,31 @@ target_compile_features(siano_capture_composition PUBLIC cxx_std_17)
 target_include_directories(siano_capture_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(siano_capture_composition PUBLIC
     dtv::receiver dtv::capture siano_c_backend)
+
+add_library(siano_capture_composition_proof STATIC siano-capture-consumer.cpp)
+target_compile_features(siano_capture_composition_proof PUBLIC cxx_std_17)
+target_compile_definitions(siano_capture_composition_proof PRIVATE SIANO_CAPTURE_TEST_SEAMS)
+target_include_directories(siano_capture_composition_proof PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(siano_capture_composition_proof PUBLIC
+    dtv::receiver dtv::capture siano_c_backend)
+
+add_executable(siano_capture_downstream_link tests/downstream_link.cpp)
+target_compile_features(siano_capture_downstream_link PRIVATE cxx_std_17)
+target_link_libraries(siano_capture_downstream_link PRIVATE siano_capture_composition)
+
+add_executable(siano_capture_consumer_proof tests/consumer_proof.cpp tests/libusb-loopback.c)
+target_compile_features(siano_capture_consumer_proof PRIVATE cxx_std_17)
+target_compile_definitions(siano_capture_consumer_proof PRIVATE SIANO_CAPTURE_TEST_SEAMS)
+target_link_libraries(siano_capture_consumer_proof PRIVATE siano_capture_composition_proof)
+target_link_options(siano_capture_consumer_proof PRIVATE
+    -Wl,--wrap=pthread_join -Wl,--wrap=pthread_create
+    -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_cond_clockwait
+    -Wl,--wrap=calloc -Wl,--wrap=ts_pop_capture)
+
+add_executable(siano_receiver_adapter_proof
+    tests/receiver_adapter_proof.cpp tests/libusb-loopback.c)
+target_compile_features(siano_receiver_adapter_proof PRIVATE cxx_std_17)
+target_link_libraries(siano_receiver_adapter_proof PRIVATE siano_capture_composition)
 
 # S product glue: the P-facing family/shim and the LIST/assemble builder.
 add_library(siano_runtime STATIC

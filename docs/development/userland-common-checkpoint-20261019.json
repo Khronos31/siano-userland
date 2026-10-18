@@ -2,14 +2,16 @@
   "kind": "work-in-progress-source-checkpoint-review-pending",
   "branch": "wip/userland-common-20261017",
   "upstream_main": "af432bd02578f266195f82e9d6b69f8153115744",
-  "snapshot_source": "/config/.work/userland-common-20261017/implementation/siano-public-runtime",
-  "snapshot_file_count": 71,
+  "snapshot_source": "/config/.work/userland-common-20261017/implementation/siano-public-runtime-pinned",
+  "snapshot_file_count": 73,
   "snapshot_file_sha256": {
-    "CMakeLists.txt": "d678df504a8325f9047d58b1ba838df7ba367afb77ef1abdb4e3ffad68d163d1",
+    "CMakeLists.txt": "a210e538bb7ccefceb96d6e0e9b15753a800098548cbd785d5aad51a48279c0f",
     "COPYING": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
     "LICENCE.siano": "cf2b4a0301e028d7357ca84644c5094dec0aa6a4e8f8616426c3d126788a406a",
     "Makefile": "214bfa10ba7185a02ba9d41f31642e170c351a571f63d94de2de12b61f90e492",
     "Makefile.win": "f0f2f08fb1bc7486bbb93db1fa89c0b1f3d9435e13198d18d7ac4f5d072987e6",
+    "cmake/dtv-userland-core.revision": "7e1b4c3f6abf79caadf049d0f26887539a49f4732f1bdbb8a789f8c580ef9b58",
+    "cmake/px4-userland.revision": "9ee5ae4b8cf45118f6867d287b62eeb3344058cc381537b090458cd206fffe82",
     "control-input.c": "b3b88b3154cb84d0ab44741367e91c16f6c1a74265739ea1bddf886df428ca38",
     "control-input.h": "6ccac34842cc3820ab41e953b4e8b6fcd8315655b2400236461771ee43827349",
     "control-parse.c": "3b8073bd87f83dd566defa22a6008b1bc5c7221f531baaf72620031853731e54",
@@ -119,24 +121,20 @@
     "scripts/test-static-relink.sh",
     "scripts/verify-android-elf.sh"
   ],
-  "overlay_policy": "専用branchへ固定済みの作業中sourceを保全。manifest外のupstream fileは保持。独立review待ちで、releaseや最終受入を表さない。metadata自体はsnapshot外。",
+  "overlay_policy": "固定済み製品layout/default-fetch候補を専用branchへ保全。manifest外のupstream fileは保持。runtime独立review待ちでrelease/全機能受入ではない。metadata自体はsnapshot外。",
   "acceptance_scope": [
-    "公開runtimeのnormal/SAN proofと、親の新P入力によるactual client/held closeの2proofが成功。",
-    "PX-S1UD/T27を6秒、12915600byte、独立sync/TEI各0、client/daemon exit0を親確認。",
-    "Grok独立reviewは進行中。明示local source override buildであり、default-fetch/pin/全OS/RCの認定ではない。"
+    "製品layout/実pin増分は親限定確認。実取得P293file/common86fileと固定入力が一致し、親が別process実clientのruntime proofを再実行してexit0。",
+    "Grok/GLMによる元runtimeの独立reviewは継続中。全CLI/全OS/実機/最終配布/RCを認定するものではない。",
+    "PX-S1UD/T27初回実機成功は前のexplicit override binary。今回のdefault-fetch binaryを実機済みとは呼ばない。"
   ],
   "acceptance_index": "https://github.com/Khronos31/agent-workspace/blob/design/userland-common-contract-20261017/implementation/accepted-source-index.md",
   "ci_policy": "このソース保全コミットは[skip ci]を含む。リリース・tag・mainへの反映は別の判断とする。",
   "known_followups": [],
-  "previous_checkpoint_commit": "bf054d1e21b7c90ca79fa7d7844394b00b0032ec",
+  "previous_checkpoint_commit": "cdc3c8cb3710c7644b211f491ac031eac26c8e24",
   "common_source_commit": "80ccc7b7e9ccad7c9b3656f02a28d12f003c45a0",
-  "runtime_source_override": {
-    "repository": "Khronos31/px4-userland",
-    "branch": "wip/userland-common-20261017",
-    "snapshot_sha256_manifest": "px4-userland側同名checkpoint metadataの293file",
-    "version_cache": "SIANO_RUNTIME_VERSION=0.0.0-dev",
-    "source_cache": "SIANO_PX4_USERLAND_SOURCE_DIR=<P checkout>",
-    "core_cache": "DTV_USERLAND_CORE_SOURCE_DIR=<core80ccc7b checkout>",
-    "commit": "a5b72256e612995f0c3766ac31949ca7a7e485a5"
+  "runtime_dependencies": {
+    "px4-userland": "a5b72256e612995f0c3766ac31949ca7a7e485a5",
+    "dtv-userland-core": "80ccc7b7e9ccad7c9b3656f02a28d12f003c45a0",
+    "default_fetch": "SSH repositories, full immutable commit locks; source override remains explicit development input"
   }
 }
