@@ -46,53 +46,34 @@ void usage() noexcept
         "  --group                publish group-accessible endpoints\n"
         "  -h, --help             print this help\n"
         "  -V, --version          print the development version\n"
-        "  --models              print static supported model catalog as JSON\n");
+        "  --models              print static supported models and USB IDs (text)\n");
 }
 
 int write_models()
 {
     namespace w = dtv::userland::wire;
-    auto copy = [](auto& dest, const char* source) -> bool {
-        const std::size_t length = std::strlen(source);
-        if (length == 0U || length > dest.bytes.size()) return false;
-        dest.length = static_cast<std::uint16_t>(length);
-        std::memcpy(dest.bytes.data(), source, length);
-        return true;
-    };
-    // These are the exact three RIO VID:PIDs accepted by is_rio_id().
-    // Other named Siano chips in diagnostics are not supported models.
+    // This is the product's static supported RIO USB ID table, not an
+    // enumeration of USB tuners currently plugged into the host.
     struct SupportedId { const char* name; std::uint16_t vid, pid; };
     constexpr std::array<SupportedId, 3U> known{{
         {"PX-S1UD", 0x3275U, 0x0080U},
         {"Siano-Rio-0600", 0x187fU, 0x0600U},
         {"Siano-Rio-0302", 0x187fU, 0x0302U},
     }};
-    std::array<w::ModelCatalogEntry, known.size()> entries{};
+    std::array<w::SupportedModel, known.size()> entries{};
     for (std::size_t i = 0U; i < entries.size(); ++i) {
-        auto& entry = entries[i];
-        if (!copy(entry.model.id, known[i].name) ||
-            !copy(entry.model.name, known[i].name)) return 70;
-        entry.usb_ids.count = 1U;
-        entry.usb_ids.items[0] = {known[i].vid, known[i].pid, w::Mode::runtime};
-        entry.nominal_receiver_count = {true, 1U};
-        entry.nominal_usb_function_count = {true, 1U};
-        entry.available_in_build = true;
-        entry.receivers.present = true;
-        entry.receivers.value.count = 1U;
-        entry.receivers.value.items[0].id = 0U;
-        entry.receivers.value.items[0].systems.mask = 1U;
-        entry.max_concurrent_streams = {true, 1U};
+        const std::size_t size = std::strlen(known[i].name);
+        if (size == 0U || size > entries[i].name.bytes.size()) return 70;
+        entries[i].name.length = static_cast<std::uint16_t>(size);
+        std::memcpy(entries[i].name.bytes.data(), known[i].name, size);
+        entries[i].usb_ids.count = 1U;
+        entries[i].usb_ids.items[0] = {known[i].vid, known[i].pid};
     }
-
-    w::ModelsResponse document{};
-    if (!copy(document.producer.product, "siano-userland") ||
-        !copy(document.producer.version, SIANO_RUNTIME_VERSION)) return 70;
-    document.models = {entries.data(), entries.size()};
-    const auto size = w::models_json_size(document);
+    const w::SupportedModels models{{entries.data(), entries.size()}};
+    const auto size = w::models_text_size(models);
     if (!size) return 70;
     std::vector<std::uint8_t> output(size.value());
-    const auto encoded = w::encode_models_json(
-        document, {output.data(), output.size()});
+    const auto encoded = w::encode_models_text(models, {output.data(), output.size()});
     if (!encoded || encoded.value() != output.size() ||
         std::fwrite(output.data(), 1U, output.size(), stdout) != output.size() ||
         std::fflush(stdout) != 0) return 70;
