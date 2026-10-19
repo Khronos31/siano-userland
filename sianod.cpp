@@ -7,6 +7,7 @@
 #include "px4d_signals.h"
 
 #include <dtv/userland/identity.h>
+#include <dtv/userland/json.h>
 
 extern "C" {
 #include "device-selector.h"
@@ -21,6 +22,7 @@ extern "C" {
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #ifndef SIANO_RUNTIME_VERSION
 #define SIANO_RUNTIME_VERSION "0.0.0-dev"
@@ -43,7 +45,58 @@ void usage() noexcept
         "  --instance TOKEN       explicit connection instance (default auto)\n"
         "  --group                publish group-accessible endpoints\n"
         "  -h, --help             print this help\n"
-        "  -V, --version          print the development version\n");
+        "  -V, --version          print the development version\n"
+        "  --models              print static supported model catalog as JSON\n");
+}
+
+int write_models()
+{
+    namespace w = dtv::userland::wire;
+    auto copy = [](auto& dest, const char* source) -> bool {
+        const std::size_t length = std::strlen(source);
+        if (length == 0U || length > dest.bytes.size()) return false;
+        dest.length = static_cast<std::uint16_t>(length);
+        std::memcpy(dest.bytes.data(), source, length);
+        return true;
+    };
+    // These are the exact three RIO VID:PIDs accepted by is_rio_id().
+    // Other named Siano chips in diagnostics are not supported models.
+    struct SupportedId { const char* name; std::uint16_t vid, pid; };
+    constexpr std::array<SupportedId, 3U> known{{
+        {"PX-S1UD", 0x3275U, 0x0080U},
+        {"Siano-Rio-0600", 0x187fU, 0x0600U},
+        {"Siano-Rio-0302", 0x187fU, 0x0302U},
+    }};
+    std::array<w::ModelCatalogEntry, known.size()> entries{};
+    for (std::size_t i = 0U; i < entries.size(); ++i) {
+        auto& entry = entries[i];
+        if (!copy(entry.model.id, known[i].name) ||
+            !copy(entry.model.name, known[i].name)) return 70;
+        entry.usb_ids.count = 1U;
+        entry.usb_ids.items[0] = {known[i].vid, known[i].pid, w::Mode::runtime};
+        entry.nominal_receiver_count = {true, 1U};
+        entry.nominal_usb_function_count = {true, 1U};
+        entry.available_in_build = true;
+        entry.receivers.present = true;
+        entry.receivers.value.count = 1U;
+        entry.receivers.value.items[0].id = 0U;
+        entry.receivers.value.items[0].systems.mask = 1U;
+        entry.max_concurrent_streams = {true, 1U};
+    }
+
+    w::ModelsResponse document{};
+    if (!copy(document.producer.product, "siano-userland") ||
+        !copy(document.producer.version, SIANO_RUNTIME_VERSION)) return 70;
+    document.models = {entries.data(), entries.size()};
+    const auto size = w::models_json_size(document);
+    if (!size) return 70;
+    std::vector<std::uint8_t> output(size.value());
+    const auto encoded = w::encode_models_json(
+        document, {output.data(), output.size()});
+    if (!encoded || encoded.value() != output.size() ||
+        std::fwrite(output.data(), 1U, output.size(), stdout) != output.size() ||
+        std::fflush(stdout) != 0) return 70;
+    return 0;
 }
 
 constexpr std::chrono::milliseconds kWholeContextCloseBudget{15000};
@@ -132,6 +185,8 @@ SelectorStatus map_public_selector(const std::string& text,
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && argv != nullptr && argv[1] != nullptr &&
+        std::string_view(argv[1]) == "--models") return write_models();
     std::string device;
     std::string firmware;
     std::string runtime_directory;
