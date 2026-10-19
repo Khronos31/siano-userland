@@ -8,6 +8,7 @@
 
 #include <dtv/userland/identity.h>
 #include <dtv/userland/json.h>
+#include <libusb.h>
 
 extern "C" {
 #include "device-selector.h"
@@ -20,6 +21,9 @@ extern "C" {
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <random>
+#include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,21 +50,23 @@ void usage() noexcept
         "  --group                publish group-accessible endpoints\n"
         "  -h, --help             print this help\n"
         "  -V, --version          print the development version\n"
-        "  --models              print static supported models and USB IDs (text)\n");
+        "  --models              print static supported models and USB IDs (text)\n"
+        "  --list-json           print read-only USB discovery as JSON\n");
 }
+
+struct SupportedId { const char* name; std::uint16_t vid, pid; };
+constexpr std::array<SupportedId, 3U> kSupportedRioIds{{
+    {"PX-S1UD", 0x3275U, 0x0080U},
+    {"Siano-Rio-0600", 0x187fU, 0x0600U},
+    {"Siano-Rio-0302", 0x187fU, 0x0302U},
+}};
 
 int write_models()
 {
     namespace w = dtv::userland::wire;
-    // This is the product's static supported RIO USB ID table, not an
-    // enumeration of USB tuners currently plugged into the host.
-    struct SupportedId { const char* name; std::uint16_t vid, pid; };
-    constexpr std::array<SupportedId, 3U> known{{
-        {"PX-S1UD", 0x3275U, 0x0080U},
-        {"Siano-Rio-0600", 0x187fU, 0x0600U},
-        {"Siano-Rio-0302", 0x187fU, 0x0302U},
-    }};
-    std::array<w::SupportedModel, known.size()> entries{};
+    // Static supported RIO models, not attached USB devices.
+    const auto& known = kSupportedRioIds;
+    std::array<w::SupportedModel, kSupportedRioIds.size()> entries{};
     for (std::size_t i = 0U; i < entries.size(); ++i) {
         const std::size_t size = std::strlen(known[i].name);
         if (size == 0U || size > entries[i].name.bytes.size()) return 70;
@@ -76,6 +82,155 @@ int write_models()
     const auto encoded = w::encode_models_text(models, {output.data(), output.size()});
     if (!encoded || encoded.value() != output.size() ||
         std::fwrite(output.data(), 1U, output.size(), stdout) != output.size() ||
+        std::fflush(stdout) != 0) return 70;
+    return 0;
+}
+
+
+// Enumerate descriptors only: no interface claim, firmware upload, or tuning.
+// Each supported RIO function is a one-function Siano enclosure.
+int write_discovery_json()
+{
+    namespace w = dtv::userland::wire;
+    auto copy = [](auto& dest, const char* text) {
+        const std::size_t n = std::strlen(text);
+        if (n == 0U || n > dest.bytes.size()) return false;
+        dest.length = static_cast<std::uint16_t>(n);
+        std::memcpy(dest.bytes.data(), text, n);
+        return true;
+    };
+    libusb_context* context = nullptr;
+    const int initialized = libusb_init(&context);
+    if (initialized != 0) {
+        std::fprintf(stderr, "sianod: USB enumeration unavailable (%d)\n", initialized);
+        return 7;
+    }
+    libusb_device** devices = nullptr;
+    const ssize_t count = libusb_get_device_list(context, &devices);
+    if (count < 0) {
+        std::fprintf(stderr, "sianod: USB device listing failed (%d)\n",
+                     static_cast<int>(count));
+        libusb_exit(context);
+        return 7;
+    }
+    std::vector<w::DiscoveryFunction> functions;
+    std::vector<w::DiscoveryEnclosure> enclosures;
+    for (ssize_t i = 0; i < count; ++i) {
+        libusb_device* device = devices[i];
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != 0) continue;
+        const SupportedId* profile = nullptr;
+        for (const auto& known : kSupportedRioIds) {
+            if (known.vid == descriptor.idVendor && known.pid == descriptor.idProduct) {
+                profile = &known;
+                break;
+            }
+        }
+        if (profile == nullptr) continue;
+        if (functions.size() >= std::numeric_limits<std::uint16_t>::max()) {
+            libusb_free_device_list(devices, 1);
+            libusb_exit(context);
+            return 70;
+        }
+        w::DiscoveryFunction f{};
+        auto& observed = f.observation;
+        observed.id = static_cast<std::uint16_t>(functions.size());
+        observed.vid = descriptor.idVendor;
+        observed.pid = descriptor.idProduct;
+        observed.mode = w::Mode::runtime;
+        observed.present = true;
+        observed.serial_state = w::SerialState::not_queried;
+        observed.model.present = true;
+        if (!copy(observed.model.value.id, profile->name) ||
+            !copy(observed.model.value.name, profile->name)) {
+            libusb_free_device_list(devices, 1);
+            libusb_exit(context);
+            return 70;
+        }
+        observed.location.bus = {true, libusb_get_bus_number(device)};
+        observed.location.address = {true, libusb_get_device_address(device)};
+        std::uint8_t ports[8]{};
+        const int nports = libusb_get_port_numbers(device, ports, sizeof(ports));
+        bool has_path = false;
+        if (nports > 0 && nports <= static_cast<int>(sizeof(ports))) {
+            std::string path = std::to_string(observed.location.bus.value);
+            for (int index = 0; index < nports; ++index) {
+                path.push_back(index == 0 ? '-' : '.');
+                path += std::to_string(ports[index]);
+            }
+            const std::string selector = "usb:" + path;
+            if (identity::parse_device_selector(selector) &&
+                path.size() <= observed.location.usb_path.value.bytes.size() &&
+                selector.size() <= f.selector_candidates.items[0].value.bytes.size()) {
+                auto& usb_path = observed.location.usb_path;
+                usb_path.present = true;
+                usb_path.value.length = static_cast<std::uint16_t>(path.size());
+                std::memcpy(usb_path.value.bytes.data(), path.data(), path.size());
+                auto& candidate = f.selector_candidates.items[0];
+                candidate.value.length = static_cast<std::uint16_t>(selector.size());
+                std::memcpy(candidate.value.bytes.data(), selector.data(), selector.size());
+                candidate.state = w::DiscoveryCandidateState::usable;
+                f.selector_candidates.count = 1U;
+                has_path = true;
+            }
+        }
+        if (has_path) {
+            f.grouping = w::DiscoveryGroupingState::bound;
+            f.enclosure_id = {true, static_cast<std::uint16_t>(enclosures.size())};
+        } else {
+            f.grouping = w::DiscoveryGroupingState::unresolved;
+            const char* reason = "usb_path_unavailable";
+            f.grouping_reason.present = copy(f.grouping_reason.value, reason);
+        }
+        functions.push_back(std::move(f));
+        if (!has_path) continue;
+        w::DiscoveryEnclosure enclosure{};
+        enclosure.descriptor.id = static_cast<std::uint16_t>(enclosures.size());
+        enclosure.descriptor.model.present = true;
+        if (!copy(enclosure.descriptor.model.value.id, profile->name) ||
+            !copy(enclosure.descriptor.model.value.name, profile->name)) {
+            libusb_free_device_list(devices, 1);
+            libusb_exit(context);
+            return 70;
+        }
+        enclosure.descriptor.identity.serial_state = w::IdentitySerialState::unknown;
+        enclosure.descriptor.identity.uniqueness = w::Uniqueness::unknown;
+        enclosure.descriptor.limits.max_concurrent_streams = {true, 1U};
+        enclosure.topology.state = w::TopologyState::complete;
+        enclosure.topology.expected_function_count = {true, 1U};
+        enclosure.usb_function_ids.count = 1U;
+        enclosure.usb_function_ids.items[0] = functions.back().observation.id;
+        enclosure.selector_candidates.count = 1U;
+        enclosure.selector_candidates.items[0] =
+            functions.back().selector_candidates.items[0];
+        enclosure.receivers.present = true;
+        enclosure.receivers.value.count = 1U;
+        auto& receiver = enclosure.receivers.value.items[0];
+        receiver.id = 0U;
+        receiver.systems.mask = 1U;
+        receiver.binding.present = true;
+        receiver.binding.value = {functions.back().observation.id, 0U};
+        enclosure.readers.present = true;
+        // Siano has no standard B-CAS reader exposed through its TS runtime.
+        enclosures.push_back(std::move(enclosure));
+    }
+    libusb_free_device_list(devices, 1);
+    libusb_exit(context);
+
+    w::DiscoveryResponse document{};
+    if (!copy(document.producer.product, "siano-userland") ||
+        !copy(document.producer.version, SIANO_RUNTIME_VERSION)) return 70;
+    std::random_device entropy;
+    for (auto& byte : document.scan_id)
+        byte = static_cast<std::uint8_t>(entropy());
+    document.usb_functions = {functions.data(), functions.size()};
+    document.enclosures = {enclosures.data(), enclosures.size()};
+    const auto size = w::discovery_json_size(document);
+    if (!size) return 70;
+    std::vector<std::uint8_t> bytes(size.value());
+    const auto encoded = w::encode_discovery_json(document, {bytes.data(), bytes.size()});
+    if (!encoded || encoded.value() != bytes.size() ||
+        std::fwrite(bytes.data(), 1U, bytes.size(), stdout) != bytes.size() ||
         std::fflush(stdout) != 0) return 70;
     return 0;
 }
@@ -166,8 +321,11 @@ SelectorStatus map_public_selector(const std::string& text,
 
 int main(int argc, char** argv)
 {
-    if (argc == 2 && argv != nullptr && argv[1] != nullptr &&
-        std::string_view(argv[1]) == "--models") return write_models();
+    if (argc == 2 && argv != nullptr && argv[1] != nullptr) {
+        const std::string_view option(argv[1]);
+        if (option == "--models") return write_models();
+        if (option == "--list-json") return write_discovery_json();
+    }
     std::string device;
     std::string firmware;
     std::string runtime_directory;

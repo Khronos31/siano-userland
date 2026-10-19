@@ -170,7 +170,7 @@ target_link_libraries(siano_runtime PUBLIC
 add_executable(sianod sianod.cpp)
 target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
-target_link_libraries(sianod PRIVATE siano_runtime dtv::json)
+target_link_libraries(sianod PRIVATE siano_runtime dtv::json PkgConfig::LIBUSB)
 
 add_executable(sianoctl ${SIANO_PX4_ROOT}/tools/px4ctl.cpp)
 target_compile_features(sianoctl PRIVATE cxx_std_17)
