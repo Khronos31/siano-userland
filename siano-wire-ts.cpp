@@ -70,12 +70,12 @@ bool install_signals() noexcept
 void usage() noexcept
 {
     std::fprintf(stderr,
-        "usage: siano-ts (-c CHANNEL | -f HZ [--system isdb-t|isdb-s]) --instance TOKEN\n"
+        "usage: siano-ts (-c CHANNEL | -f HZ) [--system ISDB-T] --instance TOKEN\n"
         "                [-t SECONDS|-] [-o FILE|-] [--runtime-dir DIR]\n"
         "                [--receiver 0] [--tune-timeout-ms MS] [--packet-count N]\n"
         "  -c, --channel TEXT     adopted channel (13..62/T13..T62, BS01_0, CS2)\n"
         "  -f, --freq HZ          exact requested Hz (1..2^53-1)\n"
-        "      --system SYS       isdb-t or isdb-s (required with --freq)\n"
+        "      --system SYS       ISDB-T (optional, case-insensitive)\n"
         "  -t, --time SECONDS     capture duration; '-' is unlimited\n"
         "  -o, --output FILE      output file; '-' is stdout\n"
         "      --runtime-dir DIR  runtime namespace root\n"
@@ -119,6 +119,17 @@ struct SianoArgs final {
     std::uint64_t tune_timeout_ms = 10000U;
 };
 
+bool ascii_equals(std::string_view input, std::string_view canonical) noexcept
+{
+    if (input.size() != canonical.size()) return false;
+    for (std::size_t i = 0U; i < input.size(); ++i) {
+        char ch = input[i];
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        if (ch != canonical[i]) return false;
+    }
+    return true;
+}
+
 SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
 {
     SianoArgs args;
@@ -147,10 +158,10 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
         } else if (option == "--system") {
             if (!need_value(value)) { args.error = "option requires a value"; return args; }
             if (args.have_system) { args.error = "duplicate --system"; return args; }
-            if (value != "isdb-t" && value != "isdb-s") {
-                args.error = "system must be isdb-t or isdb-s"; return args;
+            if (!ascii_equals(value, "isdb-t") && !ascii_equals(value, "isdb-s")) {
+                args.error = "system must be ISDB-T or ISDB-S"; return args;
             }
-            args.system.assign(value.data(), value.size());
+            args.system = ascii_equals(value, "isdb-s") ? "isdb-s" : "isdb-t";
             args.have_system = true;
         } else if (option == "-t" || option == "--time") {
             if (!need_value(value)) { args.error = "option requires a value"; return args; }
@@ -204,9 +215,6 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
         return args;
     }
     if (args.instance.empty()) { args.error = "--instance is required"; return args; }
-    if (args.have_frequency && !args.have_system) {
-        args.error = "--system is required with --freq"; return args;
-    }
     if (args.duration_set && args.packet_count_set) {
         args.error = "--time and --packet-count cannot be combined"; return args;
     }
@@ -246,11 +254,19 @@ int main(int argc, char** argv)
     if (args.have_system) {
         request.system = args.system == "isdb-s" ? dtv::userland::wire::System::isdb_s
                                                  : dtv::userland::wire::System::isdb_t;
+    } else if (args.have_frequency) {
+        // ISDB-T-only product: retain v0.1.10's --freq without --system.
+        request.system = dtv::userland::wire::System::isdb_t;
     }
     const auto resolved = dtv::tuning::resolve(request);
     if (!resolved) {
         std::fprintf(stderr, "tuning: %s\n", error_string(resolved.error()));
         return 2;
+    }
+
+    if (resolved.value().system != dtv::userland::wire::System::isdb_t) {
+        std::fprintf(stderr, "siano-ts: unsupported broadcast system (ISDB-T only)\n");
+        return 3;
     }
 
     Px4TsArguments arguments{};
