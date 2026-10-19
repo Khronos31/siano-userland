@@ -110,6 +110,9 @@ target_link_libraries(siano_px4_runtime PUBLIC
     dtv::receiver dtv::capture dtv::card)
 target_compile_features(siano_px4_runtime PUBLIC cxx_std_17)
 siano_enable_project_warnings(siano_px4_runtime)
+# Shared core's additional CARD opcode kinds are rejected by the feature gate
+# in this legacy non-CARD runtime. Keep all other -Werror checks enabled.
+target_compile_options(siano_px4_runtime PRIVATE -Wno-error=switch)
 
 # --- S C backend + composition (GPL-2.0-or-later) ---
 add_library(siano_c_backend STATIC
