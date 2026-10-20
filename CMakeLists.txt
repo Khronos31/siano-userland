@@ -106,7 +106,13 @@ else()
     # and --libs queries, including the exact static archive, not split queries.
     pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
     target_compile_options(siano_libusb INTERFACE ${LIBUSB_CFLAGS})
-    target_link_libraries(siano_libusb INTERFACE ${LIBUSB_LDFLAGS})
+    set(_SIANO_LIBUSB_LINK_FLAGS ${LIBUSB_LDFLAGS})
+    if(APPLE)
+        # Keep each framework/name pair together; a bare name becomes -lNAME.
+        string(REGEX REPLACE "-framework;([^;]+)" "-framework \\1"
+            _SIANO_LIBUSB_LINK_FLAGS "${_SIANO_LIBUSB_LINK_FLAGS}")
+    endif()
+    target_link_libraries(siano_libusb INTERFACE ${_SIANO_LIBUSB_LINK_FLAGS})
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -136,6 +142,16 @@ target_link_libraries(siano_px4_runtime INTERFACE
 target_compile_features(siano_px4_runtime INTERFACE cxx_std_17)
 
 # --- S C backend + composition (GPL-2.0-or-later) ---
+function(siano_include_project_root target)
+    if(APPLE)
+        # Case-insensitive macOS volumes otherwise resolve libc++ <version>
+        # to the project's VERSION text file. Project headers use quotes.
+        target_compile_options(${target} PUBLIC "-iquote${CMAKE_CURRENT_SOURCE_DIR}")
+    else()
+        target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+endfunction()
+
 add_library(siano_c_backend STATIC
     siano-device.c siano-capture-host.c protocol.c stream-state.c control-parse.c
     control-input.c device-selector.c exit-codes.c queue-policy.c output-writer.c)
@@ -143,12 +159,12 @@ target_compile_features(siano_c_backend PUBLIC c_std_11)
 target_compile_definitions(siano_c_backend PRIVATE
     _POSIX_C_SOURCE=200809L _FILE_OFFSET_BITS=64)
 target_link_libraries(siano_c_backend PUBLIC siano_libusb Threads::Threads)
-target_include_directories(siano_c_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_c_backend)
 
 add_library(siano_capture_composition STATIC
     siano-capture-consumer.cpp siano-receiver-adapter.cpp)
 target_compile_features(siano_capture_composition PUBLIC cxx_std_17)
-target_include_directories(siano_capture_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_capture_composition)
 target_link_libraries(siano_capture_composition PUBLIC
     dtv::receiver dtv::capture siano_c_backend)
 
@@ -156,7 +172,7 @@ if(BUILD_TESTING AND UNIX)
 add_library(siano_capture_composition_proof STATIC siano-capture-consumer.cpp)
 target_compile_features(siano_capture_composition_proof PUBLIC cxx_std_17)
 target_compile_definitions(siano_capture_composition_proof PRIVATE SIANO_CAPTURE_TEST_SEAMS)
-target_include_directories(siano_capture_composition_proof PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_capture_composition_proof)
 target_link_libraries(siano_capture_composition_proof PUBLIC
     dtv::receiver dtv::capture siano_c_backend)
 
@@ -184,7 +200,7 @@ add_library(siano_runtime STATIC
     siano-runtime-backend.cpp
     siano-enclosure.cpp)
 target_compile_features(siano_runtime PUBLIC cxx_std_17)
-target_include_directories(siano_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_runtime)
 target_link_libraries(siano_runtime PUBLIC
     siano_px4_runtime siano_capture_composition
     dtv::control dtv::identity dtv::tuning dtv::host_daemon)
