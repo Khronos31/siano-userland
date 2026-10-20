@@ -170,3 +170,9 @@ macOSの復帰TS SHA-256は `0c4ade7f4d976da6380583a4739977c0ed3904501ee4a982128
 
 - Linux x86_64/aarch64 × glibc/muslはbuild、artifact audit、最終archive起動をCIで確認。aarch64/muslのUSB実機は未確認。
 - Android x86_64はbuild、ELF検査、package監査、再現生成、relink試験に加え、Bliss OS実機試験まで完了。
+
+## 2026-10-21 初回feature Windows canonical hash登録
+
+source `cf8f0985e145ebfdcc208e774acb620fa6a3f3b1` の [CI run39465686279 / Windows job118776394486](https://github.com/Khronos31/siano-userland/actions/runs/39465686279/job/118776394486) は、既存native `nmake test` と2回のclean buildの全byte比較を通過し、helper119行のhistorical baseline照合で失敗した。生成EXE SHA-256は `639862839761c863e3e8775ed0d598274a9cd0bbda06f29b915f710a96e27b19`。`windows-2022` image `20261012.333.1`、VCTools `14.44.35207`、Windows SDK `10.0.26100.0`、固定libusb `1.0.30` を使用した。
+
+上の「Windows canonical hash取得とCI準備」と同じ手順で、このCI由来値を `packaging/windows-baseline.sha256:1` へ登録した。2build/all-byte/SHAの比較条件は変更していない。取得元runの失敗は保持し、後続CIの照合とexact CI artifactによるC3のWindows30秒受信・正常停止は現在pending。利用者が02:33 JSTにWindowsへのPX-S1UD接続を連絡し、読み取り列挙で `3275:0080` / `port=5-1.2` を確認したが、これは受信確認の代替ではない。
