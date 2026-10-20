@@ -274,6 +274,7 @@ void __real_free(void *ptr);
 
 void __wrap_free(void *ptr)
 {
+    if (ptr == mock_device) mock_device = NULL;
     if (ptr && mock_device) {
         for (size_t i = 0; i < MAX_URBS; i++) {
             if (mock_device->transfer_buffers[i] == ptr) {
