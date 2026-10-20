@@ -260,5 +260,8 @@ nmake /f Makefile.win
 
 ## ライセンス
 
-- **本体プログラム**: GPL-2.0-or-later ([COPYING](COPYING))
+- **Siano由来の本体source**: GPL-2.0-or-later ([COPYING](COPYING))。
+- **リンクするPX4 host facade / Core host adapters**: GPL-2.0-only。対応source・license本文・provenanceは、このversionに一致するsource archive内の `third_party/px4-userland/` と `third_party/dtv-userland-core/` にあります。
+- **Core engine library**: MIT。本体sourceやリンクされたGPL componentをMIT-onlyとして再ライセンスするものではありません。
+- 配布noticeは [`packaging/DEPENDENCY-NOTICE.txt.in`](packaging/DEPENDENCY-NOTICE.txt.in) です。配布物はMIT-onlyではありません。
 - **ファームウェア (`isdbt_rio.inp`)**: Siano 社の再配布許諾ライセンス ([LICENCE.siano](LICENCE.siano))。リバースエンジニアリング、逆コンパイル、逆アセンブルは禁止されています。
