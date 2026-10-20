@@ -314,7 +314,7 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
 #endif
 
     EnclosurePublication publication{};
-    publication.runtime_directory = selected_root;
+    publication.runtime_directory = selected_root != nullptr ? selected_root : "";
     publication.instance = assembly.instance;
     publication.lease_identity = assembly.lease_identity;
     publication.access = config.access;

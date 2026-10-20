@@ -225,6 +225,11 @@ target_compile_definitions(siano_wire_ts PRIVATE
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_include_directories(siano_wire_ts PRIVATE ${SIANO_PX4_ROOT}/tools)
 target_link_libraries(siano_wire_ts PRIVATE siano_px4_runtime siano_c_backend dtv::host_ts)
+if(MSVC)
+    # Shared wire status snapshots and bounded control buffers exceed the
+    # default 1 MiB main-thread stack during the TS client's status handshake.
+    target_link_options(siano_wire_ts PRIVATE /STACK:2097152)
+endif()
 
 if(WIN32)
     foreach(_program IN ITEMS sianod sianoctl siano_wire_ts)

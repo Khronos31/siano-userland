@@ -79,7 +79,7 @@ termux-usb -r -e './sianod --instance s1ud' /dev/bus/usb/001/004
 # 終了時はdaemonのconsoleでCtrl+C。
 ```
 
-Windows新構成の実機受信は未確認です。上記は現行CLIの導入手順であり、過去の単体版の受信記録を引き継ぐ認定ではありません。
+Windows新構成はPX-S1UD 1台でT27の30秒受信、TS整合性、lease解放とdaemonの正常停止を確認しました（[検証記録](docs/platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)）。hotplug・soakと最終RC全環境の認定は未実施です。
 
 ### Linux の USB デバイス権限
 
