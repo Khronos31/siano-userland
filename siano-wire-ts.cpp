@@ -73,7 +73,7 @@ void usage() noexcept
         "usage: siano-ts (-c CHANNEL | -f HZ) [--system ISDB-T] --instance TOKEN\n"
         "                [-t SECONDS|-] [-o FILE|-] [--runtime-dir DIR]\n"
         "                [--receiver 0] [--tune-timeout-ms MS] [--packet-count N]\n"
-        "  -c, --channel TEXT     adopted channel (13..62/T13..T62, BS01_0, CS2)\n"
+        "  -c, --channel TEXT     ISDB-T channel (13..62/T13..T62)\n"
         "  -f, --freq HZ          exact requested Hz (1..2^53-1)\n"
         "      --system SYS       ISDB-T (optional, case-insensitive)\n"
         "  -t, --time SECONDS     capture duration; '-' is unlimited\n"
