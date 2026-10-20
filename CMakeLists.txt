@@ -64,6 +64,10 @@ endif()
 set(DTV_USERLAND_BUILD_CAPTURE ON CACHE BOOL "Build packet capture storage" FORCE)
 set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
+set(DTV_USERLAND_BUILD_HOST_CTL ON CACHE BOOL
+    "Build the optional GPL host control frontend" FORCE)
+set(DTV_USERLAND_HOST_CTL_FACADE_INCLUDE_DIRS "${SIANO_PX4_ROOT}/include"
+    CACHE STRING "Private host facade include directories for the GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_TESTING OFF CACHE BOOL "Build core tests" FORCE)
 add_subdirectory(${DTV_CORE_SOURCE} core)
 
@@ -82,10 +86,11 @@ endfunction()
 
 # --- P runtime source subset (GPL-2.0-only, own static target) ---
 # The set matches the accepted design report (S/siano-public-runtime-minimal-binding
-# section 1.3).  It deliberately excludes P's card.cpp, identity.cpp,
-# control_context.cpp and every native USB/frontend backend so the S product
-# does not link the PX hardware stack.
+# section 1.3). It includes the pure PX4 identity/profile helpers needed by the
+# shared TS CLI, but excludes P's card.cpp, control_context.cpp and every native
+# USB/frontend backend so the S product does not link the PX hardware stack.
 set(SIANO_PX4_RUNTIME_SOURCES
+    ${SIANO_PX4_ROOT}/src/identity.cpp
     ${SIANO_PX4_ROOT}/src/ipc.cpp
     ${SIANO_PX4_ROOT}/src/posix_ipc.cpp
     ${SIANO_PX4_ROOT}/src/posix_tuner_nonce.cpp
@@ -172,12 +177,11 @@ target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(sianod PRIVATE siano_runtime dtv::json PkgConfig::LIBUSB)
 
-add_executable(sianoctl ${SIANO_PX4_ROOT}/tools/px4ctl.cpp)
+add_executable(sianoctl sianoctl.cpp)
 target_compile_features(sianoctl PRIVATE cxx_std_17)
 target_compile_definitions(sianoctl PRIVATE
-    PX4CTL_TOOL_NAME="sianoctl" PX4CTL_PRODUCT_SLUG="siano-userland"
-    PX4CTL_PRODUCT_ENUM=siano PX4CTL_PRODUCT_VERSION="${SIANO_RUNTIME_VERSION}")
-target_link_libraries(sianoctl PRIVATE siano_px4_runtime dtv::json dtv::identity)
+    SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
+target_link_libraries(sianoctl PRIVATE dtv::host_ctl siano_px4_runtime)
 siano_enable_project_warnings(sianoctl)
 
 add_executable(siano_wire_ts siano-wire-ts.cpp)
