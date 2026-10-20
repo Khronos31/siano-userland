@@ -48,6 +48,9 @@ typedef SSIZE_T ssize_t;
 #ifndef ETIMEDOUT
 #define ETIMEDOUT 138
 #endif
+#ifndef ESHUTDOWN
+#define ESHUTDOWN EPIPE
+#endif
 #ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
 #endif

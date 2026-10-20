@@ -548,7 +548,7 @@ static void stop_streaming(struct siano_device *device)
     }
 }
 static uint32_t tune_remaining_ms(const struct timespec *deadline);
-static uint32_t deadline_remaining_ms(clockid_t clock_id,
+static uint32_t deadline_remaining_ms(int clock_id,
                                       const struct timespec *deadline);
 
 static int wait_response_until(struct siano_device *device, uint16_t type,
@@ -899,7 +899,7 @@ static uint32_t tune_remaining_ms(const struct timespec *deadline)
     return deadline_remaining_ms(CLOCK_MONOTONIC, deadline);
 }
 
-static uint32_t deadline_remaining_ms(clockid_t clock_id,
+static uint32_t deadline_remaining_ms(int clock_id,
                                       const struct timespec *deadline)
 {
     struct timespec now;
