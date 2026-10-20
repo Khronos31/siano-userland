@@ -8,6 +8,8 @@ extern "C" {
 #include "siano-device.h"
 }
 
+#include <array>
+#include <cstddef>
 #include <string>
 
 namespace siano::capture {
@@ -22,15 +24,21 @@ public:
     using ReceiverSystem = dtv::userland::detail::ReceiverSystem;
     using Attachment = dtv::userland::detail::Attachment;
 
+    // device_fd >= 0 selects the existing open_from_fd (libusb_wrap_sys_device)
+    // path; the caller (daemon) still owns the original descriptor.
     ReceiverAdapter(libusb_context*, const siano_device_selector&,
                     std::string selector_text, std::string firmware,
-                    ReceiverId, Consumer&, Clock&, std::size_t queue_packets) noexcept;
+                    ReceiverId, Consumer&, Clock&, std::size_t queue_packets,
+                    int device_fd = -1) noexcept;
     ~ReceiverAdapter() noexcept override;
     ReceiverAdapter(const ReceiverAdapter&) = delete;
     ReceiverAdapter& operator=(const ReceiverAdapter&) = delete;
 
     static Result configure(Engine&, ReceiverId, std::uint64_t epoch) noexcept;
     Consumer& consumer() noexcept { return consumer_; }
+    // Daemon-level PID filter list (old -p/--pid).  It is applied after the
+    // first successful tune, matching the accepted standalone behaviour.
+    void set_pid_filters(const std::uint16_t* pids, std::size_t count) noexcept;
 
     bool supports(ReceiverId, ReceiverSystem) const noexcept override;
     bool selects_satellite_stream_before_tune() const noexcept override;
@@ -74,6 +82,7 @@ private:
 
     // The caller owns the libusb context and keeps it alive through close().
     libusb_context* usb_ = nullptr;
+    int device_fd_ = -1;
     siano_device_selector selector_{};
     std::string selector_text_;
     std::string firmware_;
@@ -81,6 +90,8 @@ private:
     Consumer& consumer_;
     Clock& clock_;
     std::size_t queue_packets_ = 0U;
+    std::array<std::uint16_t, 64U> pids_{};
+    std::size_t pid_count_ = 0U;
     // The adapter owns the native handle, URBs, queue and lock state in this device.
     siano_device device_{};
     bool initialized_ = false;

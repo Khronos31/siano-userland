@@ -45,8 +45,17 @@ px4::userland::TunerStreamCounters to_legacy(const engine::StreamCounters& count
                                               counters.empty_intervals};
 }
 
-libusb_context* init_own_usb() noexcept
+libusb_context* init_own_usb(bool no_device_discovery) noexcept
 {
+    // The --fd route must not scan udev/usbfs; Termux/Android supplies the
+    // descriptor and the daemon wraps it.  Set before libusb_init, as the
+    // accepted standalone frontend did.
+#if !defined(_WIN32) && defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000107)
+    if (no_device_discovery)
+        (void)libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
+#else
+    (void)no_device_discovery;
+#endif
     libusb_context* created = nullptr;
     if (libusb_init(&created) != 0) return nullptr;
     return created;
@@ -278,11 +287,13 @@ px4::userland::Result<std::size_t> AbsentCardProtocol::transmit(
 }
 
 SianoFamily::SianoFamily(const SianoRuntimeConfig& config) noexcept
-    : usb_(config.own_usb ? init_own_usb() : config.usb), own_usb_(config.own_usb),
+    : usb_(config.own_usb ? init_own_usb(config.device_fd >= 0) : config.usb),
+      own_usb_(config.own_usb),
       adapter_(usb_, config.selector, config.selector_text, config.firmware, 0U, consumer_,
-               clock_, config.queue_packets),
+               clock_, config.queue_packets, config.device_fd),
       backend_(adapter_, &device_started_)
 {
+    adapter_.set_pid_filters(config.pids.data(), config.pid_count);
 }
 
 SianoFamily::~SianoFamily() noexcept

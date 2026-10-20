@@ -7,7 +7,9 @@
 #include "px4/tuner_service.h"
 #include "siano-receiver-adapter.h"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 extern "C" {
@@ -137,10 +139,15 @@ struct SianoRuntimeConfig final {
     // own_usb is true the family initializes and exits its own context.
     libusb_context* usb = nullptr;
     bool own_usb = false;
+    // >= 0 selects the existing libusb_wrap_sys_device path.  Enumeration is
+    // disabled before libusb_init so the daemon accepts a Host API descriptor.
+    int device_fd = -1;
     siano_device_selector selector{};
     std::string selector_text;
     std::string firmware;
     std::size_t queue_packets = 65536U;
+    std::array<std::uint16_t, 64U> pids{};
+    std::size_t pid_count = 0U;
     px4::userland::ipc::posix::EndpointAccess access =
         px4::userland::ipc::posix::EndpointAccess::private_user;
 };

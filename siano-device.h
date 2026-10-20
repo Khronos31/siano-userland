@@ -136,6 +136,10 @@ struct siano_rio_facts {
 };
 int locate_rio(libusb_context *usb, const struct siano_device_selector *selector,
                const char *selector_text, struct siano_rio_facts *facts);
+/* Facts of an already-wrapped handle.  Used by the --fd daemon path, which
+ * skips enumeration (LIBUSB_OPTION_NO_DEVICE_DISCOVERY). */
+int rio_facts_from_handle(struct siano_device *device,
+                          struct siano_rio_facts *facts);
 int open_from_fd(struct siano_device *device, int fd);
 int start_streaming(struct siano_device *device);
 int set_device_mode(struct siano_device *device, const char *firmware);
