@@ -123,11 +123,11 @@ public:
         dtv::userland::ByteView apdu,
         dtv::userland::MutableByteView response) noexcept override;
     bool initialized() const noexcept override { return false; }
-    const px4::userland::CardAtr& atr() const noexcept override { return atr_; }
+    const px4::userland::CardAtrBytes& atr() const noexcept override { return atr_; }
     void invalidate() noexcept override {}
 
 private:
-    px4::userland::CardAtr atr_{};
+    px4::userland::CardAtrBytes atr_{};
 };
 
 // Owns the S USB context, clock, accepted Consumer/ReceiverAdapter and the

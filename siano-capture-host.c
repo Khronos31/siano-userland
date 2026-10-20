@@ -5,7 +5,11 @@
 #include "siano-device.h"
 
 #include <errno.h>
+#ifdef _WIN32
+#include "siano-os.h"
+#else
 #include <pthread.h>
+#endif
 #include <stdlib.h>
 
 struct siano_capture_host {

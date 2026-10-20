@@ -16,8 +16,10 @@ def category(archive: str) -> str:
     name = PurePosixPath(archive).name
     if name == "libusb-1.0.a":
         return "libusb"
+    if name.startswith(("libdtv_userland_", "libsiano_")):
+        return "project"
     if (name.startswith("libclang_rt.") or name in {
-        "libc++_static.a", "libc++abi.a", "libunwind.a", "libgcc.a",
+        "libc++_static.a", "libc++abi.a", "libunwind.a", "libgcc.a", "libatomic.a",
     }):
         return "ndk-runtime"
     return "other-static"
@@ -27,6 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--map", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--program", choices=("sianod", "sianoctl", "siano-ts"))
     args = parser.parse_args()
     text = args.map.read_text(encoding="utf-8", errors="strict")
     rows: set[tuple[str, str, str]] = set()
@@ -39,7 +42,7 @@ def main() -> int:
         rows.add((category(archive), PurePosixPath(archive).name, member))
     if not rows:
         raise ValueError(f"no static archive members found in {args.map}")
-    if not any(row[1] == "libusb-1.0.a" for row in rows):
+    if args.program in (None, "sianod") and not any(row[1] == "libusb-1.0.a" for row in rows):
         raise ValueError(f"libusb-1.0.a members missing from {args.map}")
     if any(row[0] == "other-static" for row in rows):
         unexpected = sorted({row[1] for row in rows if row[0] == "other-static"})

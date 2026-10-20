@@ -80,6 +80,7 @@ esac
 toolchain=$ndk/toolchains/llvm/prebuilt/$prebuilt
 cc=$toolchain/bin/${clang_triple}-clang
 cxx=$toolchain/bin/${clang_triple}-clang++
+cmake_bin=$(command -v cmake)
 ar=$toolchain/bin/llvm-ar
 ranlib=$toolchain/bin/llvm-ranlib
 nm=$toolchain/bin/llvm-nm
@@ -217,13 +218,20 @@ env -i \
 	RANLIB="$ranlib" \
 	NM="$nm" \
 	PKG_CONFIG="$pc_wrap" \
+	CMAKE="$cmake_bin" \
+	DTV_USERLAND_CORE_SOURCE_DIR="${DTV_USERLAND_CORE_SOURCE_DIR:-}" \
+	SIANO_PX4_USERLAND_SOURCE_DIR="${SIANO_PX4_USERLAND_SOURCE_DIR:-}" \
 	CFLAGS="-O2 -fPIE $prefix_maps" \
-	LDFLAGS="-pie -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,--no-undefined -Wl,-Map=$out/siano-ts.map" \
-	make -C "$root" clean siano-ts
+	CXXFLAGS="-O2 -fPIE $prefix_maps" \
+	LDFLAGS="-pie -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
+	make -C "$root" clean all RUNTIME_BUILD_DIR="$out/runtime" \
+	CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake -DANDROID_ABI=$(case "$abi" in aarch64) echo arm64-v8a ;; armv7a) echo armeabi-v7a ;; *) echo "$abi" ;; esac) -DANDROID_PLATFORM=android-$api -DANDROID_STL=c++_static -DSIANO_LINK_MAP_DIR=$out"
 
 mkdir -p "$out"
-cp -f "$root/siano-ts" "$out/siano-ts"
-"$strip" --strip-unneeded "$out/siano-ts"
+for program in sianod sianoctl siano-ts; do
+	cp -f "$root/$program" "$out/$program"
+	"$strip" --strip-unneeded "$out/$program"
+done
 make -C "$root" clean
 
 # Prefer host GNU readelf because the interpreter/RPATH parser is written
@@ -237,14 +245,17 @@ else
 	echo "readelf or NDK llvm-readelf not found" >&2
 	exit 1
 fi
+for program in sianod sianoctl siano-ts; do
 PATH="$host_path" \
 	READELF="$readelf_bin" \
 	ANDROID_ABI="$abi" \
 	ANDROID_PATH_MARKERS="$root $out $src $prefix $ndk" \
-	"$root/scripts/verify-android-elf.sh" "$out/siano-ts" "$abi" "$want_interp"
+	"$root/scripts/verify-android-elf.sh" "$out/$program" "$abi" "$want_interp"
 
 python3 "$root/scripts/android-link-inventory.py" \
-	--map "$out/siano-ts.map" --output "$out/static-link-inventory.tsv"
+	--program "$program" --map "$out/$program.map" --output "$out/$program-static-link-inventory.tsv"
+done
+cp "$out/siano-ts-static-link-inventory.tsv" "$out/static-link-inventory.tsv"
 
 mkdir -p "$out/ndk"
 cp -f "$ndk_properties" "$out/ndk/source.properties"

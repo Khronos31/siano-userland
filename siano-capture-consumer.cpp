@@ -1,5 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "siano-capture-consumer.h"
+
+// The C capture bridge uses the existing stale-generation errno contract;
+// MSVC's errno set has no ESTALE constant.
+#if defined(_WIN32) && !defined(ESTALE)
+#define ESTALE 116
+#endif
 extern "C" {
 }
 

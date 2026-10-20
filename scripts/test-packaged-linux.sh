@@ -36,12 +36,14 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 tar -xzf "$archive" -C "$tmp"
-binary_count=$(find "$tmp" -type f -name siano-ts | wc -l)
+for program in sianod sianoctl siano-ts; do
+binary_count=$(find "$tmp" -type f -name "$program" | wc -l)
 [ "$binary_count" -eq 1 ] || {
-	echo "expected one packaged siano-ts binary, found $binary_count" >&2
+	echo "expected one packaged $program binary, found $binary_count" >&2
 	exit 1
 }
-binary=$(find "$tmp" -type f -name siano-ts -print -quit)
+binary=$(find "$tmp" -type f -name "$program" -print -quit)
 [ -x "$binary" ] || { echo "packaged binary is not executable: $binary" >&2; exit 1; }
 "$binary" --help >/dev/null
+done
 echo "packaged Linux $architecture archive startup: PASS"

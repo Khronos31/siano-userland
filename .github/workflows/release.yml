@@ -52,6 +52,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Build and audit in Alpine
         run: |
           docker run --rm \
@@ -60,7 +62,7 @@ jobs:
             -e HOST_GID="$(id -g)" \
             -v "$GITHUB_WORKSPACE:/src" -w /src alpine:3.22 \
             sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
+              apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
               install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
@@ -83,6 +85,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Build and audit in native arm64 Alpine
         run: |
           docker run --rm \
@@ -93,7 +97,7 @@ jobs:
             -w /src \
             alpine:3.22 \
             sh -euxc '
-              apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
+              apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2 su-exec
               install -d -o "$HOST_UID" -g "$HOST_GID" /tmp/runner-home
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home scripts/build-linux-static.sh --self-test
               su-exec "$HOST_UID:$HOST_GID" env HOME=/tmp/runner-home make test
@@ -116,6 +120,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Build with static libusb, test, and audit
         run: |
           command -v otool
@@ -128,6 +134,8 @@ jobs:
         with:
           name: bin-darwin-arm64
           path: |
+            build/darwin-arm64/sianod
+            build/darwin-arm64/sianoctl
             build/darwin-arm64/siano-ts
             build/darwin-arm64/evidence
           if-no-files-found: error
@@ -149,10 +157,12 @@ jobs:
         with:
           ndk-version: r27d
           add-to-path: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Host tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y make file binutils curl python3
+          sudo apt-get install --no-install-recommends -y cmake make file binutils curl python3
       - name: Build and audit
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -163,6 +173,11 @@ jobs:
             --binary build/android-${{ matrix.abi }}/siano-ts \
             --source-ref "$GITHUB_SHA" \
             --evidence-output build/android-${{ matrix.abi }}/evidence/binary-audit.json
+          for program in sianod sianoctl; do
+            scripts/audit-artifact.sh --platform android-${{ matrix.abi }} \
+              --binary "build/android-${{ matrix.abi }}/$program" --source-ref "$GITHUB_SHA" \
+              --evidence-output "build/android-${{ matrix.abi }}/evidence/$program-binary-audit.json"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-android-${{ matrix.abi }}
@@ -180,6 +195,8 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: amd64
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Fetch pinned libusb package
         shell: pwsh
         run: |
@@ -198,13 +215,20 @@ jobs:
           .\siano-ts.exe --help | Out-Null
           New-Item -ItemType Directory -Force -Path evidence | Out-Null
           python scripts/audit-artifact.py --platform windows-x64 --binary siano-ts.exe --source-ref $env:GITHUB_SHA --evidence-output evidence\binary-audit.json
+          foreach ($program in @('sianod', 'sianoctl')) {
+            & ".\$program.exe" --help | Out-Null
+            python scripts/audit-artifact.py --platform windows-x64 --binary "$program.exe" --source-ref $env:GITHUB_SHA --evidence-output "evidence\$program-binary-audit.json"
+            if ($LASTEXITCODE -ne 0) { throw "audit failed: $program" }
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bin-windows-x64
           path: |
+            sianod.exe
+            sianoctl.exe
             siano-ts.exe
             libusb-1.0.dll
-            evidence/binary-audit.json
+            evidence/
           if-no-files-found: error
 
   source:
@@ -215,6 +239,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Prepare exact pinned Core and PX4 build sources
+        run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Fetch pinned libusb source
         run: |
           curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
@@ -252,7 +278,7 @@ jobs:
       - name: Rebuild and prove modified libusb was linked
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
-            apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
+            apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
             archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
             tmp=$(mktemp -d)
             tar -xzf "$archive" -C "$tmp"
@@ -271,7 +297,7 @@ jobs:
       - name: Rebuild and prove modified libusb was linked
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine:3.22 sh -euxc '
-            apk add --no-cache gcc make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
+            apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers libusb-dev python3 binutils git curl tar bzip2
             archive=$(find source -name "*-source.tar.gz" -type f -print -quit)
             # The helper is inside the corresponding source archive; extract it
             # and invoke it with the archive mounted in the same container.

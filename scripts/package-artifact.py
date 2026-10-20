@@ -166,6 +166,12 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
         f"firmware.license.url={FIRMWARE_LICENSE_URL}",
         f"firmware.license.sha256={FIRMWARE_LICENSE_SHA256}",
     ]
+    for name in ("dtv-userland-core", "px4-userland"):
+        revision = (repo_root / "cmake" / f"{name}.revision").read_text(encoding="ascii").strip()
+        if not __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
+            fail(f"invalid {name} source pin")
+        fields += [f"dependency.{name}.commit={revision}",
+                   f"dependency.{name}.source=third_party/{name}/"]
     if platform.startswith("android"):
         properties = parse_properties(build_properties or "")
         if not properties.get("ndk_revision", "").startswith("27."):
@@ -195,6 +201,7 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
         ]
         explanation = "Windows bundles libusb-1.0.dll; see libusb/NOTICE.txt and the corresponding source archive."
     elif platform.startswith("linux-"):
+        properties = parse_properties(build_properties or "")
         fields += [
             f"dependency.libusb.version={LIBUSB_VERSION}",
             "dependency.libusb.linkage=static",
@@ -205,6 +212,14 @@ def dependency_notice(repo_root: Path, version: str, platform: str, source_ref: 
             f"corresponding-source.path=third_party/libusb-{LIBUSB_VERSION}.tar.bz2",
             f"libusb.source.url={LIBUSB_SOURCE_URL}",
             f"libusb.source.sha256={LIBUSB_SOURCE_SHA256}",
+            f"dependency.libc.version={properties.get('musl_package', 'unknown')}",
+            f"dependency.compiler.version={properties.get('compiler_version', 'unknown')}",
+            f"dependency.compiler.target={properties.get('compiler_target', 'unknown')}",
+            "dependency.runtime=libgcc",
+            f"dependency.runtime.version={properties.get('libgcc_archive_owner', 'unknown')}",
+            "dependency.libstdcxx=static",
+            f"dependency.libstdcxx.version={properties.get('libstdcxx_archive_owner', 'unknown')}",
+            f"runtime-license-members={','.join(sorted(_audit.LINUX_RUNTIME_LICENSE_SHA256))}",
         ]
         explanation = f"Linux embeds a statically linked libusb {LIBUSB_VERSION} built without udev; see libusb/COPYING and the corresponding source archive."
     else:
@@ -258,18 +273,19 @@ def main() -> int:
     if not license_file.is_file() or sha256(license_file) != FIRMWARE_LICENSE_SHA256:
         fail("repository LICENCE.siano does not match the pinned firmware license")
     build = args.build_dir.resolve()
-    binary_name = "siano-ts.exe" if args.platform == "windows-x64" else "siano-ts"
-    binary = build / binary_name
-    if not binary.is_file() or binary.is_symlink():
-        fail(f"missing build output: {binary}")
-    evidence_path = build / "evidence/binary-audit.json"
-    if not evidence_path.is_file() or evidence_path.is_symlink():
-        fail(f"missing build-host binary evidence: {evidence_path}")
-    evidence = _audit.parse_json(evidence_path.read_bytes(), "binary-audit.json")
-    expected_evidence = {"schema": 2, "platform": args.platform, "source_ref": args.source_ref,
-                         "binary": {"name": binary_name, "sha256": sha256(binary)}}
-    if evidence != expected_evidence:
-        fail("build-host binary evidence is not bound to this binary/platform")
+    programs = _audit.program_names(args.platform)
+    for binary_name in programs:
+        binary = build / binary_name
+        if not binary.is_file() or binary.is_symlink():
+            fail(f"missing build output: {binary}")
+        evidence_path = build / _audit.binary_evidence_name(binary_name)
+        if not evidence_path.is_file() or evidence_path.is_symlink():
+            fail(f"missing build-host binary evidence: {evidence_path}")
+        evidence = _audit.parse_json(evidence_path.read_bytes(), str(evidence_path))
+        expected_evidence = {"schema": 2, "platform": args.platform, "source_ref": args.source_ref,
+                             "binary": {"name": binary_name, "sha256": sha256(binary)}}
+        if evidence != expected_evidence:
+            fail(f"build-host evidence is not bound to {binary_name}/platform/source")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     extension = "zip" if args.platform == "windows-x64" else "tar.gz"
     output = args.output_dir.resolve() / f"siano-ts-{args.version}-{args.platform}.{extension}"
@@ -285,9 +301,11 @@ def main() -> int:
         # consumers execute the native and Android binaries directly, so set
         # their canonical mode explicitly.  Windows remains a ZIP package and
         # keeps the existing source-mode behavior for its .exe.
-        copy_regular(binary, stage / binary_name,
-                     mode=None if args.platform == "windows-x64" else 0o755)
-        copy_regular(evidence_path, stage / "evidence/binary-audit.json")
+        for binary_name in programs:
+            copy_regular(build / binary_name, stage / binary_name,
+                         mode=None if args.platform == "windows-x64" else 0o755)
+            evidence_name = _audit.binary_evidence_name(binary_name)
+            copy_regular(build / evidence_name, stage / evidence_name)
         copy_regular(firmware, stage / "firmware/isdbt_rio.inp")
         source_archive = None
         if args.libusb_source_archive:
@@ -302,6 +320,9 @@ def main() -> int:
             inventory = build / "static-link-inventory.tsv"
             ndk_dir = build / "ndk"
             copy_regular(inventory, stage / "evidence/static-link-inventory.tsv")
+            for program in ("sianod", "sianoctl"):
+                copy_regular(build / f"{program}-static-link-inventory.tsv",
+                             stage / f"evidence/{program}-static-link-inventory.tsv")
             copy_regular(properties, stage / "evidence/build.properties")
             for name in ("source.properties", "NOTICE", "NOTICE.toolchain"):
                 copy_regular(ndk_dir / name, stage / f"evidence/ndk/{name}")
@@ -311,7 +332,13 @@ def main() -> int:
                 "notice_toolchain": "NOTICE.toolchain"}.items()}
         if args.platform.startswith("linux-") or args.platform == "darwin-arm64":
             copy_regular(build / "evidence/build.properties", stage / "evidence/build.properties")
+            build_properties = (stage / "evidence/build.properties").read_text(encoding="utf-8")
         if args.platform.startswith("linux-"):
+            for member, expected in _audit.LINUX_RUNTIME_LICENSE_SHA256.items():
+                license_input = repo_root / "distribution/licenses" / PurePosixPath(member).name
+                if not license_input.is_file() or sha256(license_input) != expected:
+                    fail(f"missing/altered runtime license: {license_input}")
+                copy_regular(license_input, stage / member, mode=0o644)
             for name in ("siano-ts-mdev.conf", "siano-ts-mdev.sh", "siano-ts-mdev.start"):
                 copy_regular(repo_root / "packaging/mdev" / name, stage / "mdev" / name)
         if args.platform == "windows-x64":
@@ -336,7 +363,7 @@ def main() -> int:
             repo_root, args.version, args.platform, args.source_ref, build_properties, ndk_hashes))
         manifest = {
             "schema": 1, "version": args.version, "platform": args.platform,
-            "source_ref": args.source_ref, "programs": [binary_name], "files": {},
+            "source_ref": args.source_ref, "programs": programs, "files": {},
             "firmware": {"url": FIRMWARE_URL, "sha256": FIRMWARE_SHA256,
                          "license_url": FIRMWARE_LICENSE_URL, "license_sha256": FIRMWARE_LICENSE_SHA256},
         }

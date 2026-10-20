@@ -2,8 +2,15 @@
 // Siano public runtime TS client entry.  The adopted shared CLI resolves the
 // channel/Hz in the common tuning authority; the exact Hz is passed to the
 // shared wire runner unchanged.
-#include "px4_ts_core.h"
-#include "px4_ts_posix.h"
+#include <dtv/host_ts/px4_ts_core.h>
+#ifdef _WIN32
+#include <dtv/host_ts/px4_ts_windows_output.h>
+#include "px4_windows_args.h"
+#include "px4d_signals.h"
+#else
+#include <dtv/host_ts/px4_ts_posix.h>
+#include <unistd.h>
+#endif
 
 extern "C" {
 #include "control-input.h"
@@ -25,11 +32,12 @@ extern "C" {
 #include <fcntl.h>
 #include <limits>
 #include <mutex>
+#include <memory>
+#include <new>
 #include <signal.h>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unistd.h>
 
 #ifndef SIANO_RUNTIME_VERSION
 #define SIANO_RUNTIME_VERSION "0.0.0-dev"
@@ -42,6 +50,14 @@ using namespace px4::userland::cli;
 
 volatile std::sig_atomic_t stop_flag = 0;
 void stop_handler(int) noexcept { stop_flag = 1; }
+bool platform_stop_requested() noexcept
+{
+#ifdef _WIN32
+    return px4::userland::px4d::stop_requested();
+#else
+    return stop_flag != 0;
+#endif
+}
 
 class PosixClock final : public Px4TsClock {
 public:
@@ -59,11 +75,14 @@ public:
 
 class PosixSignal final : public Px4TsSignal {
 public:
-    bool stop_requested() const noexcept override { return stop_flag != 0; }
+    bool stop_requested() const noexcept override { return platform_stop_requested(); }
 };
 
 bool install_signals() noexcept
 {
+#ifdef _WIN32
+    return px4::userland::px4d::install_signal_handlers();
+#else
     struct sigaction ignore_pipe {};
     ignore_pipe.sa_handler = SIG_IGN;
     if (sigemptyset(&ignore_pipe.sa_mask) != 0 ||
@@ -73,6 +92,49 @@ bool install_signals() noexcept
     if (sigemptyset(&action.sa_mask) != 0) return false;
     return ::sigaction(SIGINT, &action, nullptr) == 0 &&
            ::sigaction(SIGTERM, &action, nullptr) == 0;
+#endif
+}
+
+std::unique_ptr<Px4TsOutput> open_output(const std::string& path) noexcept
+{
+    const bool stdout_output = path == "-";
+#ifdef _WIN32
+    HANDLE handle = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!stdout_output) {
+        const auto wide = utf8_to_wide_path(path);
+        if (wide.empty()) return {};
+        handle = ::CreateFileW(wide.data(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) return {};
+    auto created = Px4TsWindowsOutput::create(handle, !stdout_output);
+    if (!created) return {};
+    return std::move(created.value());
+#else
+    const int fd = stdout_output ? STDOUT_FILENO :
+        ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    if (fd < 0) return {};
+    std::unique_ptr<Px4TsFdOutput> output(new (std::nothrow) Px4TsFdOutput(fd, !stdout_output));
+    if (!output) {
+        if (!stdout_output) ::close(fd);
+        return {};
+    }
+    if (!output->ready()) return {};
+    return output;
+#endif
+}
+
+Result<void> finish_output(Px4TsOutput& output) noexcept
+{
+#ifdef _WIN32
+    auto& windows = static_cast<Px4TsWindowsOutput&>(output);
+    const auto finished = windows.finish();
+    if (windows.worker_stopped()) px4::userland::px4d::notify_cleanup_complete();
+    return finished;
+#else
+    (void)output;
+    return Result<void>::success();
+#endif
 }
 
 void usage() noexcept
@@ -256,12 +318,6 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
     return args;
 }
 
-ipc::System to_ipc(dtv::userland::wire::System system) noexcept
-{
-    return system == dtv::userland::wire::System::isdb_s ? ipc::System::ISDB_S
-                                                         : ipc::System::ISDB_T;
-}
-
 enum class ControlKind { none, channel, tune, quit };
 
 struct ControlState final {
@@ -276,7 +332,7 @@ public:
     explicit ControlSignal(ControlState& state) noexcept : state_(state) {}
     bool stop_requested() const noexcept override
     {
-        return state_.interrupt.load() || stop_flag != 0;
+        return state_.interrupt.load() || platform_stop_requested();
     }
 
 private:
@@ -306,7 +362,12 @@ ControlKind take_command(ControlState& state, std::uint32_t& value) noexcept
 void control_reader(ControlState* state) noexcept
 {
     siano_control_input input{};
-    if (siano_control_input_init(&input, STDIN_FILENO) != 0) {
+#ifdef _WIN32
+    const auto input_handle = ::GetStdHandle(STD_INPUT_HANDLE);
+#else
+    const int input_handle = STDIN_FILENO;
+#endif
+    if (siano_control_input_init(&input, input_handle) != 0) {
         post_command(*state, ControlKind::quit, 0U);
         return;
     }
@@ -432,9 +493,9 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
 
     for (;;) {
         if (!have_selection) {
-            while (!state.interrupt.load() && stop_flag == 0)
+            while (!state.interrupt.load() && !platform_stop_requested())
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (stop_flag != 0) break;
+            if (platform_stop_requested()) break;
             std::uint32_t value = 0U;
             const ControlKind kind = take_command(state, value);
             if (kind == ControlKind::quit) break;
@@ -468,7 +529,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
             // Preserve the old control mode's ability to accept another tune,
             // but never turn a failed UDTV operation into a silent success.
             std::fprintf(stderr, "control: %s\n", error_string(result.error()));
-            if (stop_flag != 0) break;
+            if (platform_stop_requested()) break;
             std::uint32_t retry_value = 0U;
             const ControlKind retry = take_command(state, retry_value);
             if (retry == ControlKind::quit) break;
@@ -479,7 +540,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
             have_selection = false;
             continue;
         }
-        if (stop_flag != 0) break;
+        if (platform_stop_requested()) break;
 
         std::uint32_t next_value = 0U;
         const ControlKind next = take_command(state, next_value);
@@ -500,20 +561,35 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
 
 int main(int argc, char** argv)
 {
-    const SianoArgs args = parse_arguments(argc, const_cast<const char* const*>(argv));
-    if (!args.valid) {
-        std::fprintf(stderr, "argument error: %s\n", args.error.c_str());
-        usage();
-        return 2;
+#ifdef _WIN32
+    auto owned_argv = windows_argv_utf8(argc, argv);
+    std::vector<char*> argv_views;
+    for (auto& argument : owned_argv) argv_views.push_back(argument.data());
+    if (argv_views.empty()) return 2;
+    argc = static_cast<int>(argv_views.size());
+    argv = argv_views.data();
+#endif
+    bool control_mode = false;
+    bool compatibility_flag = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view option(argv[index] != nullptr ? argv[index] : "");
+        if (option == "--control") control_mode = true;
+        if (option == "-h" || option == "--help" || option == "-V" ||
+            option == "--version") compatibility_flag = true;
     }
-    if (args.help) { usage(); return 0; }
-    if (args.version) {
-        std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
-                     SIANO_RUNTIME_VERSION);
-        return 0;
-    }
-
-    if (args.control) {
+    if (control_mode || compatibility_flag) {
+        const SianoArgs args = parse_arguments(argc, const_cast<const char* const*>(argv));
+        if (!args.valid) {
+            std::fprintf(stderr, "argument error: %s\n", args.error.c_str());
+            usage();
+            return 2;
+        }
+        if (args.help) { usage(); return 0; }
+        if (args.version) {
+            std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
+                         SIANO_RUNTIME_VERSION);
+            return 0;
+        }
         if (args.have_system && args.system == "isdb-s") {
             std::fprintf(stderr, "siano-ts: unsupported broadcast system (ISDB-T only)\n");
             return 3;
@@ -522,84 +598,49 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "signal setup failed\n");
             return 70;
         }
-        const bool control_stdout = args.output == "-";
-        int control_fd = STDOUT_FILENO;
-        if (!control_stdout) {
-            control_fd = ::open(args.output.c_str(),
-                                O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-            if (control_fd < 0) {
-                std::fprintf(stderr, "output: %s\n", std::strerror(errno));
-                return 70;
-            }
-        }
-        Px4TsFdOutput control_output(control_fd, !control_stdout);
-        if (!control_output.ready()) {
+        auto control_output = open_output(args.output);
+        if (!control_output) {
             std::fprintf(stderr, "output setup failed\n");
             return 70;
         }
         PosixClock control_clock;
-        return run_control(args, control_output, control_clock);
+        const int status = run_control(args, *control_output, control_clock);
+        const auto finished = finish_output(*control_output);
+        return !finished && status == 0 ? 70 : status;
     }
 
-    dtv::tuning::Request request{};
-    if (args.have_channel) request.channel = std::string_view(args.channel);
-    if (args.have_frequency) request.frequency_hz = args.frequency_hz;
-    if (args.have_system) {
-        request.system = args.system == "isdb-s" ? dtv::userland::wire::System::isdb_s
-                                                 : dtv::userland::wire::System::isdb_t;
-    } else if (args.have_frequency) {
-        // ISDB-T-only product: retain v0.1.10's --freq without --system.
-        request.system = dtv::userland::wire::System::isdb_t;
-    }
-    const auto resolved = dtv::tuning::resolve(request);
-    if (!resolved) {
-        std::fprintf(stderr, "tuning: %s\n", error_string(resolved.error()));
+    static const TsClientProfile profile{
+        "siano-ts", "siano-userland", dtv::userland::identity::Product::siano,
+        false, false, nullptr, true};
+    const Px4TsArguments arguments = parse_px4_ts_product_arguments(
+        argc, const_cast<const char* const*>(argv), profile);
+    if (!arguments.valid) {
+        std::fprintf(stderr, "argument error: %s\n", arguments.error.c_str());
+        usage();
         return 2;
     }
-
-    if (resolved.value().system != dtv::userland::wire::System::isdb_t) {
+    if (arguments.help) { usage(); return 0; }
+    if (arguments.version) {
+        std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
+                     SIANO_RUNTIME_VERSION);
+        return 0;
+    }
+    if (arguments.instance.empty() || arguments.receiver >= 8U) {
+        std::fprintf(stderr, "argument error: --instance is required and receiver must be 0..7\n");
+        usage();
+        return 2;
+    }
+    if (arguments.system != ipc::System::ISDB_T) {
         std::fprintf(stderr, "siano-ts: unsupported broadcast system (ISDB-T only)\n");
         return 3;
-    }
-
-    Px4TsArguments arguments{};
-    arguments.valid = true;
-    arguments.instance = args.instance;
-    arguments.runtime_directory = args.runtime_directory;
-    arguments.output = args.output;
-    arguments.receiver = static_cast<std::uint8_t>(args.receiver);
-    arguments.system = to_ipc(resolved.value().system);
-    arguments.frequency_hz = resolved.value().frequency_hz;
-    if (resolved.value().selection == dtv::userland::wire::Selection::tsid) {
-        arguments.stream_id = resolved.value().selection_value;
-    } else if (resolved.value().selection == dtv::userland::wire::Selection::slot) {
-        arguments.slot = resolved.value().selection_value;
-    }
-    arguments.tune_timeout_ms = static_cast<std::uint32_t>(args.tune_timeout_ms);
-    if (args.duration_set && args.duration_seconds != 0U) {
-        arguments.duration_seconds = args.duration_seconds;
-        arguments.duration_set = true;
-    }
-    if (args.packet_count_set) {
-        arguments.packet_count = args.packet_count;
-        arguments.packet_count_set = true;
     }
 
     if (!install_signals()) {
         std::fprintf(stderr, "signal setup failed\n");
         return 70;
     }
-    const bool stdout_output = arguments.output == "-";
-    int fd = STDOUT_FILENO;
-    if (!stdout_output) {
-        fd = ::open(arguments.output.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-        if (fd < 0) {
-            std::fprintf(stderr, "output: %s\n", std::strerror(errno));
-            return 70;
-        }
-    }
-    Px4TsFdOutput output(fd, !stdout_output);
-    if (!output.ready()) {
+    auto output = open_output(arguments.output);
+    if (!output) {
         std::fprintf(stderr, "output setup failed\n");
         return 70;
     }
@@ -607,8 +648,9 @@ int main(int argc, char** argv)
     PosixSignal signal;
     Px4TsFailureKind failure_kind = Px4TsFailureKind::ipc;
     Px4TsRunDiagnostics diagnostics;
-    const auto result = Px4TsRunner::run_wire(arguments, output, clock, signal,
+    const auto result = Px4TsRunner::run_wire(arguments, profile, *output, clock, signal,
                                               &failure_kind, &diagnostics);
+    const auto finished = finish_output(*output);
     if (!result) {
         std::fprintf(stderr, "siano-ts: %s\n", error_string(result.error()));
         std::fprintf(stderr, "written packets=%llu bytes=%llu\n",
@@ -616,5 +658,5 @@ int main(int argc, char** argv)
                      static_cast<unsigned long long>(diagnostics.packets_written * 188U));
         return px4_ts_exit_status(result.error(), failure_kind);
     }
-    return 0;
+    return finished ? 0 : 70;
 }

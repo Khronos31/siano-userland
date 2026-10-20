@@ -3,7 +3,12 @@
 // over the accepted S adapter/Consumer with the same function the proof uses.
 #include "siano-enclosure.h"
 
+#ifdef _WIN32
+#include "px4/windows_tuner_nonce.h"
+#include "px4_windows_args.h"
+#else
 #include "px4/posix_tuner_nonce.h"
+#endif
 #include "px4d_signals.h"
 
 #include <dtv/userland/identity.h>
@@ -351,6 +356,14 @@ SelectorStatus map_public_selector(const std::string& text,
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    auto owned_argv = cli::windows_argv_utf8(argc, argv);
+    std::vector<char*> argv_views;
+    for (auto& argument : owned_argv) argv_views.push_back(argument.data());
+    if (argv_views.empty()) return 2;
+    argc = static_cast<int>(argv_views.size());
+    argv = argv_views.data();
+#endif
     if (argc == 2 && argv != nullptr && argv[1] != nullptr) {
         const std::string_view option(argv[1]);
         if (option == "--models") return write_models();
@@ -453,7 +466,11 @@ int main(int argc, char** argv)
     config.access = group ? ipc::posix::EndpointAccess::shared_group
                           : ipc::posix::EndpointAccess::private_user;
 
+#ifdef _WIN32
+    ipc::windows::WindowsTunerNonceSource epoch_source;
+#else
     ipc::posix::PosixTunerNonceSource epoch_source;
+#endif
     const auto epoch = epoch_source.generate();
     if (!epoch) {
         std::fprintf(stderr, "context epoch: %s\n", error_string(epoch.error()));
@@ -473,7 +490,11 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "signal setup failed\n");
         return 70;
     }
+#if defined(_WIN32)
+    std::fprintf(stderr, "sianod ready: endpoint=%ls\n", owned.endpoint_path());
+#else
     std::fprintf(stderr, "sianod ready: endpoint=%s\n", owned.endpoint_path());
+#endif
 
     Error loop_error = Error::OK;
     while (!px4::userland::px4d::stop_requested()) {
@@ -491,5 +512,6 @@ int main(int argc, char** argv)
     if (loop_error != Error::OK) {
         std::fprintf(stderr, "sianod stopped: %s\n", error_string(loop_error));
     }
+    px4::userland::px4d::notify_cleanup_complete();
     return exit_status(loop_error);
 }

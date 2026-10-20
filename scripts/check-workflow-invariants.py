@@ -84,8 +84,9 @@ def check_windows_makefile(text: str) -> list[str]:
     errors: list[str] = []
     if not re.search(r"(?m)^CFLAGS\s*=.*\s/Brepro(?:\s|$)", text):
         errors.append("Makefile.win: CFLAGS must enable /Brepro")
-    if not re.search(r"(?m)^\s*\$\(CC\).*?/link\s+/Brepro(?:\s|$)", text):
-        errors.append("Makefile.win: link command must enable /Brepro")
+    if '-DCMAKE_EXE_LINKER_FLAGS="/Brepro"' not in text or \
+            '--target sianod sianoctl siano_wire_ts' not in text:
+        errors.append("Makefile.win: all three CMake programs must link with /Brepro")
     if not re.search(r"(?m)^test:.*\btest-control-input\.exe\b", text):
         errors.append("Makefile.win: Windows test target must build control-input pipe tests")
     if not re.search(r"(?m)^\s*\.\\test-control-input\.exe\s*$", text):
@@ -113,11 +114,14 @@ def check_windows_baseline(baseline: Path, helper: Path) -> list[str]:
         errors.append(f"{helper}: must reference the Windows baseline file")
     if "Get-FileHash" not in helper_text or "-Algorithm SHA256" not in helper_text:
         errors.append(f"{helper}: must hash the generated EXE with SHA-256")
-    if "baselineHash" not in helper_text or "actualHash" not in helper_text:
-        errors.append(f"{helper}: must compare the generated hash with the baseline hash")
-    for source in ("queue-policy.c", "queue-policy.h", "control-input.c", "control-input.h", "write-policy.h"):
-        if source not in helper_text:
-            errors.append(f"{helper}: must include the Windows build input {source}")
+    if "legacyBaselineHash" not in helper_text:
+        errors.append(f"{helper}: must retain the historical standalone baseline")
+    for condition in ("git -C $root ls-files", "git -C $inputRoot ls-files",
+                      "@('sianod.exe', 'sianoctl.exe', 'siano-ts.exe')",
+                      "foreach ($program in $programs)", "$firstBytes[$index] -ne $secondBytes[$index]",
+                      "$firstBytes.Length -ne $secondBytes.Length", "actualHash"):
+        if condition not in helper_text:
+            errors.append(f"{helper}: missing three-program exact-input reproducibility condition: {condition}")
     return errors
 
 
@@ -136,12 +140,13 @@ def check_macos_strip(text: str, path: Path, build_script: str) -> list[str]:
     if ("command -v otool" not in job or "command -v lipo" not in job or
             "command -v nm" not in job):
         errors.append(f"{path}: macOS job must verify native otool/lipo/nm availability")
-    if "xcrun --find strip" not in build_script or '-S -x "$build_root/siano-ts"' not in build_script:
+    if "xcrun --find strip" not in build_script or '-S -x "$build_root/$program"' not in build_script or \
+            'for program in sianod sianoctl siano-ts; do' not in build_script:
         errors.append("build-macos-static.sh: must use Apple strip -S -x")
     if re.search(r'strip_bin"[^\n]*\s-N\b', build_script):
         errors.append("build-macos-static.sh: must not use Apple strip -N")
-    if '"$build_root/siano-ts" --help' not in build_script:
-        errors.append("build-macos-static.sh: must smoke-test the stripped binary")
+    if '"$build_root/$program" --help' not in build_script:
+        errors.append("build-macos-static.sh: must smoke-test all stripped binaries")
     if "audit-artifact.sh\" --platform darwin-arm64" not in build_script:
         errors.append("build-macos-static.sh: must audit the stripped binary")
     return errors

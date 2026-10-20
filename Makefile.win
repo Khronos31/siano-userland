@@ -6,8 +6,18 @@ LIBUSB_DIR = libusb
 CC = cl
 CFLAGS = /nologo /O2 /W3 /std:c11 /utf-8 /Brepro /D_CRT_SECURE_NO_WARNINGS /I$(LIBUSB_DIR)\include\libusb-1.0
 LIBS = $(LIBUSB_DIR)\libusb-1.0.lib
+CORE_SOURCE_DIR = $(MAKEDIR)\third_party\dtv-userland-core
+PX4_SOURCE_DIR = $(MAKEDIR)\third_party\px4-userland
+RUNTIME_BUILD_DIR = build\runtime
 
-all: siano-ts.exe
+all: runtime
+
+runtime:
+	for /f %V in (VERSION) do cmake -S . -B "$(RUNTIME_BUILD_DIR)" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_TESTING=OFF -DSIANO_RUNTIME_VERSION=%V -DLIBUSB_INCLUDE_DIR="$(MAKEDIR)\$(LIBUSB_DIR)\include\libusb-1.0" -DLIBUSB_LIBRARY="$(MAKEDIR)\$(LIBUSB_DIR)\libusb-1.0.lib" -DDTV_USERLAND_CORE_SOURCE_DIR="$(CORE_SOURCE_DIR)" -DSIANO_PX4_USERLAND_SOURCE_DIR="$(PX4_SOURCE_DIR)" -DCMAKE_C_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_CXX_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_EXE_LINKER_FLAGS="/Brepro"
+	cmake --build "$(RUNTIME_BUILD_DIR)" --target sianod sianoctl siano_wire_ts
+	copy /y "$(RUNTIME_BUILD_DIR)\sianod.exe" sianod.exe
+	copy /y "$(RUNTIME_BUILD_DIR)\sianoctl.exe" sianoctl.exe
+	copy /y "$(RUNTIME_BUILD_DIR)\siano-ts.exe" siano-ts.exe
 
 test: test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.exe test-control-input.exe test-usb-location.exe test-detach-decision.exe test-device-selector.exe test-exit-codes.exe test-queue-policy.exe test-write-policy.exe test-output-integration.exe
 	.\test-protocol.exe
@@ -23,8 +33,7 @@ test: test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.
 	.\test-write-policy.exe
 	.\test-output-integration.exe
 
-siano-ts.exe: siano-ts.obj siano-device.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj
-	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj siano-device.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj /link /Brepro $(LIBS)
+siano-ts.exe sianod.exe sianoctl.exe: runtime
 
 siano-ts.obj: siano-ts.c siano-device.h protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h siano-os.h siano-clock.h usb-location.h queue-policy.h write-policy.h output-writer.h
 	$(CC) $(CFLAGS) /c siano-ts.c
