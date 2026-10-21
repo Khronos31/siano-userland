@@ -160,11 +160,32 @@ src=$build_root/src
 pc_wrap=$build_root/pkg-config-libusb
 
 compiler=${CC:-cc}
+cxx_compiler=${CXX:-c++}
+compiler=$(command -v "$compiler")
+cxx_compiler=$(command -v "$cxx_compiler")
+compiler=$(readlink -f "$compiler")
+cxx_compiler=$(readlink -f "$cxx_compiler")
+cmake_bin=$(command -v cmake)
 compiler_target=$($compiler -dumpmachine 2>/dev/null || true)
 case "$compiler_target" in
 	*musl*) ;;
 	*) echo "a musl-targeting compiler is required (got: $compiler_target)" >&2; exit 1 ;;
 esac
+compiler_version=$($compiler -dumpfullversion -dumpversion)
+libc_file=$(readlink -f "$($compiler -print-file-name=libc.a)")
+libgcc_file=$(readlink -f "$($compiler -print-file-name=libgcc.a)")
+libstdcxx_file=$(readlink -f "$($cxx_compiler -print-file-name=libstdc++.a)")
+musl_package=$(apk info -v -e musl | head -n 1)
+case "$musl_package" in musl-1.2.5-r*) ;; *) echo "musl 1.2.5 is required for the bundled copyright" >&2; exit 1 ;; esac
+for input in "$libc_file" "$libgcc_file" "$libstdcxx_file"; do
+	[ -f "$input" ] || { echo "missing static runtime input: $input" >&2; exit 1; }
+done
+libc_owner=$(apk info -W "$libc_file" | awk -F' is owned by ' 'NF == 2 {print $2; exit}')
+libgcc_owner=$(apk info -W "$libgcc_file" | awk -F' is owned by ' 'NF == 2 {print $2; exit}')
+libstdcxx_owner=$(apk info -W "$libstdcxx_file" | awk -F' is owned by ' 'NF == 2 {print $2; exit}')
+[ -n "$libc_owner" ] && [ -n "$libgcc_owner" ] && [ -n "$libstdcxx_owner" ] || {
+	echo "static libc/libgcc/libstdc++ must have identified Alpine package owners" >&2; exit 1;
+}
 strip_bin=${STRIP:-strip}
 strip_bin=$(command -v "$strip_bin" 2>/dev/null || true)
 if [ -z "$strip_bin" ] || [ ! -x "$strip_bin" ]; then
@@ -248,16 +269,23 @@ env -i \
 	HOME="${HOME:-/tmp}" \
 	LC_ALL=C \
 	CC="${CC:-cc}" \
+	CXX="$cxx_compiler" \
+	CMAKE="$cmake_bin" \
+	DTV_USERLAND_CORE_SOURCE_DIR="${DTV_USERLAND_CORE_SOURCE_DIR:-}" \
+	SIANO_PX4_USERLAND_SOURCE_DIR="${SIANO_PX4_USERLAND_SOURCE_DIR:-}" \
+	CXXFLAGS="-O2 -ffile-prefix-map=$root=. -ffile-prefix-map=$build_root=. -ffile-prefix-map=$libusb_src=." \
 	PKG_CONFIG="$pc_wrap" \
 	CFLAGS="-O2 -ffile-prefix-map=$root=. -ffile-prefix-map=$build_root=. -ffile-prefix-map=$libusb_src=." \
 	LDFLAGS="-static -Wl,-z,relro,-z,now -Wl,--no-undefined" \
-	make -C "$root" clean siano-ts
+	make -C "$root" clean all RUNTIME_BUILD_DIR="$build_root/runtime"
 
 mkdir -p "$build_root/evidence"
-cp -f "$root/siano-ts" "$build_root/siano-ts"
-chmod 755 "$build_root/siano-ts"
-"$strip_bin" --strip-unneeded "$build_root/siano-ts"
-"$build_root/siano-ts" --help >/dev/null
+for program in sianod sianoctl siano-ts; do
+	cp -f "$root/$program" "$build_root/$program"
+	chmod 755 "$build_root/$program"
+	"$strip_bin" --strip-unneeded "$build_root/$program"
+	"$build_root/$program" --help >/dev/null
+done
 make -C "$root" clean
 
 cat > "$build_root/evidence/build.properties" <<EOF
@@ -265,6 +293,22 @@ target_os=linux
 target_arch=$arch
 libc=none
 build_libc=musl
+compiler_path=$compiler
+compiler_sha256=$(sha256sum "$compiler" | awk '{print $1}')
+compiler_version=$compiler_version
+compiler_target=$compiler_target
+musl_package=$musl_package
+runtime=libgcc
+libc_archive=$libc_file
+libc_archive_sha256=$(sha256sum "$libc_file" | awk '{print $1}')
+libc_archive_owner=$libc_owner
+libgcc_archive=$libgcc_file
+libgcc_archive_sha256=$(sha256sum "$libgcc_file" | awk '{print $1}')
+libgcc_archive_owner=$libgcc_owner
+libstdcxx=static
+libstdcxx_archive=$libstdcxx_file
+libstdcxx_archive_sha256=$(sha256sum "$libstdcxx_file" | awk '{print $1}')
+libstdcxx_archive_owner=$libstdcxx_owner
 linkage=static
 libusb_version=$libusb_version
 libusb_source_url=$libusb_url
@@ -273,7 +317,10 @@ libusb_build_options=--disable-shared --enable-static --disable-udev --disable-e
 libusb_backend=netlink
 EOF
 
-"$root/scripts/audit-artifact.sh" --platform "linux-$arch" \
-	--binary "$build_root/siano-ts" --source-ref "$source_ref" \
-	--evidence-output "$build_root/evidence/binary-audit.json"
+for program in sianod sianoctl siano-ts; do
+	"$root/scripts/audit-artifact.sh" --platform "linux-$arch" \
+		--binary "$build_root/$program" --source-ref "$source_ref" \
+		--evidence-output "$build_root/evidence/$program-binary-audit.json"
+done
+cp "$build_root/evidence/siano-ts-binary-audit.json" "$build_root/evidence/binary-audit.json"
 echo "built $build_root/siano-ts (version $version, libusb $libusb_version, source $source_ref)"

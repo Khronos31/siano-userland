@@ -176,3 +176,30 @@ macOSの復帰TS SHA-256は `0c4ade7f4d976da6380583a4739977c0ed3904501ee4a982128
 source `cf8f0985e145ebfdcc208e774acb620fa6a3f3b1` の [CI run39465686279 / Windows job118776394486](https://github.com/Khronos31/siano-userland/actions/runs/39465686279/job/118776394486) は、既存native `nmake test` と2回のclean buildの全byte比較を通過し、helper119行のhistorical baseline照合で失敗した。生成EXE SHA-256は `639862839761c863e3e8775ed0d598274a9cd0bbda06f29b915f710a96e27b19`。`windows-2022` image `20261012.333.1`、VCTools `14.44.35207`、Windows SDK `10.0.26100.0`、固定libusb `1.0.30` を使用した。
 
 上の「Windows canonical hash取得とCI準備」と同じ手順で、このCI由来値を `packaging/windows-baseline.sha256:1` へ登録した。2build/all-byte/SHAの比較条件は変更していない。取得元runの失敗は保持し、後続CIの照合とexact CI artifactによるC3のWindows30秒受信・正常停止は現在pending。利用者が02:33 JSTにWindowsへのPX-S1UD接続を連絡し、読み取り列挙で `3275:0080` / `port=5-1.2` を確認したが、これは受信確認の代替ではない。
+
+後続結果（初回feature単体TS）: source `115da3c7fb0ca6c06c82c4b01e3cceebcb9d974e` の [CI39467477345](https://github.com/Khronos31/siano-userland/actions/runs/39467477345) は12/12成功。そのexact `bin-windows-x64` artifact（EXE SHAは上の`639862...`と一致）でT27/30秒受信、exit0、64,758,480bytes、sync/TEI/PID continuity全0、残留0を確認した。この単体版C3記録と、次の統合daemon/client記録は別のbinary・別の試行である。
+
+## 2026-10-21 Windows統合3program短時間受信
+
+**今回再検証**: Windows x64/既存WinUSB、利用者接続済みPX-S1UD `3275:0080` / `usb:5-1.2`、1台。source基点 `b42a744a89002f140c30be36d2c14f0d483078da` に今回のS production 2差分（`siano-enclosure.cpp`のWindows既定runtime rootのnull→空文字、`CMakeLists.txt`のMSVC TS client専用`/STACK:2097152`）を適用した入力を使用した。
+
+受入済みb3f sourceのWindows ZIP SHA256は `6017a45892a6b163494da0e52002e23c425411b2a254f4cf1cd61d7babaa07aa`。b3f→b42の差分はAPPLE専用CMake接続、非APPLEで同等のinclude helper、tests/docs/歴史SHAのみでWindows product source/flagsは不変だったため、初めはこの実archiveを再利用した。実起動でdaemonのnull文字列代入によるaccess violationを検出し、修正後のclientでstack overflowを検出した。dump/map上のstatus handshake累積frameは1,104,632bytesで既定stack1MiBを超えていたため、TS targetだけ2MiBを予約した。Core/Pやテスト条件は変更していない。MSVC19.51/既存`/MT`・固定libusb1.0.30・同Core9591/P90b08dfで必要targetを再buildし、診断flagを外した製品CMakeの生成物と実機使用binaryの全bytehash一致を確認した。
+
+| 実機使用program | SHA256 |
+|---|---|
+| sianod.exe | `489aa5bd2daa2998467d0be489be2268215968127644c69e7a4fffed87485c21` |
+| sianoctl.exe | `a655ea7c12f929c4f250bc9c0576b2467456cd1ae6819aaee917d59c9e13ab9e` |
+| siano-ts.exe | `47d4cc09ac0d8f6b4c55bb91ea87985c480dfbb93ec1bfe136474795e8b8cc4c` |
+
+```text
+sianod.exe --device usb:5-1.2 --instance win-smoke --firmware firmware/isdbt_rio.inp
+sianoctl.exe --instance win-smoke status
+siano-ts.exe --instance win-smoke -c 27 -t 30 -o received-stack.ts
+sianoctl.exe --instance win-smoke status
+```
+
+実行時のdaemon/TS診断コピーには`-fixed`/`-stack`接尾辞があり、上記製品名の生成物とSHA一致。UTC `2026-10-20T17:51:52.707275Z`–`17:52:24.679477Z`、consumer exit0、64,690,800bytes/344,100packets。前後status exit0、afterはready/free/idle・leasedfalse、tune revision1、557142857Hz/programmed同値・lock、streamなし・last_errorなし。専用daemon console/process groupへ既存handlerが処理するCTRL_BREAKを送り、daemon exit0、task実行パスの残留process0、post discovery正常を確認した。USB抜去・driver/routing/network変更や15V操作はしていない。
+
+§6: TS SHA256はWindows/解析host双方 `f9dade835451e24b3b60a7180e629fefdfa5696d041e4dc4c2c8474ffee8756a`。TSDuck3.45-4798 `tsanalyze --normalized` exit0、188-byte remainder0、invalidsync0、TEI0、全PID continuity discontinuity0、stderrに`TS queue dropped`なし。PCR由来durationの整数表示29秒は実行要求30秒/正常終了と区別して記録した。
+
+raw証拠と失敗診断は作業workspace `/config/.work/userland-common-20261017/reports/siano-current-windows-daemon-smoke-20261021/`、詳細receiptは同reportsの `siano-current-windows-daemon-smoke-result-20261021.md` に保持（配布repoの同梱物ではない）。これは統合版の短時間RF・TS・lease/cleanup確認であり、今回2差分の2clean build再現性、固定source再package、physical hotplug、soak、正式RC全環境認定は**未認定**。

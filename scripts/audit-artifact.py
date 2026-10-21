@@ -74,6 +74,11 @@ LINUX_MDEV = {
     "mdev/siano-ts-mdev.conf", "mdev/siano-ts-mdev.sh", "mdev/siano-ts-mdev.start",
 }
 LINUX_ARCHITECTURES = {"linux-x86_64": "x86_64", "linux-aarch64": "aarch64"}
+LINUX_RUNTIME_LICENSE_SHA256 = {
+    "toolchain/gcc-COPYING3": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "toolchain/gcc-COPYING.RUNTIME": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+    "toolchain/musl-1.2.5-COPYRIGHT": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+}
 # Mach-O load commands that make dyld load another image at launch.
 MACHO_DYLIB_COMMANDS = {
     0x0000000C,  # LC_LOAD_DYLIB
@@ -109,6 +114,17 @@ SOURCE_FORBIDDEN = re.compile(
 
 class AuditError(Exception):
     pass
+
+
+def forbidden_source_member(name: str) -> bool:
+    # Windows platform C/C++ sources are now required corresponding source.
+    # Keep binary/vendor/kernel exclusions; exempt only these source subtrees.
+    checked = name
+    if name.startswith(("third_party/dtv-userland-core/", "third_party/px4-userland/")) and \
+            (Path(name).suffix.lower() in {".c", ".cpp", ".h", ".hpp", ".cmake", ".def", ".md"} or name.endswith(".h.in")):
+        checked = "/".join("platform-windows" if part.lower() in {"windows", "win32"} else part
+                           for part in PurePosixPath(name).parts)
+    return SOURCE_FORBIDDEN.search(checked) is not None
 
 
 def fail(message: str) -> None:
@@ -291,8 +307,7 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
         for key, value in expected_metadata.items():
             if manifest.get(key) != value:
                 fail(f"Linux static manifest metadata mismatch: {key}")
-    binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
-    if manifest.get("programs") != [binary_name]:
+    if manifest.get("programs") != program_names(platform):
         fail("manifest program list is wrong")
     inventory = manifest.get("files")
     if not isinstance(inventory, dict):
@@ -361,12 +376,24 @@ def verify_manifest(payloads: dict[str, bytes], platform: str) -> dict:
     return manifest
 
 
+def program_names(platform: str) -> list[str]:
+    suffix = ".exe" if platform == "windows-x64" else ""
+    return [name + suffix for name in ("sianod", "sianoctl", "siano-ts")]
+
+
+def binary_evidence_name(binary: str) -> str:
+    program = binary.removesuffix(".exe")
+    return "evidence/binary-audit.json" if program == "siano-ts" else f"evidence/{program}-binary-audit.json"
+
+
 def expected_members(platform: str) -> set[str]:
     if platform not in PACKAGE_PLATFORMS:
         fail(f"platform is not packageable: {platform}")
-    result = set(COMMON) | ({"siano-ts.exe"} if platform == "windows-x64" else {"siano-ts"})
+    result = set(COMMON) | set(program_names(platform))
+    result |= {binary_evidence_name(name) for name in program_names(platform)}
     if platform in LINUX_ARCHITECTURES:
         result |= {"libusb/COPYING", "evidence/build.properties"} | LINUX_MDEV
+        result |= set(LINUX_RUNTIME_LICENSE_SHA256)
     elif platform == "darwin-arm64":
         result |= {"libusb/COPYING", "evidence/build.properties"}
     elif platform.startswith("android"):
@@ -375,6 +402,7 @@ def expected_members(platform: str) -> set[str]:
             "evidence/static-link-inventory.tsv", "evidence/build.properties",
             "evidence/ndk/source.properties", "evidence/ndk/NOTICE",
             "evidence/ndk/NOTICE.toolchain",
+            "evidence/sianod-static-link-inventory.tsv", "evidence/sianoctl-static-link-inventory.tsv",
         }
     elif platform == "windows-x64":
         result |= {
@@ -383,10 +411,12 @@ def expected_members(platform: str) -> set[str]:
     return result
 
 
-def verify_binary_evidence(payloads: dict[str, bytes], manifest: dict) -> None:
-    evidence = parse_json(payloads.get("evidence/binary-audit.json", b""), "binary-audit.json")
+def verify_binary_evidence(payloads: dict[str, bytes], manifest: dict, binary_name: str | None = None) -> None:
     platform = manifest["platform"]
-    binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
+    if binary_name is None:
+        binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
+    evidence_name = binary_evidence_name(binary_name)
+    evidence = parse_json(payloads.get(evidence_name, b""), evidence_name)
     expected = {"schema": 2, "platform": platform, "source_ref": manifest["source_ref"],
                 "binary": {"name": binary_name, "sha256": sha256_bytes(payloads[binary_name])}}
     if evidence != expected:
@@ -415,8 +445,10 @@ def verify_linux_mdev_modes(modes: dict[str, int], platform: str) -> None:
             fail(f"{platform} mdev file has mode {mode!r}, expected {expected:o}: {name}")
 
 
-def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str], platform: str) -> None:
-    inventory = payloads["evidence/static-link-inventory.tsv"].decode("utf-8")
+def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str], platform: str,
+                              program: str | None = None) -> None:
+    inventory_name = "evidence/static-link-inventory.tsv" if program in (None, "siano-ts") else f"evidence/{program}-static-link-inventory.tsv"
+    inventory = payloads[inventory_name].decode("utf-8")
     rows = inventory.splitlines()
     if not rows or rows[0] != "category\tarchive\tmember":
         fail("Android static-link inventory header is invalid")
@@ -426,9 +458,9 @@ def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str]
         if len(parts) != 3 or tuple(parts) in seen:
             fail("Android static-link inventory is malformed or duplicated")
         seen.add(tuple(parts))
-        if parts[0] not in {"libusb", "ndk-runtime"} or not parts[1].endswith(".a") or not parts[2]:
+        if parts[0] not in {"libusb", "ndk-runtime", "project"} or not parts[1].endswith(".a") or not parts[2]:
             fail("Android static-link inventory contains an unclassified archive")
-    if not any(row[0] == "libusb" and row[1] == "libusb-1.0.a" for row in seen):
+    if program in (None, "sianod") and not any(row[0] == "libusb" and row[1] == "libusb-1.0.a" for row in seen):
         fail("Android static-link inventory has no libusb archive")
     properties = payloads["evidence/build.properties"].decode("utf-8")
     property_map: dict[str, str] = {}
@@ -463,6 +495,38 @@ def verify_android_provenance(payloads: dict[str, bytes], fields: dict[str, str]
         fail("Android NDK source.properties does not match build.properties")
 
 
+def verify_linux_runtime_provenance(payloads: dict[str, bytes], modes: dict[str, int],
+                                    properties: dict[str, str], fields: dict[str, str]) -> None:
+    # Preserve the old runtime-license evidence, now including the C++ runtime
+    # actually linked by all three programs instead of 'libstdcxx=not-claimed'.
+    for name, expected in LINUX_RUNTIME_LICENSE_SHA256.items():
+        if sha256_bytes(payloads[name]) != expected or modes.get(name) != 0o644:
+            fail(f"Linux runtime license is missing/altered: {name}")
+    for key in ("compiler_path", "compiler_version", "compiler_target", "musl_package",
+                "libc_archive_owner", "libgcc_archive_owner", "libstdcxx_archive_owner"):
+        if not properties.get(key) or properties[key] == "unknown":
+            fail(f"Linux runtime provenance missing: {key}")
+    if not properties["compiler_target"].endswith("musl") or \
+            not properties["musl_package"].startswith("musl-1.2.5-r") or \
+            not properties["libc_archive_owner"].startswith("musl-dev-1.2.5-r") or \
+            properties.get("libstdcxx") != "static":
+        fail("Linux runtime provenance does not match the selected static inputs")
+    for key in ("compiler", "libc_archive", "libgcc_archive", "libstdcxx_archive"):
+        path_key = "compiler_path" if key == "compiler" else key
+        if not properties.get(path_key, "").startswith("/") or \
+                not re.fullmatch(r"[0-9a-f]{64}", properties.get(key + "_sha256", "")):
+            fail(f"Linux runtime path/hash invalid: {key}")
+    for notice, property_name in (("dependency.libc.version", "musl_package"),
+            ("dependency.compiler.version", "compiler_version"),
+            ("dependency.compiler.target", "compiler_target"),
+            ("dependency.runtime.version", "libgcc_archive_owner"),
+            ("dependency.libstdcxx.version", "libstdcxx_archive_owner")):
+        if fields.get(notice) != properties[property_name]:
+            fail(f"Linux runtime notice mismatch: {notice}")
+    if fields.get("runtime-license-members") != ",".join(sorted(LINUX_RUNTIME_LICENSE_SHA256)):
+        fail("Linux runtime license notice inventory mismatch")
+
+
 def audit_binary_archive(path: Path, platform: str) -> dict:
     modes: dict[str, int] = {}
     payloads = archive_payloads(path, modes)
@@ -474,16 +538,18 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
     if path.name != expected_name:
         fail(f"archive name does not match platform/version: {path.name}")
     binary_name = "siano-ts.exe" if platform == "windows-x64" else "siano-ts"
-    verify_binary_archive_mode(modes, binary_name, platform)
+    for program in program_names(platform):
+        verify_binary_archive_mode(modes, program, platform)
     verify_linux_mdev_modes(modes, platform)
     if platform in LINUX_ARCHITECTURES or platform.startswith("android"):
         with tempfile.TemporaryDirectory(prefix="siano-archive-audit-") as temporary:
-            binary = Path(temporary) / binary_name
-            binary.write_bytes(payloads[binary_name])
-            if platform in LINUX_ARCHITECTURES:
-                audit_linux_static_binary(binary, platform)
-            else:
-                audit_android_binary(binary, platform, Path(__file__).resolve().parents[1])
+            for program in program_names(platform):
+                binary = Path(temporary) / program
+                binary.write_bytes(payloads[program])
+                if platform in LINUX_ARCHITECTURES:
+                    audit_linux_static_binary(binary, platform)
+                else:
+                    audit_android_binary(binary, platform, Path(__file__).resolve().parents[1])
     if sha256_bytes(payloads["firmware/isdbt_rio.inp"]) != FIRMWARE_SHA256:
         fail("firmware SHA256 does not match the pinned input")
     if sha256_bytes(payloads["LICENCE.siano"]) != FIRMWARE_LICENSE_SHA256:
@@ -517,6 +583,7 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         for key, value in required_properties.items():
             if property_map.get(key) != value:
                 fail(f"Linux build property mismatch: {key}")
+        verify_linux_runtime_provenance(payloads, modes, property_map, fields)
     elif platform.startswith("android"):
         expected_fields = {
             "dependency.libusb.version": LIBUSB_VERSION,
@@ -530,7 +597,8 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
                 fail(f"dependency notice field mismatch: {key}")
         if sha256_bytes(payloads[f"libusb/libusb-{LIBUSB_VERSION}.tar.bz2"]) != LIBUSB_SOURCE_SHA256:
             fail("Android corresponding libusb source checksum mismatch")
-        verify_android_provenance(payloads, fields, platform)
+        for program in program_names(platform):
+            verify_android_provenance(payloads, fields, platform, program)
     elif platform == "windows-x64":
         expected_fields = {
             "dependency.libusb.version": LIBUSB_VERSION,
@@ -550,7 +618,8 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         for name in payloads:
             if name.lower().endswith(".pdb"):
                 fail(f"Windows package contains a bundled PDB: {name}")
-        audit_pe_x64_bytes(payloads[binary_name], binary_name, reject_debug_payload=True)
+        for program in program_names(platform):
+            audit_pe_x64_bytes(payloads[program], program, reject_debug_payload=True)
         # The pinned upstream DLL is intentionally not rewritten or subjected
         # to the project EXE's CodeView policy.
         audit_pe_x64_bytes(payloads["libusb-1.0.dll"], "libusb-1.0.dll")
@@ -578,8 +647,10 @@ def audit_binary_archive(path: Path, platform: str) -> dict:
         for key, value in required_properties.items():
             if property_map.get(key) != value:
                 fail(f"macOS build property mismatch: {key}")
-        audit_darwin_macho(payloads[binary_name], binary_name)
-    verify_binary_evidence(payloads, manifest)
+        for program in program_names(platform):
+            audit_darwin_macho(payloads[program], program)
+    for program in program_names(platform):
+        verify_binary_evidence(payloads, manifest, program)
     verify_checksums(payloads)
     return {"archive": str(path.resolve()), "platform": platform, "members": sorted(payloads), "manifest": manifest}
 
@@ -839,7 +910,8 @@ def audit_darwin_dylibs(names: list[str], label: str) -> None:
             fail(f"macOS binary loads a libusb dylib instead of linking it statically: {name}: {label}")
         if not name.startswith(DARWIN_SYSTEM_DYLIB_PREFIXES):
             fail(f"macOS binary loads a non-system dylib: {name}: {label}")
-    missing = DARWIN_REQUIRED_DYLIBS - set(names)
+    required = {"/usr/lib/libSystem.B.dylib"} if Path(label).name in {"sianoctl", "siano-ts"} else DARWIN_REQUIRED_DYLIBS
+    missing = required - set(names)
     if missing:
         fail(f"macOS binary lacks the system images static libusb needs: {sorted(missing)}: {label}")
 
@@ -937,8 +1009,14 @@ def audit_source_archive(path: Path) -> dict:
     payloads = archive_payloads(path)
     if not SOURCE_REQUIRED.issubset(payloads):
         fail(f"source archive is missing: {sorted(SOURCE_REQUIRED-set(payloads))}")
+    for name, expected in LINUX_RUNTIME_LICENSE_SHA256.items():
+        source = f"repository/distribution/licenses/{PurePosixPath(name).name}"
+        if sha256_bytes(payloads.get(source, b"")) != expected:
+            fail(f"source archive runtime license is missing/altered: {source}")
+    if "repository/scripts/source-identity.py" not in payloads:
+        fail("source archive is missing the immutable source identity helper")
     for name in payloads:
-        if SOURCE_FORBIDDEN.search(name):
+        if forbidden_source_member(name):
             fail(f"forbidden source archive member: {name}")
         if not name.startswith(("repository/", "third_party/", "BUILD-RELINK.md", "DEPENDENCY-NOTICE.txt",
                                 "README.md", "COPYING", "LICENCE.siano", "source-manifest.json", "SHA256SUMS")):
@@ -951,6 +1029,27 @@ def audit_source_archive(path: Path) -> dict:
         if required_text not in rebuild:
             fail(f"BUILD-RELINK.md is missing the static/relink recipe: {required_text}")
     manifest = parse_json(payloads["source-manifest.json"], "source-manifest.json")
+    dependencies = manifest.get("dependencies")
+    if not isinstance(dependencies, dict) or set(dependencies) != {"dtv-userland-core", "px4-userland"}:
+        fail("source archive must contain both pinned Core/P dependencies")
+    for name, pin in (("dtv-userland-core", "dtv-userland-core.revision"),
+                      ("px4-userland", "px4-userland.revision")):
+        dependency = dependencies[name]
+        expected_pin = payloads.get(f"repository/cmake/{pin}", b"").decode("ascii").strip()
+        if not isinstance(dependency, dict) or dependency.get("commit") != expected_pin or \
+                not re.fullmatch(r"[0-9a-f]{40}", expected_pin) or \
+                not re.fullmatch(r"[0-9a-f]{40}", dependency.get("tree", "")):
+            fail(f"source archive dependency pin mismatch: {name}")
+        for required in ("CMakeLists.txt", "LICENSE"):
+            if f"third_party/{name}/{required}" not in payloads:
+                fail(f"source archive dependency missing {name}/{required}")
+    core = "third_party/dtv-userland-core/"
+    cmake = payloads[core + "CMakeLists.txt"].decode("utf-8")
+    # Include both conditional OS branches, so omission of an entire adapter
+    # directory cannot reduce the requirements inferred from the fixed graph.
+    for source in set(re.findall(r"(?:src|adapters)/[A-Za-z0-9_./-]+\.(?:cpp|c|h)", cmake)):
+        if core + source not in payloads:
+            fail(f"source archive Core closure missing {source}")
     expected_provenance = {
         "schema": 1, "libusb_version": LIBUSB_VERSION,
         "libusb_source_url": LIBUSB_SOURCE_URL,

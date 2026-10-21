@@ -4,6 +4,14 @@ platform=@PLATFORM@
 
 @DEPENDENCY_TEXT@
 
+Linux packages contain the exact musl copyright and GCC GPL/runtime exception
+under toolchain/. build.properties identifies the compiler, libc, libgcc and
+libstdc++ static archive versions, package owners and hashes used by this build.
+
 The application source is GPL-2.0-or-later; see COPYING.
+The linked PX4 host facade and Core host adapters are GPL-2.0-only.
+The Core engine library is MIT. Corresponding source, full license texts and
+provenance are in third_party/px4-userland/ and third_party/dtv-userland-core/
+inside the matching project source archive. This package is not MIT-only.
 The Siano firmware is separately licensed; see LICENCE.siano.
 Firmware provenance is recorded in the archive manifest and SHA256SUMS.

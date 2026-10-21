@@ -125,6 +125,36 @@ def write_tar(stage: Path, output: Path) -> None:
                         archive.addfile(info, handle)
 
 
+def snapshot_dependency(root: Path, revision: str, stage: Path, name: str) -> dict[str, str]:
+    if not __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
+        fail(f"invalid {name} dependency revision")
+    commit = str(run_git(root, "rev-parse", "--verify", f"{revision}^{{commit}}")).strip()
+    if commit != revision:
+        fail(f"{name} dependency did not resolve to the pinned commit")
+    tree = str(run_git(root, "rev-parse", "--verify", f"{commit}^{{tree}}")).strip()
+    snapshot = stage.parent / f"{name}.tar"
+    run_git(root, "archive", "--format=tar", f"--output={snapshot}", commit)
+    with tarfile.open(snapshot, "r:") as archive:
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            destination_name = f"third_party/{name}/{path}"
+            if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
+                fail(f"unsafe dependency source member: {member.name}")
+            if not member.isfile():
+                continue
+            if _audit.forbidden_source_member(destination_name):
+                fail(f"forbidden dependency source member: {destination_name}")
+            source = archive.extractfile(member)
+            if source is None:
+                fail(f"cannot read dependency member: {member.name}")
+            target = stage / destination_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            target.chmod(member.mode & 0o7777)
+    return {"commit": commit, "tree": tree}
+
+
 def write_checksums(stage: Path) -> None:
     rows = []
     for path in sorted(stage.rglob("*")):
@@ -182,14 +212,36 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--prepare-dependencies", action="store_true",
+                        help="fetch the two pinned public build sources over HTTPS (CI)")
     parser.add_argument("--version")
     parser.add_argument("--source-ref")
     parser.add_argument("--source-root", type=Path)
     parser.add_argument("--libusb-source-archive", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--core-source-root", type=Path)
+    parser.add_argument("--px4-source-root", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        return 0
+    if args.prepare_dependencies:
+        root = (args.source_root or Path(__file__).resolve().parents[1]).resolve()
+        for name in ("dtv-userland-core", "px4-userland"):
+            revision = (root / "cmake" / f"{name}.revision").read_text(encoding="ascii").strip()
+            if not __import__("re").fullmatch(r"[0-9a-f]{40}", revision):
+                fail(f"invalid {name} revision")
+            target = root / "third_party" / name
+            if target.exists():
+                current = str(run_git(target, "rev-parse", "HEAD")).strip()
+                if current != revision or str(run_git(target, "status", "--porcelain")).strip():
+                    fail(f"refusing to overwrite a different/dirty dependency: {target}")
+            else:
+                target.mkdir(parents=True)
+                run_git(target, "init", "-q")
+                run_git(target, "fetch", "--depth=1", f"https://github.com/Khronos31/{name}.git", revision)
+                run_git(target, "checkout", "--detach", "-q", "FETCH_HEAD")
+            print(f"{name}={revision}")
         return 0
     if not all((args.version, args.source_ref, args.source_root,
                 args.libusb_source_archive, args.output_dir)):
@@ -208,6 +260,13 @@ def main() -> int:
         stage.mkdir()
         commit, tree = snapshot_repository(root, args.source_ref, stage)
         repository = stage / "repository"
+        dependencies = {}
+        for name, pin, source in (
+                ("dtv-userland-core", "dtv-userland-core.revision", args.core_source_root),
+                ("px4-userland", "px4-userland.revision", args.px4_source_root)):
+            revision = (repository / "cmake" / pin).read_text(encoding="ascii").strip()
+            dependency_root = source or root / "third_party" / name
+            dependencies[name] = snapshot_dependency(dependency_root, revision, stage, name)
         version_data = (repository / "VERSION").read_bytes()
         if version_data != (args.version + "\n").encode("ascii"):
             fail("--version does not match VERSION at --source-ref")
@@ -234,8 +293,16 @@ def main() -> int:
             "vendor-blobs=excluded-from-source-archive\n"
         )
         write_text(stage / "DEPENDENCY-NOTICE.txt", notice)
+        notice += "dependency.dtv-userland-core.license=MIT-and-GPL-2.0-only-adapters\n"
+        notice += "dependency.px4-userland.license=GPL-2.0-only\n"
+        for name, provenance in dependencies.items():
+            notice += f"dependency.{name}.commit={provenance['commit']}\n"
+            notice += f"dependency.{name}.tree={provenance['tree']}\n"
+            notice += f"dependency.{name}.source=third_party/{name}/\n"
+        write_text(stage / "DEPENDENCY-NOTICE.txt", notice)
         manifest = {
             "schema": 1, "version": args.version, "source_ref": args.source_ref,
+            "dependencies": dependencies,
             "resolved_commit": commit, "tree": tree, "libusb_version": LIBUSB_VERSION,
             "libusb_source_url": LIBUSB_SOURCE_URL,
             "libusb_source_sha256": LIBUSB_SOURCE_SHA256,

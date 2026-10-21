@@ -15,6 +15,7 @@ if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
 fi
 
 version=$(tr -d '\n' < "$root/VERSION")
+cmake_bin=$(command -v cmake)
 source_ref=${SOURCE_REF:-${GITHUB_SHA:-}}
 if ! printf '%s' "$source_ref" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
 	if git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
@@ -132,19 +133,28 @@ env -i \
 	LC_ALL=C \
 	MACOSX_DEPLOYMENT_TARGET=$deployment_target \
 	CC=cc \
+	CXX=c++ \
+	CMAKE="$cmake_bin" \
+	DTV_USERLAND_CORE_SOURCE_DIR="${DTV_USERLAND_CORE_SOURCE_DIR:-}" \
+	SIANO_PX4_USERLAND_SOURCE_DIR="${SIANO_PX4_USERLAND_SOURCE_DIR:-}" \
+	CXXFLAGS="$build_cflags" \
 	PKG_CONFIG="$pc_wrap" \
 	CFLAGS="$build_cflags" \
 	LDFLAGS="-arch arm64" \
-	make -C "$root" clean siano-ts
+	make -C "$root" clean all RUNTIME_BUILD_DIR="$build_root/runtime"
 
-cp -f "$root/siano-ts" "$build_root/siano-ts"
-chmod 755 "$build_root/siano-ts"
+for program in sianod sianoctl siano-ts; do
+	cp -f "$root/$program" "$build_root/$program"
+	chmod 755 "$build_root/$program"
+done
 make -C "$root" clean
 # Apple strip -S -x removes debug and local symbols. -N is not used: it drops
 # every nlist entry and is not needed to remove debug symbols.
 strip_bin=$(xcrun --find strip)
-"$strip_bin" -S -x "$build_root/siano-ts"
-"$build_root/siano-ts" --help >/dev/null
+for program in sianod sianoctl siano-ts; do
+	"$strip_bin" -S -x "$build_root/$program"
+	"$build_root/$program" --help >/dev/null
+done
 
 cat > "$build_root/evidence/build.properties" <<EOF
 target_os=darwin
@@ -159,7 +169,10 @@ libusb_backend=darwin
 system_libraries=$system_libs
 EOF
 
-"$root/scripts/audit-artifact.sh" --platform darwin-arm64 \
-	--binary "$build_root/siano-ts" --source-ref "$source_ref" \
-	--evidence-output "$build_root/evidence/binary-audit.json"
+for program in sianod sianoctl siano-ts; do
+	"$root/scripts/audit-artifact.sh" --platform darwin-arm64 \
+		--binary "$build_root/$program" --source-ref "$source_ref" \
+		--evidence-output "$build_root/evidence/$program-binary-audit.json"
+done
+cp "$build_root/evidence/siano-ts-binary-audit.json" "$build_root/evidence/binary-audit.json"
 echo "built $build_root/siano-ts (version $version, libusb $libusb_version, source $source_ref)"

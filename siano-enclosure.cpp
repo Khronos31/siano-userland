@@ -5,7 +5,11 @@ extern "C" {
 #include "siano-device.h"
 }
 
+#ifdef _WIN32
+#include "px4/windows_tuner_nonce.h"
+#else
 #include "px4/posix_tuner_nonce.h"
+#endif
 
 #include <array>
 #include <cstdio>
@@ -20,6 +24,11 @@ namespace {
 namespace wire = dtv::userland::wire;
 using px4::userland::Result;
 using px4::userland::Error;
+#ifdef _WIN32
+using PlatformTunerNonceSource = px4::userland::ipc::windows::WindowsTunerNonceSource;
+#else
+using PlatformTunerNonceSource = px4::userland::ipc::posix::PosixTunerNonceSource;
+#endif
 
 template <std::size_t N>
 bool copy_text(wire::WString<N>& out, const char* value) noexcept
@@ -167,6 +176,7 @@ dtv::userland::Result<void> build_siano_control_context(
 
     list.receivers.present = true;
     list.receivers.value.count = 1U;
+    out.execution.receiver_count = 1U;
     wire::ReceiverDescriptor& receiver = list.receivers.value.items[0];
     receiver.id = 0U;
     receiver.systems.mask = 1U;
@@ -175,6 +185,8 @@ dtv::userland::Result<void> build_siano_control_context(
     receiver.binding.value.local_id = 0U;
     receiver.capabilities.ts_scope = wire::TsScope::multiplex;
     out.receiver_index[0] = 0U;
+    out.execution.receiver_lane[0] =
+        px4::userland::ipc::posix::ControlWorkerLane::tuner_dev1;
 
     // No external CARD reader exists in the RIO enclosure.
     list.readers.present = true;
@@ -285,12 +297,13 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     auto assembled = EnclosureContext::assemble(
         std::move(family),
         std::unique_ptr<px4::userland::TunerNonceSource>(
-            new (std::nothrow) PosixTunerNonceSource()));
+            new (std::nothrow) PlatformTunerNonceSource()));
     if (!assembled) { std::fprintf(stderr, "assemble: context %s\n", dtv::userland::error_string(assembled.error())); return Result<SianoAssembly>::failure(assembled.error()); }
     assembly.family = family_ptr;
     assembly.context = std::move(assembled.value());
 
     const char* selected_root = runtime_directory;
+#if !defined(_WIN32)
     std::array<char, kStoredPathCapacity> automatic_root{};
     if (selected_root == nullptr) {
         const auto selected = select_publish_runtime_root();
@@ -298,9 +311,10 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
         automatic_root = selected.value();
         selected_root = automatic_root.data();
     }
+#endif
 
     EnclosurePublication publication{};
-    publication.runtime_directory = selected_root;
+    publication.runtime_directory = selected_root != nullptr ? selected_root : "";
     publication.instance = assembly.instance;
     publication.lease_identity = assembly.lease_identity;
     publication.access = config.access;

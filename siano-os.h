@@ -61,12 +61,14 @@ typedef SSIZE_T ssize_t;
 #define SIANO_COND_CLOCK CLOCK_MONOTONIC
 #endif
 
+#ifndef __cplusplus
 #define access _access
 #define strdup _strdup
 #define open _open
 #define close _close
 #define write _write
 #define fileno _fileno
+#endif
 
 #ifndef no_argument
 #define no_argument 0
@@ -204,7 +206,7 @@ struct siano_win_thread {
 
 static DWORD WINAPI siano_win_thread_start(void *param)
 {
-    struct siano_win_thread *pack = param;
+    struct siano_win_thread *pack = (struct siano_win_thread *)param;
     void *(*fn)(void *) = pack->fn;
     void *arg = pack->arg;
 
@@ -220,7 +222,7 @@ static inline int pthread_create(pthread_t *thread, void *attr,
     HANDLE handle;
 
     (void)attr;
-    pack = malloc(sizeof(*pack));
+    pack = (struct siano_win_thread *)malloc(sizeof(*pack));
     if (!pack)
         return siano_thread_create_error(true);
     pack->fn = fn;

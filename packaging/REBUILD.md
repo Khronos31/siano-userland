@@ -2,8 +2,17 @@
 
 The binary in this archive was built from the source commit recorded in
 `manifest.json`. The corresponding source archive contains that exact Git
-tree under `repository/`, the pinned libusb source under `third_party/`, and
+tree under `repository/`, exact pinned Core/P source and license/provenance
+under `third_party/dtv-userland-core/` and `third_party/px4-userland/`,
+the pinned libusb source under `third_party/`, and
 this recipe as `BUILD-RELINK.md`.
+
+The build produces `sianod`, `sianoctl`, and `siano-ts` (with `.exe` on
+Windows). USB/libusb belongs to the daemon. Client binaries are not required
+to embed an unused USB library. All three receive platform and hash audits.
+The Core engine is MIT; Core host adapters and the P facade retain their GPL
+licenses. Consult the bundled license/provenance files; the combined
+application is not MIT-only.
 
 ## Linux static binaries
 
@@ -14,9 +23,11 @@ The Alpine `binutils` package supplies the target-native `strip` and `readelf`
 tools required by the release policy:
 
 ```sh
-apk add --no-cache gcc make pkgconf musl-dev linux-headers python3 binutils curl tar bzip2
+apk add --no-cache gcc g++ cmake make pkgconf musl-dev linux-headers python3 binutils curl tar bzip2
 cd repository
 SOURCE_REF=<source-ref> LINUX_ARCH=x86_64 \
+  DTV_USERLAND_CORE_SOURCE_DIR="$PWD/../third_party/dtv-userland-core" \
+  SIANO_PX4_USERLAND_SOURCE_DIR="$PWD/../third_party/px4-userland" \
   LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
   scripts/build-linux-static.sh
 ```
@@ -28,7 +39,12 @@ actual libusb source checksum and build options in
 `PT_INTERP` and no `DT_NEEDED`; use `repository/scripts/audit-artifact.sh` to
 check the result. After the static-link and source-provenance checks, the
 script applies target-native `strip --strip-unneeded`, audits the result, and
-runs `siano-ts --help` before packaging.
+runs each program's `--help` before packaging.
+
+Linux archives also include the exact musl copyright, GCC GPL and GCC Runtime
+Library Exception under `toolchain/`. The recorded Alpine package owners and
+hashes identify the compiler, libc, libgcc and statically linked libstdc++
+inputs. Use the same Alpine toolchain inputs when comparing rebuilds.
 
 The static Linux executable includes libusb under the LGPL-2.1-or-later. The
 corresponding source archive includes the complete application source, the
@@ -47,6 +63,8 @@ clean environment so a Homebrew libusb cannot be picked up:
 ```sh
 cd repository
 SOURCE_REF=<source-ref> \
+  DTV_USERLAND_CORE_SOURCE_DIR="$PWD/../third_party/dtv-userland-core" \
+  SIANO_PX4_USERLAND_SOURCE_DIR="$PWD/../third_party/px4-userland" \
   LIBUSB_SOURCE_ARCHIVE=../third_party/libusb-1.0.30.tar.bz2 \
   scripts/build-macos-static.sh
 ```
@@ -87,11 +105,19 @@ repository/scripts/test-static-relink.sh \
 
 The same test runs on arm64 macOS with `--arch arm64`, using
 `build-macos-static.sh` instead of the Alpine build.
+It compares the daemon that actually links libusb; the same build also
+produces the two clients. Core/P inputs come from the source archive, without
+a network fetch.
 
 ## Other targets
 
 Windows uses the libusb 1.0.30 WinUSB package identified in `libusb/NOTICE.txt`; the downloaded
 7z is verified during the build and is not embedded in the ZIP.
+`Makefile.win` takes `CORE_SOURCE_DIR` and `PX4_SOURCE_DIR` for the two bundled
+source directories. The reproducibility helper compares two clean builds of
+each of the three programs byte for byte. `windows-baseline.sha256` remains
+historical evidence for the former standalone source graph, not a digest of
+the new C++ graph.
 
 Android uses libusb 1.0.30 statically. The exact source archive is included as
 `libusb/libusb-1.0.30.tar.bz2`; verify it against the SHA256 in
@@ -113,13 +139,18 @@ The exact NDK revision is in `evidence/build.properties` and
 `NOTICE.toolchain` are copied byte-for-byte into `evidence/ndk/`. The
 static-link inventory in `evidence/static-link-inventory.tsv` is the expected audit record; an
 unclassified static archive is a release failure.
+The daemon and ctl inventories are respectively
+`evidence/sianod-static-link-inventory.tsv` and
+`evidence/sianoctl-static-link-inventory.tsv`. Project archive members and
+NDK C++ static runtime members are classified separately. The NDK runtime is
+linked statically and its notices remain in `evidence/ndk/`.
 
 The firmware is intentionally not part of a source archive. Obtain the
 separately licensed input from the pinned URL and verify its SHA256 before
 passing it to `--firmware`. The license text and its pinned URL/SHA256 are
 recorded in `LICENCE.siano` and `DEPENDENCY-NOTICE.txt`.
 
-The macOS build script applies Apple `strip -S -x` to `siano-ts`,
-smoke-tests `siano-ts --help`, and then audits the Mach-O load commands for
+The macOS build script applies Apple `strip -S -x` to all three programs,
+smoke-tests each program's `--help`, and then audits the Mach-O load commands for
 DWARF and local symbols. It does not use `strip -N`, which removes all nlist
 entries and is not required for debug-symbol removal.

@@ -38,25 +38,20 @@ source_root=$tmp/source/repository
 libusb_archive=$tmp/source/third_party/libusb-1.0.30.tar.bz2
 [ -x "$source_root/scripts/$build_script" ] || { echo "source archive has no $build_script" >&2; exit 1; }
 
-source_ref=$(python3 - "$tmp/source/source-manifest.json" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    value = json.load(handle)
-print(value["source_ref"])
-PY
-)
+source_ref=$(python3 "$root/scripts/source-identity.py" "$tmp/source/source-manifest.json")
 
 build_one() {
 	input_archive=$1
 	out=$2
 	SOURCE_REF="$source_ref" LINUX_ARCH="$arch" LINUX_BUILD_DIR="$out" MACOS_BUILD_DIR="$out" \
+		DTV_USERLAND_CORE_SOURCE_DIR="$tmp/source/third_party/dtv-userland-core" \
+		SIANO_PX4_USERLAND_SOURCE_DIR="$tmp/source/third_party/px4-userland" \
 		LIBUSB_SOURCE_ARCHIVE="$input_archive" ALLOW_UNPINNED_LIBUSB=1 \
 		"$source_root/scripts/$build_script"
 }
 
 build_one "$libusb_archive" "$tmp/baseline"
-baseline=$tmp/baseline/siano-ts
+baseline=$tmp/baseline/sianod
 if strings "$baseline" | grep -F "https://libusb.relink-test.invalid" >/dev/null 2>&1; then
 	echo "baseline unexpectedly contains the modified libusb marker" >&2
 	exit 1
@@ -79,7 +74,7 @@ PY
 modified_archive=$tmp/libusb-modified.tar.bz2
 tar -cjf "$modified_archive" -C "$tmp/modified" libusb-1.0.30
 build_one "$modified_archive" "$tmp/modified-build"
-modified=$tmp/modified-build/siano-ts
+modified=$tmp/modified-build/sianod
 
 if cmp -s "$baseline" "$modified"; then
 	echo "modified libusb did not change the linked executable" >&2

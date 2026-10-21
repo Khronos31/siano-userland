@@ -242,22 +242,39 @@ echo $? > "$LOG/reconnected.rc"
 - **E14 FreeBSD x86_64**: 対象外。記録は履歴のみで、gate・canary・soak に含めない。
 - **E15 Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
 - **E16 Debian x86/i386**: 配布artifactはなく、毎回必須matrix外。source-build claimを変更する場合は[Debian i386](platforms/debian-i686.md)のnative buildと`make test`、30秒のnonblocking receive、slow-sinkの`--fail-on-drop`/exit 8を確認する。5分を超える実機負荷が必要なら他OSと同じユーザー決定soak手順にする。
-- **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの`siano-ts.exe`を使う。OS build、Zadig/WinUSB version、EXE SHA（`packaging/windows-baseline.sha256`と照合）を記録する。USB IDを確認して、PowerShellで次の操作を行う。S-CTRLはconsole stdinから渡す。
+- **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの3 programを使う。OS build、Zadig/WinUSB version、各EXEのcandidate固有SHA（同じZIPのmanifestと照合）を記録する。旧`packaging/windows-baseline.sha256`は単体版の履歴であり、現行candidateとの一致を要求しない。USB IDとselectorを確認して、PowerShellで次の操作を行う。S-CTRLは`--control`付きconsumerのconsole stdinから渡す。[今回の統合3program記録](platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)では1台の30秒受信・TS整合性・lease解放・正常停止を確認した。hotplug・soak・最終RC認定は未実施であり、以下の手順の記載自体を成功記録と扱わない。
 
 ```powershell
+$D = (Resolve-Path .\sianod.exe).Path
+$C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
 $FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
-& $B --list                         # PX-S1UD / 3275:0080 / readyを記録
-$p = Start-Process -FilePath $B -ArgumentList ("-F `"$FW`" -d 0 -c 22 -o hotplug.ts") -PassThru -NoNewWindow -RedirectStandardError hotplug.err
+$manifest = Get-Content .\manifest.json -Raw | ConvertFrom-Json
+foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
+    $actual = (Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $manifest.files.$name.sha256) { throw "candidate hash mismatch: $name" }
+    "$name $actual"
+}
+& $D --list-json                    # PX-S1UD / 3275:0080とenclosures[].devices[].portを記録し、usb:<port>を使う
+$selector = 'usb:BUS-PORT'          # 実際に列挙されたselectorへ置換
+& $D --device $selector --instance s1ud --firmware $FW
+# daemonがreadyになったら別のPowerShell（同じZIP root）で:
+$C = (Resolve-Path .\sianoctl.exe).Path
+$B = (Resolve-Path .\siano-ts.exe).Path
+& $C --instance s1ud status
+$p = Start-Process -FilePath $B -ArgumentList '--instance s1ud -c 22 -o hotplug.ts' -PassThru -NoNewWindow -RedirectStandardError hotplug.err
 Start-Sleep -Seconds 20
 # ここで利用者がUSBを抜く。2分以内に終了し、ExitCode 7であることを確認する
 if ($p.WaitForExit(120000)) { $p.Refresh(); $p.ExitCode }
 else { 'HANG'; Stop-Process -Id $p.Id -Force }
-# 利用者がUSBを戻してから:
-& $B --list
-& $B -F $FW -d 0 -c 22 -t 30 -o reconnected.ts 2> reconnected.err
+# daemon consoleでCtrl+C。利用者がUSBを戻してから同consoleで
+# --list-jsonでselectorを確認し、上と同じdaemon起動を行う。
+# daemonがreadyになったらconsumer consoleで:
+& $C --instance s1ud status
+& $B --instance s1ud -c 22 -t 30 -o reconnected.ts 2> reconnected.err
 $LASTEXITCODE                 # 0を期待
 Get-Process siano-ts -ErrorAction SilentlyContinue
+# 終了時はdaemon consoleでCtrl+C。
 ```
 
 USBを物理的に外しても有限終了しない場合はhangとして失敗を記録する。各物理操作は依頼直前に通知し、依頼から最大5分待つ。

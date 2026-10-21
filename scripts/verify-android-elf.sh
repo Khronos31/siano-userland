@@ -194,12 +194,17 @@ case " $needed_sp " in
 	exit 1
 	;;
 esac
+case "$(basename "$bin")" in
+sianoctl|siano-ts) ;;
+*)
 case " $needed_sp " in
 *" liblog.so "*) ;;
 *)
 	echo "missing DT_NEEDED liblog.so (required by static libusb on Android)" >&2
 	exit 1
 	;;
+esac
+;;
 esac
 
 case "$needed_sp" in
@@ -242,7 +247,9 @@ for marker in ${ANDROID_PATH_MARKERS:-}; do
 		exit 1
 	fi
 done
-if strings -a "$bin" | grep -E '(^|[[:space:]])/(home|root|tmp|opt|config|workspace|usr/src|var/tmp)/' >/dev/null; then
+# Core's runtime fallback template is a product path, not a build path.
+# Exclude only that complete string; all other absolute host paths stay errors.
+if strings -a "$bin" | grep -Fvx '/tmp/dtv-userland-%llu' | grep -E '(^|[[:space:]])/(home|root|tmp|opt|config|workspace|usr/src|var/tmp)/' >/dev/null; then
 	echo "absolute host path found in ELF string data" >&2
 	exit 1
 fi

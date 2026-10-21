@@ -4,12 +4,13 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 ## 概要
 
-CMake の開発中の daemon 構成は `sianod`（USB 所有）・`sianoctl`（照会）・`siano-ts`（TS 出力）です。以下の従来の単体版の使用例・配布手順の daemon 構成への統合は別の増分で行います。
+通常の build と配布は `sianod`（USB 所有）・`sianoctl`（照会）・`siano-ts`（TS 出力）の3実行ファイルです。各 OS/ABI の新構成の認定状況は [検証記録](docs/platforms/validation-results.md) を参照してください。過去の単体版の検証結果は、新しい構成の実機認定を意味しません。
 
 daemon 構成では、USB の `--fd` と `-p/--pid` は **`sianod` に指定**します。FD は daemon 自身が継承したオープン済み USB FD であり、別プロセスの FD 番号を IPC で渡す機能ではありません。元の FD は呼び出し元が所有します。`termux-usb -e` が末尾に追加する FD 整数も受理します。ポートパスを取得できない環境では `--instance` を明示してください。
 
 ```sh
 ./sianod --device usb:1-4.2 --instance s1ud --pid 0x2000
+./sianoctl --instance s1ud status
 ./siano-ts --instance s1ud --control
 # stdin: channel 27 / tune 545142857 / quit
 
@@ -66,8 +67,19 @@ termux-usb -r -e './sianod --instance s1ud' /dev/bus/usb/001/004
 ## 導入
 
 - **Linux / macOS**: 実行ファイルとファームウェアを配置します。ソースからビルドする場合は libusb-1.0 の開発用パッケージが必要です。
-- **Windows**: Zadig などを用いて対象チューナーのドライバを WinUSB に設定します。配布 zip ではルートに `siano-ts.exe` と `libusb-1.0.dll`、`firmware/` 配下に `isdbt_rio.inp` が配置されています。アーカイブの構成を保ったままルートをカレントディレクトリとして実行するか、`--firmware` でファームウェアのパスを明示します。
+- **Windows**: Zadig などを用いて対象チューナーのドライバを WinUSB に設定します。配布 zip のルートに `sianod.exe`・`sianoctl.exe`・`siano-ts.exe` と `libusb-1.0.dll`、`firmware/` 配下に `isdbt_rio.inp` が配置されています。アーカイブの構成を保ち、PowerShellで以下のように実行します。`--firmware` はUSBを所有するdaemonに指定します。
 - **Android (Termux)**: Termux 環境に実行ファイルとファームウェアを配置します。USB デバイスのオープンには `termux-usb` コマンドを使用します。
+
+```powershell
+.\sianod.exe --list-json  # 対象のUSB IDとenclosures[].devices[].portを確認し、usb:<port>を使う
+.\sianod.exe --device usb:BUS-PORT --instance s1ud --firmware .\firmware\isdbt_rio.inp
+# BUS-PORTは実際の値へ置換。daemonを動かしたまま別のPowerShellで:
+.\sianoctl.exe --instance s1ud status
+.\siano-ts.exe --instance s1ud -c 22 -t 30 -o received.ts
+# 終了時はdaemonのconsoleでCtrl+C。
+```
+
+Windows新構成はPX-S1UD 1台でT27の30秒受信、TS整合性、lease解放とdaemonの正常停止を確認しました（[検証記録](docs/platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)）。hotplug・soakと最終RC全環境の認定は未実施です。
 
 ### Linux の USB デバイス権限
 
@@ -114,6 +126,19 @@ Alpine Linux（BusyBox mdev、コールドプラグスキャンヘルパー、Op
 Fedora 44（SELinux Enforcing）における検証要約、証明範囲、再検証時の確認項目は [Fedora 44 / SELinux Enforcing](docs/platforms/fedora-selinux.md) を参照する。
 
 ## 最短の使用例
+
+```sh
+./sianod --device usb:1-4.2 --instance s1ud --firmware /path/isdbt_rio.inp
+# 別のターミナルから同じユーザーで接続
+./sianoctl --instance s1ud list
+./siano-ts --instance s1ud -c T27 -t 30 -o /tmp/output.ts
+```
+
+USB node の権限は `sianod` に必要です。`--runtime-dir` を指定する場合は3コマンドで同じ値を使ってください。Termux では上の `termux-usb` 例で daemon を起動し、そのプロセスと FD を保持したまま別のターミナルから client を実行します。USB FD を client に渡し直す必要はありません。
+
+## 従来の単体版の CLI（履歴）
+
+以下の単体版コマンド・オプション表は既存 backend の検証を読むための履歴です。通常配布の daemon/client の引数は各実行ファイルの `--help` を参照してください。`make test` の旧 CLI 検証は `build/legacy/siano-ts` を使い、公開 `siano-ts` を上書きしません。
 
 ```sh
 # 認識されている Siano デバイスの一覧表示
@@ -209,16 +234,19 @@ USB ノードの読み書き権限とは別に、Linux では USB イベント�
 
 ### Linux / macOS / Android (Termux)
 
-要件: C11 コンパイラ、`make`、`pkg-config`、libusb-1.0 開発用パッケージ (`--fd` サポートには libusb 1.0.23 以上)。
+要件: C11/C++17 コンパイラ、CMake、`make`、`pkg-config`、libusb-1.0 開発用パッケージ (`--fd` サポートには libusb 1.0.23 以上)。
 
 ```sh
-make
+python3 scripts/package-source.py --prepare-dependencies --source-root .
+make all
 make test
 ```
 
 配布バイナリと同じく libusb を静的リンクしたビルドは、Linux では `scripts/build-linux-static.sh` (Alpine)、macOS (arm64) では `scripts/build-macos-static.sh` で作れます。どちらも固定した libusb 1.0.30 のソースを取得・検証してビルドするため、libusb の開発用パッケージは不要です。手順は [packaging/REBUILD.md](packaging/REBUILD.md) を参照してください。
 
 ### Windows
+
+CMake と C++17 対応 MSVC が必要です。最初に `python scripts/package-source.py --prepare-dependencies --source-root .` で pin された Core/P source を HTTPS で取得してください。SSH 秘密鍵は不要です。通常の `nmake` は CMake の3 target を build します。
 
 要件:
 - Visual Studio (MSVC)
@@ -232,5 +260,8 @@ nmake /f Makefile.win
 
 ## ライセンス
 
-- **本体プログラム**: GPL-2.0-or-later ([COPYING](COPYING))
+- **Siano由来の本体source**: GPL-2.0-or-later ([COPYING](COPYING))。
+- **リンクするPX4 host facade / Core host adapters**: GPL-2.0-only。対応source・license本文・provenanceは、このversionに一致するsource archive内の `third_party/px4-userland/` と `third_party/dtv-userland-core/` にあります。
+- **Core engine library**: MIT。本体sourceやリンクされたGPL componentをMIT-onlyとして再ライセンスするものではありません。
+- 配布noticeは [`packaging/DEPENDENCY-NOTICE.txt.in`](packaging/DEPENDENCY-NOTICE.txt.in) です。配布物はMIT-onlyではありません。
 - **ファームウェア (`isdbt_rio.inp`)**: Siano 社の再配布許諾ライセンス ([LICENCE.siano](LICENCE.siano))。リバースエンジニアリング、逆コンパイル、逆アセンブルは禁止されています。

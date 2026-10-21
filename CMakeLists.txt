@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(siano_public_runtime LANGUAGES C CXX)
 
 include(FetchContent)
+option(BUILD_TESTING "Build the existing Siano proofs" ON)
+set(SIANO_LINK_MAP_DIR "" CACHE PATH "Optional per-program link map output directory")
 
 set(DTV_USERLAND_CORE_SOURCE_DIR "" CACHE PATH
     "Explicit local dtv-userland-core source override")
@@ -52,8 +54,8 @@ set(SIANO_PX4_ROOT "${SIANO_PX4_SOURCE}/userland")
 file(WRITE "${CMAKE_BINARY_DIR}/dependency-sources.txt"
     "dtv-userland-core=${DTV_CORE_SOURCE}\nexpected=${DTV_CORE_REVISION}\nPX4 userland=${SIANO_PX4_SOURCE}\nexpected=${PX4_USERLAND_REVISION}\n")
 
-# The version is a required cache value: this tree carries no VERSION file and
-# the new entry must not fake a v1 release.
+# Distribution scripts pass the existing VERSION explicitly; direct developer
+# builds retain the development default and must not fake a v1 release.
 if(NOT SIANO_RUNTIME_VERSION)
     message(FATAL_ERROR "Pass SIANO_RUNTIME_VERSION (development value; do not claim v1)")
 endif()
@@ -66,80 +68,111 @@ set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
 set(DTV_USERLAND_BUILD_HOST_CTL ON CACHE BOOL
     "Build the optional GPL host control frontend" FORCE)
+set(DTV_USERLAND_BUILD_HOST_RUNTIME ON CACHE BOOL
+    "Build the optional GPL host runtime adapter" FORCE)
+set(DTV_USERLAND_BUILD_HOST_TS ON CACHE BOOL
+    "Build the optional GPL host TS consumer" FORCE)
+set(DTV_USERLAND_BUILD_HOST_FACADE ON CACHE BOOL
+    "Build the optional GPL host facade" FORCE)
+set(DTV_USERLAND_BUILD_HOST_DAEMON ON CACHE BOOL
+    "Build the optional GPL host daemon services" FORCE)
+set(DTV_USERLAND_HOST_RUNTIME_PRODUCT "siano-userland" CACHE STRING
+    "Explicit Siano runtime namespace" FORCE)
+set(DTV_USERLAND_HOST_RUNTIME_INSTANCE_POLICY "lowercase" CACHE STRING
+    "Siano runtime instance normalization" FORCE)
+set(_SIANO_HOST_FACADE_INCLUDE_DIRS
+    "${DTV_CORE_SOURCE}/adapters/host_daemon/include;${DTV_CORE_SOURCE}/adapters/host_facade/include;${DTV_CORE_SOURCE}/adapters/host_runtime/include;${DTV_CORE_SOURCE}/adapters/host_ts/include;${SIANO_PX4_ROOT}/include")
+set(DTV_USERLAND_HOST_RUNTIME_FACADE_INCLUDE_DIRS
+    "${_SIANO_HOST_FACADE_INCLUDE_DIRS}" CACHE STRING
+    "Private host facade include directories for the GPL host runtime" FORCE)
+set(DTV_USERLAND_HOST_TS_FACADE_INCLUDE_DIRS
+    "${_SIANO_HOST_FACADE_INCLUDE_DIRS};${SIANO_PX4_ROOT}/tools" CACHE STRING
+    "Private host facade include directories for the GPL host TS consumer" FORCE)
 set(DTV_USERLAND_HOST_CTL_FACADE_INCLUDE_DIRS "${SIANO_PX4_ROOT}/include"
     CACHE STRING "Private host facade include directories for the GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_TESTING OFF CACHE BOOL "Build core tests" FORCE)
 add_subdirectory(${DTV_CORE_SOURCE} core)
 
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+add_library(siano_libusb INTERFACE)
+if(WIN32)
+    find_path(LIBUSB_INCLUDE_DIR libusb.h REQUIRED)
+    find_library(LIBUSB_LIBRARY NAMES usb-1.0 libusb-1.0 REQUIRED)
+    target_include_directories(siano_libusb INTERFACE "${LIBUSB_INCLUDE_DIR}")
+    target_link_libraries(siano_libusb INTERFACE "${LIBUSB_LIBRARY}")
+else()
+    find_package(PkgConfig REQUIRED)
+    # The existing isolated distribution wrappers implement complete --cflags
+    # and --libs queries, including the exact static archive, not split queries.
+    pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
+    target_compile_options(siano_libusb INTERFACE ${LIBUSB_CFLAGS})
+    set(_SIANO_LIBUSB_LINK_FLAGS ${LIBUSB_LDFLAGS})
+    if(APPLE)
+        # Keep each framework/name pair together; a bare name becomes -lNAME.
+        string(REGEX REPLACE "-framework;([^;]+)" "-framework \\1"
+            _SIANO_LIBUSB_LINK_FLAGS "${_SIANO_LIBUSB_LINK_FLAGS}")
+    endif()
+    target_link_libraries(siano_libusb INTERFACE ${_SIANO_LIBUSB_LINK_FLAGS})
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 function(siano_enable_project_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /EHs-c- /GR-)
+    else()
     target_compile_options(${target} PRIVATE
         -Wall -Wextra -Wpedantic -Werror -fno-exceptions -fno-rtti)
+    endif()
 endfunction()
 
-# --- P runtime source subset (GPL-2.0-only, own static target) ---
-# The set matches the accepted design report (S/siano-public-runtime-minimal-binding
-# section 1.3). It includes the pure PX4 identity/profile helpers needed by the
-# shared TS CLI, but excludes P's card.cpp, control_context.cpp and every native
-# USB/frontend backend so the S product does not link the PX hardware stack.
-set(SIANO_PX4_RUNTIME_SOURCES
-    ${SIANO_PX4_ROOT}/src/identity.cpp
-    ${SIANO_PX4_ROOT}/src/ipc.cpp
-    ${SIANO_PX4_ROOT}/src/posix_ipc.cpp
-    ${SIANO_PX4_ROOT}/src/posix_tuner_nonce.cpp
-    ${SIANO_PX4_ROOT}/src/control_server.cpp
-    ${SIANO_PX4_ROOT}/src/control_workers.cpp
-    ${SIANO_PX4_ROOT}/src/tuner_service.cpp
-    ${SIANO_PX4_ROOT}/src/card_service.cpp
-    ${SIANO_PX4_ROOT}/src/enclosure_context.cpp
-    ${SIANO_PX4_ROOT}/src/control_client.cpp
-    ${SIANO_PX4_ROOT}/tools/px4_ts_core.cpp
-    ${SIANO_PX4_ROOT}/tools/px4_ts_posix.cpp
-    ${SIANO_PX4_ROOT}/tools/px4d_signals.cpp
-)
-
-add_library(siano_px4_runtime STATIC ${SIANO_PX4_RUNTIME_SOURCES})
-target_include_directories(siano_px4_runtime PUBLIC
+# --- Core host runtime facade ---
+# S keeps the product-facing include namespace; all shared implementation is
+# owned by Core and its existing MIT engines.
+add_library(siano_px4_runtime INTERFACE)
+target_include_directories(siano_px4_runtime INTERFACE
+    ${_SIANO_HOST_FACADE_INCLUDE_DIRS}
     ${SIANO_PX4_ROOT}/include ${SIANO_PX4_ROOT}/src ${SIANO_PX4_ROOT}/tools)
-target_compile_definitions(siano_px4_runtime PRIVATE
-    PX4_USERLAND_RUNTIME_PRODUCT="siano-userland")
-target_link_libraries(siano_px4_runtime PUBLIC
-    Threads::Threads dtv::core dtv::wire dtv::control dtv::identity dtv::tuning
-    dtv::receiver dtv::capture dtv::card)
-target_compile_features(siano_px4_runtime PUBLIC cxx_std_17)
-siano_enable_project_warnings(siano_px4_runtime)
-# Shared core's additional CARD opcode kinds are rejected by the feature gate
-# in this legacy non-CARD runtime. Keep all other -Werror checks enabled.
-target_compile_options(siano_px4_runtime PRIVATE -Wno-error=switch)
+target_link_libraries(siano_px4_runtime INTERFACE
+    dtv::core dtv::wire dtv::control dtv::identity dtv::tuning
+    dtv::receiver dtv::capture dtv::card dtv::host_facade dtv::host_runtime
+    dtv::host_ts dtv::host_daemon)
+target_compile_features(siano_px4_runtime INTERFACE cxx_std_17)
 
 # --- S C backend + composition (GPL-2.0-or-later) ---
+function(siano_include_project_root target)
+    if(APPLE)
+        # Case-insensitive macOS volumes otherwise resolve libc++ <version>
+        # to the project's VERSION text file. Project headers use quotes.
+        target_compile_options(${target} PUBLIC "-iquote${CMAKE_CURRENT_SOURCE_DIR}")
+    else()
+        target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+endfunction()
+
 add_library(siano_c_backend STATIC
     siano-device.c siano-capture-host.c protocol.c stream-state.c control-parse.c
     control-input.c device-selector.c exit-codes.c queue-policy.c output-writer.c)
 target_compile_features(siano_c_backend PUBLIC c_std_11)
 target_compile_definitions(siano_c_backend PRIVATE
     _POSIX_C_SOURCE=200809L _FILE_OFFSET_BITS=64)
-target_link_libraries(siano_c_backend PUBLIC PkgConfig::LIBUSB Threads::Threads)
-target_include_directories(siano_c_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(siano_c_backend PUBLIC siano_libusb Threads::Threads)
+siano_include_project_root(siano_c_backend)
 
 add_library(siano_capture_composition STATIC
     siano-capture-consumer.cpp siano-receiver-adapter.cpp)
 target_compile_features(siano_capture_composition PUBLIC cxx_std_17)
-target_include_directories(siano_capture_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_capture_composition)
 target_link_libraries(siano_capture_composition PUBLIC
     dtv::receiver dtv::capture siano_c_backend)
 
+if(BUILD_TESTING AND UNIX)
 add_library(siano_capture_composition_proof STATIC siano-capture-consumer.cpp)
 target_compile_features(siano_capture_composition_proof PUBLIC cxx_std_17)
 target_compile_definitions(siano_capture_composition_proof PRIVATE SIANO_CAPTURE_TEST_SEAMS)
-target_include_directories(siano_capture_composition_proof PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_capture_composition_proof)
 target_link_libraries(siano_capture_composition_proof PUBLIC
     dtv::receiver dtv::capture siano_c_backend)
 
@@ -160,22 +193,23 @@ add_executable(siano_receiver_adapter_proof
     tests/receiver_adapter_proof.cpp tests/libusb-loopback.c)
 target_compile_features(siano_receiver_adapter_proof PRIVATE cxx_std_17)
 target_link_libraries(siano_receiver_adapter_proof PRIVATE siano_capture_composition)
+endif()
 
 # S product glue: the P-facing family/shim and the LIST/assemble builder.
 add_library(siano_runtime STATIC
     siano-runtime-backend.cpp
     siano-enclosure.cpp)
 target_compile_features(siano_runtime PUBLIC cxx_std_17)
-target_include_directories(siano_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+siano_include_project_root(siano_runtime)
 target_link_libraries(siano_runtime PUBLIC
     siano_px4_runtime siano_capture_composition
-    dtv::control dtv::identity dtv::tuning)
+    dtv::control dtv::identity dtv::tuning dtv::host_daemon)
 
 # --- public artifacts ---
 add_executable(sianod sianod.cpp)
 target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
-target_link_libraries(sianod PRIVATE siano_runtime dtv::json PkgConfig::LIBUSB)
+target_link_libraries(sianod PRIVATE siano_runtime dtv::json siano_libusb)
 
 add_executable(sianoctl sianoctl.cpp)
 target_compile_features(sianoctl PRIVATE cxx_std_17)
@@ -190,10 +224,30 @@ target_compile_features(siano_wire_ts PRIVATE cxx_std_17)
 target_compile_definitions(siano_wire_ts PRIVATE
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_include_directories(siano_wire_ts PRIVATE ${SIANO_PX4_ROOT}/tools)
-target_link_libraries(siano_wire_ts PRIVATE siano_px4_runtime siano_c_backend)
+target_link_libraries(siano_wire_ts PRIVATE siano_px4_runtime siano_c_backend dtv::host_ts)
+if(MSVC)
+    # Shared wire status snapshots and bounded control buffers exceed the
+    # default 1 MiB main-thread stack during the TS client's status handshake.
+    target_link_options(siano_wire_ts PRIVATE /STACK:2097152)
+endif()
+
+if(WIN32)
+    foreach(_program IN ITEMS sianod sianoctl siano_wire_ts)
+        target_compile_definitions(${_program} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+        target_link_libraries(${_program} PRIVATE shell32)
+    endforeach()
+endif()
+if(SIANO_LINK_MAP_DIR AND NOT MSVC)
+    file(MAKE_DIRECTORY "${SIANO_LINK_MAP_DIR}")
+    foreach(_program IN ITEMS sianod sianoctl siano_wire_ts)
+        target_link_options(${_program} PRIVATE
+            "-Wl,-Map,${SIANO_LINK_MAP_DIR}/$<TARGET_FILE_BASE_NAME:${_program}>.map")
+    endforeach()
+endif()
 
 # Link-closure probe: references the P runtime symbols the S product needs so a
 # missing subset symbol fails the link here rather than at product link time.
+if(BUILD_TESTING AND UNIX)
 add_executable(siano_runtime_composition_proof tests/runtime_composition_proof.cpp)
 target_compile_features(siano_runtime_composition_proof PRIVATE cxx_std_17)
 target_link_libraries(siano_runtime_composition_proof PRIVATE
@@ -211,7 +265,7 @@ target_compile_definitions(siano_runtime_v1_proof PRIVATE
     SIANOCTL_PATH="$<TARGET_FILE:sianoctl>"
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(siano_runtime_v1_proof PRIVATE
-    siano_runtime PkgConfig::LIBUSB Threads::Threads)
+    siano_runtime siano_libusb Threads::Threads)
 add_dependencies(siano_runtime_v1_proof sianoctl siano_wire_ts)
 
 # One focused fixture for the newly connected PID list and wrapped-FD facts.
@@ -220,7 +274,7 @@ add_executable(siano_runtime_features_proof
     tests/libusb-loopback.c tests/libusb-loopback-topology.c)
 target_compile_features(siano_runtime_features_proof PRIVATE cxx_std_17)
 target_link_libraries(siano_runtime_features_proof PRIVATE
-    siano_runtime PkgConfig::LIBUSB Threads::Threads)
+    siano_runtime siano_libusb Threads::Threads)
 
 # Held-callback close proof.  It compiles the accepted S composition with the
 # existing test seam so one packet sink can be held while the real context
@@ -239,4 +293,5 @@ target_compile_definitions(siano_held_close_proof PRIVATE
 target_include_directories(siano_held_close_proof PRIVATE ${SIANO_PX4_ROOT}/tools)
 target_link_libraries(siano_held_close_proof PRIVATE
     siano_px4_runtime siano_c_backend dtv::receiver dtv::capture
-    PkgConfig::LIBUSB Threads::Threads)
+    siano_libusb Threads::Threads)
+endif()
