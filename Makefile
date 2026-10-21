@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 CC ?= cc
 PKG_CONFIG ?= pkg-config
+# CMake 4.4 resolves a relative PKG_CONFIG_EXECUTABLE below the source root.
+# Keep an explicit override, but pass the resolved absolute path.
+PKG_CONFIG := $(shell command -v '$(PKG_CONFIG)' 2>/dev/null || printf '%s' '$(PKG_CONFIG)')
 CMAKE ?= cmake
-CXX ?= c++
+# GNU make predefines CXX=g++; honor c++ unless the caller overrides it.
+ifeq ($(origin CXX), default)
+CXX := c++
+endif
 RUNTIME_BUILD_DIR ?= build/runtime
 CMAKE_ARGS ?=
 ifeq ($(strip $(DTV_USERLAND_CORE_SOURCE_DIR)),)

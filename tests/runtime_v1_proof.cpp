@@ -5,6 +5,7 @@
 // is replaced by the loopback fixture.
 #include "siano-enclosure.h"
 
+#include "px4/posix_ipc_contract.h"
 #include "px4/posix_tuner_nonce.h"
 
 extern "C" {
@@ -18,6 +19,7 @@ extern "C" {
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
@@ -113,7 +115,7 @@ std::vector<std::uint8_t> read_file(const std::string& path)
 
 int run_client(const std::string& runtime_dir, const std::string& instance,
                const std::string& output, const char* time_or_count,
-               const char* time_value)
+               const char* time_value, bool explicit_runtime_dir = true)
 {
     pid_t pid = fork();
     if (pid == 0) {
@@ -133,8 +135,10 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
         }
         argv[index++] = "--instance";
         argv[index++] = instance.c_str();
-        argv[index++] = "--runtime-dir";
-        argv[index++] = runtime_dir.c_str();
+        if (explicit_runtime_dir) {
+            argv[index++] = "--runtime-dir";
+            argv[index++] = runtime_dir.c_str();
+        }
         argv[index++] = "-o";
         argv[index++] = output.c_str();
         argv[index++] = "--tune-timeout-ms";
@@ -193,6 +197,7 @@ bool check_status(std::string_view json, const std::string& instance,
            json.find("\"epoch\":\"" + expected_epoch + "\"") != std::string_view::npos &&
            json.find("\"instance\":\"" + instance + "\"") != std::string_view::npos &&
            json.find("\"descriptor\":{\"id\":\"0\"") != std::string_view::npos &&
+           json.find("\"systems\":[\"ISDB-T\"]") != std::string_view::npos &&
            json.find(std::string("\"state\":\"") + receiver_state + "\"") !=
                std::string_view::npos &&
            json.find("\"measurements\":{}") != std::string_view::npos &&
@@ -396,6 +401,74 @@ int main()
             return 1;
         }
         std::fprintf(stderr, "PROOF no_ts status=0 bytes=0 quiesced=true error=OK\n");
+    }
+
+    // 4. The README form omits --runtime-dir and XDG_RUNTIME_DIR is absent;
+    //    the client must select the same fallback root that the daemon uses.
+    {
+        const std::string dir3 = make_private_dir();
+        assert(!dir3.empty());
+        const std::string inst3 = "proofinst0003";
+        const char* previous_xdg = std::getenv("XDG_RUNTIME_DIR");
+        const char* previous_tmp = std::getenv("TMPDIR");
+        const std::string saved_xdg = previous_xdg != nullptr ? previous_xdg : "";
+        const std::string saved_tmp = previous_tmp != nullptr ? previous_tmp : "";
+        const bool had_xdg = previous_xdg != nullptr;
+        const bool had_tmp = previous_tmp != nullptr;
+        (void)unsetenv("XDG_RUNTIME_DIR");
+        if (setenv("TMPDIR", dir3.c_str(), 1) != 0) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            std::fprintf(stderr, "PROOF autoRoot setenv failed\n");
+            return 1;
+        }
+        const auto selected_root = posix::select_publish_runtime_root();
+        if (!selected_root) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
+            else (void)unsetenv("TMPDIR");
+            std::fprintf(stderr, "PROOF autoRoot root_error=%s\n",
+                         error_string(selected_root.error()));
+            return 1;
+        }
+        const std::string root3(selected_root.value().data());
+        auto a3 = assemble_siano_context(config, inst3, root3.c_str(), epoch.value(),
+                                         SIANO_RUNTIME_VERSION);
+        if (!a3) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
+            else (void)unsetenv("TMPDIR");
+            std::fprintf(stderr, "PROOF autoRoot assemble_error=%s\n",
+                         error_string(a3.error()));
+            return 1;
+        }
+        posix::EnclosureContext& owned3 = *a3.value().context;
+        std::atomic<bool> serving3{true};
+        std::thread server3([&]() {
+            while (serving3.load()) {
+                const auto polled = owned3.poll_once(Timeout{50U});
+                if (!polled) break;
+            }
+        });
+        const std::string out3 = dir3 + "/empty.ts";
+        const int status3 = run_client(root3, inst3, out3, "time", "1", false);
+        if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+        if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
+        else (void)unsetenv("TMPDIR");
+        serving3.store(false);
+        server3.join();
+        const auto bytes3 = read_file(out3);
+        const posix::ContextCloseResult closed3 =
+            owned3.close(std::chrono::milliseconds(15000));
+        if (status3 != 0 || !bytes3.empty() || !closed3.quiesced ||
+            closed3.error != Error::OK) {
+            std::fprintf(stderr,
+                         "PROOF autoRoot status=%d bytes=%zu quiesced=%d error=%s\n",
+                         status3, bytes3.size(), closed3.quiesced ? 1 : 0,
+                         error_string(closed3.error));
+            return 1;
+        }
+        std::fprintf(stderr, "PROOF auto_root root=%s status=0 bytes=0 quiesced=true error=OK\n",
+                     root3.c_str());
     }
     return 0;
 }
