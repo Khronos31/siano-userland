@@ -4,7 +4,22 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 ## 概要
 
-`siano-ts` は、単一の実行ファイルとして USB デバイスを直接制御し、ファームウェア転送と ISDB-T チャンネル選局を行い、受信した MPEG-TS を標準出力または指定ファイルへ出力します。常駐デーモンやカードリーダー機能は備えていません。
+CMake の開発中の daemon 構成は `sianod`（USB 所有）・`sianoctl`（照会）・`siano-ts`（TS 出力）です。以下の従来の単体版の使用例・配布手順の daemon 構成への統合は別の増分で行います。
+
+daemon 構成では、USB の `--fd` と `-p/--pid` は **`sianod` に指定**します。FD は daemon 自身が継承したオープン済み USB FD であり、別プロセスの FD 番号を IPC で渡す機能ではありません。元の FD は呼び出し元が所有します。`termux-usb -e` が末尾に追加する FD 整数も受理します。ポートパスを取得できない環境では `--instance` を明示してください。
+
+```sh
+./sianod --device usb:1-4.2 --instance s1ud --pid 0x2000
+./siano-ts --instance s1ud --control
+# stdin: channel 27 / tune 545142857 / quit
+
+# Termux: USB 所有者の daemon を termux-usb から起動
+termux-usb -r -e './sianod --instance s1ud' /dev/bus/usb/001/004
+```
+
+`--control` は初期の `-c/-f` を省略でき、既存の stdin parser と共有 UDTV 選局・停止 API を使います。`--time` / `--packet-count` とは併用できません。PID は daemon 起動時に最大64個を指定でき、最初の選局成功後に設定します。未指定と明示 `0x2000` は ACK を待たない catch-all を使います。daemon が USB を所有している間の PID 構成は固定です。
+
+従来の単体版は USB を直接制御し、ファームウェア転送と ISDB-T 選局・TS 出力を行います。カードリーダー機能はありません。
 
 ## 対応機種・対応OS
 

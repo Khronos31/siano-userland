@@ -33,6 +33,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#if defined(__linux__)
+#include <dirent.h>
+#endif
 #if !defined(_WIN32) && defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000107)
 #define SIANO_HAVE_WRAP_SYS_DEVICE 1
 #endif
@@ -1254,6 +1257,115 @@ int locate_rio(libusb_context *usb, const struct siano_device_selector *selector
     }
     libusb_free_device_list(list, 1);
     return rc;
+}
+#if defined(__linux__)
+/* libusb reports no port path for a wrapped sys-device handle.  Recover the
+ * observed topology from the read-only sysfs devpath for the same bus/devnum;
+ * this still opens and claims nothing. */
+static int read_sysfs_uint(const char *directory, const char *name,
+                           unsigned int *value)
+{
+    char path[PATH_MAX];
+    FILE *file;
+    unsigned int parsed;
+
+    if (snprintf(path, sizeof(path), "%s/%s", directory, name) >= (int)sizeof(path))
+        return -1;
+    file = fopen(path, "r");
+    if (file == NULL)
+        return -1;
+    if (fscanf(file, "%u", &parsed) != 1)
+        parsed = 0U;
+    fclose(file);
+    if (parsed == 0U)
+        return -1;
+    *value = parsed;
+    return 0;
+}
+static int sysfs_port_path(uint8_t bus, uint8_t address, uint8_t *ports,
+                           unsigned int *count)
+{
+    DIR *devices;
+    struct dirent *entry;
+    char matched[128] = {0};
+    const char *cursor;
+
+    devices = opendir("/sys/bus/usb/devices");
+    if (devices == NULL)
+        return -1;
+    while ((entry = readdir(devices)) != NULL) {
+        char directory[PATH_MAX];
+        unsigned int busnum = 0U;
+        unsigned int devnum = 0U;
+
+        if (entry->d_name[0] == '.')
+            continue;
+        if (snprintf(directory, sizeof(directory), "/sys/bus/usb/devices/%s",
+                     entry->d_name) >= (int)sizeof(directory))
+            continue;
+        if (read_sysfs_uint(directory, "busnum", &busnum) != 0 ||
+            read_sysfs_uint(directory, "devnum", &devnum) != 0)
+            continue;
+        if (busnum == bus && devnum == address) {
+            snprintf(matched, sizeof(matched), "%s", entry->d_name);
+            break;
+        }
+    }
+    closedir(devices);
+    cursor = strchr(matched, '-');
+    if (cursor == NULL)
+        return -1;
+    cursor++;
+    while (*cursor != '\0' && *count < 8U) {
+        char *end = NULL;
+        unsigned long value = strtoul(cursor, &end, 10);
+        if (end == cursor || value > 255UL)
+            return -1;
+        ports[(*count)++] = (uint8_t)value;
+        if (*end != '.')
+            break;
+        cursor = end + 1;
+    }
+    return *count > 0U ? 0 : -1;
+}
+#endif
+
+int rio_facts_from_handle(struct siano_device *device,
+                          struct siano_rio_facts *facts)
+{
+    libusb_device *wrapped;
+    struct libusb_device_descriptor descriptor;
+    int rc;
+
+    if (device == NULL || device->handle == NULL || facts == NULL)
+        return -EINVAL;
+    memset(facts, 0, sizeof(*facts));
+    wrapped = libusb_get_device(device->handle);
+    if (wrapped == NULL)
+        return -EINVAL;
+    rc = libusb_get_device_descriptor(wrapped, &descriptor);
+    if (rc < 0)
+        return rc;
+    facts->vendor_id = descriptor.idVendor;
+    facts->product_id = descriptor.idProduct;
+    facts->bus = libusb_get_bus_number(wrapped);
+    facts->address = libusb_get_device_address(wrapped);
+    facts->has_bus = true;
+    facts->has_address = true;
+    {
+        int port_count = libusb_get_port_numbers(wrapped, facts->ports,
+                                                 (int)sizeof(facts->ports));
+        facts->port_count = port_count > 0 ? (unsigned)port_count : 0U;
+    }
+#if defined(__linux__)
+    if (facts->port_count == 0U) {
+        unsigned int recovered = 0U;
+        if (sysfs_port_path(facts->bus, facts->address, facts->ports,
+                            &recovered) == 0)
+            facts->port_count = recovered;
+    }
+#endif
+    return 0;
 }
 int open_rio(struct siano_device *device,
                     const struct siano_device_selector *selector,

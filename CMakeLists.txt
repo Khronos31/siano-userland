@@ -190,7 +190,7 @@ target_compile_features(siano_wire_ts PRIVATE cxx_std_17)
 target_compile_definitions(siano_wire_ts PRIVATE
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_include_directories(siano_wire_ts PRIVATE ${SIANO_PX4_ROOT}/tools)
-target_link_libraries(siano_wire_ts PRIVATE siano_px4_runtime)
+target_link_libraries(siano_wire_ts PRIVATE siano_px4_runtime siano_c_backend)
 
 # Link-closure probe: references the P runtime symbols the S product needs so a
 # missing subset symbol fails the link here rather than at product link time.
@@ -213,6 +213,14 @@ target_compile_definitions(siano_runtime_v1_proof PRIVATE
 target_link_libraries(siano_runtime_v1_proof PRIVATE
     siano_runtime PkgConfig::LIBUSB Threads::Threads)
 add_dependencies(siano_runtime_v1_proof sianoctl siano_wire_ts)
+
+# One focused fixture for the newly connected PID list and wrapped-FD facts.
+add_executable(siano_runtime_features_proof
+    tests/runtime_features_proof.cpp
+    tests/libusb-loopback.c tests/libusb-loopback-topology.c)
+target_compile_features(siano_runtime_features_proof PRIVATE cxx_std_17)
+target_link_libraries(siano_runtime_features_proof PRIVATE
+    siano_runtime PkgConfig::LIBUSB Threads::Threads)
 
 # Held-callback close proof.  It compiles the accepted S composition with the
 # existing test seam so one packet sink can be held while the real context

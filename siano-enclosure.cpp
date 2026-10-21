@@ -11,6 +11,7 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <optional>
 #include <utility>
 
 namespace siano::runtime {
@@ -157,7 +158,7 @@ dtv::userland::Result<void> build_siano_control_context(
         function.location.address.present = true;
         function.location.address.value = facts.address;
     }
-    if (facts.has_bus) {
+    if (facts.has_bus && facts.port_count > 0U) {
         if (!copy_numbers(function.location.usb_path.value, facts))
             return Result<void>::failure(Error::INVALID_ARGUMENT);
         function.location.usb_path.present = true;
@@ -194,26 +195,91 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     std::unique_ptr<SianoFamily> family(new (std::nothrow) SianoFamily(config));
     if (!family) return Result<SianoAssembly>::failure(Error::INTERNAL);
 
-    const auto facts = resolve_rio_facts(family->usb(), config.selector, config.selector_text);
-    if (!facts) { std::fprintf(stderr, "assemble: facts %s\n", dtv::userland::error_string(facts.error())); return Result<SianoAssembly>::failure(facts.error()); }
-    const auto resolved = siano_identity(facts.value());
-    if (!resolved) { std::fprintf(stderr, "assemble: identity %s\n", dtv::userland::error_string(resolved.error())); return Result<SianoAssembly>::failure(resolved.error()); }
-    const auto automatic = identity::auto_instance(resolved.value());
-    if (!automatic) { std::fprintf(stderr, "assemble: auto %s\n", dtv::userland::error_string(automatic.error())); return Result<SianoAssembly>::failure(automatic.error()); }
-    std::string lease_identity(automatic.value().bytes.data(), automatic.value().length);
+    SianoFacts facts{};
+    std::optional<dtv::userland::identity::ResolvedIdentity> resolved;
+    bool claimed_before_publish = false;
+    if (config.device_fd >= 0) {
+        // No enumeration with --fd: wrap the supplied descriptor first, then
+        // read the read-only facts from the wrapped handle.
+        const auto claimed = family->start_device();
+        if (!claimed) {
+            std::fprintf(stderr, "assemble: claim %s\n",
+                         dtv::userland::error_string(claimed.error()));
+            return Result<SianoAssembly>::failure(claimed.error());
+        }
+        claimed_before_publish = true;
+        struct siano_rio_facts raw {};
+        const int rc = rio_facts_from_handle(&family->adapter().device(), &raw);
+        if (rc != 0) return Result<SianoAssembly>::failure(Error::USB_IO);
+        facts.vendor_id = raw.vendor_id;
+        facts.product_id = raw.product_id;
+        facts.bus = raw.bus;
+        facts.address = raw.address;
+        facts.port_count = raw.port_count;
+        facts.has_bus = raw.has_bus;
+        facts.has_address = raw.has_address;
+        for (std::size_t i = 0U; i < raw.port_count && i < 8U; ++i)
+            facts.ports[i] = raw.ports[i];
+        if (facts.has_bus && facts.port_count > 0U) {
+            const auto identified = siano_identity(facts);
+            if (!identified) return Result<SianoAssembly>::failure(identified.error());
+            resolved = identified.value();
+        }
+    } else {
+        const auto located =
+            resolve_rio_facts(family->usb(), config.selector, config.selector_text);
+        if (!located) {
+            std::fprintf(stderr, "assemble: facts %s\n",
+                         dtv::userland::error_string(located.error()));
+            return Result<SianoAssembly>::failure(located.error());
+        }
+        facts = located.value();
+        const auto identified = siano_identity(facts);
+        if (!identified) {
+            std::fprintf(stderr, "assemble: identity %s\n",
+                         dtv::userland::error_string(identified.error()));
+            return Result<SianoAssembly>::failure(identified.error());
+        }
+        resolved = identified.value();
+    }
 
     SianoAssembly assembly;
-    assembly.lease_identity = lease_identity;
-    if (requested_instance.empty()) {
-        assembly.instance = lease_identity;
+    if (resolved) {
+        const auto automatic = identity::auto_instance(*resolved);
+        if (!automatic) {
+            std::fprintf(stderr, "assemble: auto %s\n",
+                         dtv::userland::error_string(automatic.error()));
+            return Result<SianoAssembly>::failure(automatic.error());
+        }
+        assembly.lease_identity.assign(automatic.value().bytes.data(),
+                                       automatic.value().length);
+        if (requested_instance.empty()) {
+            assembly.instance = assembly.lease_identity;
+        } else {
+            const auto canonical = identity::canonicalize_instance(requested_instance);
+            if (!canonical) return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+            assembly.instance.assign(canonical.value().bytes.data(),
+                                     canonical.value().length);
+        }
     } else {
+        // --fd without a port path: the explicit instance is the only stable
+        // name; it is also the namespace lock identity (non-serial LOCK_SH).
+        if (requested_instance.empty())
+            return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
         const auto canonical = identity::canonicalize_instance(requested_instance);
         if (!canonical) return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
         assembly.instance.assign(canonical.value().bytes.data(), canonical.value().length);
+        assembly.lease_identity = assembly.instance;
     }
 
-    const auto claimed = family->start_device();
-    if (!claimed) { std::fprintf(stderr, "assemble: claim %s\n", dtv::userland::error_string(claimed.error())); return Result<SianoAssembly>::failure(claimed.error()); }
+    if (!claimed_before_publish) {
+        const auto claimed = family->start_device();
+        if (!claimed) {
+            std::fprintf(stderr, "assemble: claim %s\n",
+                         dtv::userland::error_string(claimed.error()));
+            return Result<SianoAssembly>::failure(claimed.error());
+        }
+    }
 
     SianoFamily* family_ptr = family.get();
     auto assembled = EnclosureContext::assemble(
@@ -242,7 +308,7 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     if (!reserved) { std::fprintf(stderr, "assemble: reserve %s\n", dtv::userland::error_string(reserved.error())); return Result<SianoAssembly>::failure(reserved.error()); }
 
     ControlContext control{};
-    const auto built = build_siano_control_context(facts.value(), assembly.instance, epoch,
+    const auto built = build_siano_control_context(facts, assembly.instance, epoch,
                                                    product_version,
                                                    assembly.context->tuner_service(), control);
     if (!built) { std::fprintf(stderr, "assemble: build %s\n", dtv::userland::error_string(built.error())); return Result<SianoAssembly>::failure(built.error()); }

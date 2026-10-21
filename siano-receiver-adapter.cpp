@@ -21,11 +21,23 @@ ReceiverAdapter::ReceiverAdapter(libusb_context* usb,
                                  const siano_device_selector& selector,
                                  std::string selector_text, std::string firmware,
                                  ReceiverId receiver, Consumer& consumer,
-                                 Clock& clock, std::size_t queue_packets) noexcept
-    : usb_(usb), selector_(selector), selector_text_(std::move(selector_text)),
+                                 Clock& clock, std::size_t queue_packets,
+                                 int device_fd) noexcept
+    : usb_(usb), device_fd_(device_fd), selector_(selector),
+      selector_text_(std::move(selector_text)),
       firmware_(std::move(firmware)), receiver_(receiver), consumer_(consumer),
       clock_(clock), queue_packets_(queue_packets)
 {
+}
+
+void ReceiverAdapter::set_pid_filters(const std::uint16_t* pids,
+                                      std::size_t count) noexcept
+{
+    pid_count_ = 0U;
+    if (pids == nullptr) return;
+    if (count > pids_.size()) count = pids_.size();
+    for (std::size_t index = 0U; index < count; ++index) pids_[index] = pids[index];
+    pid_count_ = count;
 }
 
 ReceiverAdapter::~ReceiverAdapter() noexcept
@@ -74,7 +86,8 @@ ReceiverAdapter::Result ReceiverAdapter::open(ReceiverId receiver) noexcept
     if (init_device_state_capture(&device_, usb_, false, false) != 0)
         return result(Error::INTERNAL);
     initialized_ = true;
-    int rc = open_rio(&device_, &selector_, selector_text_.c_str());
+    int rc = device_fd_ >= 0 ? open_from_fd(&device_, device_fd_)
+                             : open_rio(&device_, &selector_, selector_text_.c_str());
     if (rc == 0) rc = start_streaming(&device_);
     if (rc == 0) rc = set_device_mode(&device_,
                                       firmware_.empty() ? nullptr : firmware_.c_str());
@@ -110,7 +123,7 @@ ReceiverAdapter::program_hz(ReceiverId receiver, ReceiverSystem system,
     if (rc != 0) return dtv::userland::Result<TuneProgramming>::failure(
         rc == -ETIMEDOUT ? Error::TIMEOUT : Error::INTERNAL);
     if (!pid_filters_sent_) {
-        const int pid_rc = configure_pid_filters(&device_, nullptr, 0U);
+        const int pid_rc = configure_pid_filters(&device_, pids_.data(), pid_count_);
         if (pid_rc != 0)
             return dtv::userland::Result<TuneProgramming>::failure(Error::INTERNAL);
         pid_filters_sent_ = true;

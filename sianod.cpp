@@ -18,6 +18,7 @@ extern "C" {
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -42,11 +43,18 @@ void usage() noexcept
     std::fprintf(stderr,
         "usage: sianod --device usb:BUS-PORT[.PORT...] [--firmware PATH]\n"
         "              [--runtime-dir DIR] [--instance TOKEN] [--group]\n"
+        "              [--fd FD] [-p PID ...]\n"
         "  --device serial:|usb:  adopted selector; usb:BUS-PORT[.PORT...] is\n"
-        "                         required (this enclosure has no usable serial)\n"
+        "                         required unless --fd is used\n"
+        "  --fd FD                wrap an already-open USB descriptor (Termux/\n"
+        "                         Android Host API); a trailing FD is equivalent\n"
+        "                         (termux-usb -e). --device is not combined\n"
+        "  -p, --pid PID          add a PID filter (repeatable, max 64); 0x2000\n"
+        "                         keeps the accepted no-ACK catch-all path\n"
         "  --firmware PATH        firmware file passed to the device mode step\n"
         "  --runtime-dir DIR      runtime namespace root\n"
-        "  --instance TOKEN       explicit connection instance (default auto)\n"
+        "  --instance TOKEN       explicit connection instance (default auto;\n"
+        "                         required with --fd when no port path exists)\n"
         "  --group                publish group-accessible endpoints\n"
         "  -h, --help             print this help\n"
         "  -V, --version          print the development version\n"
@@ -271,6 +279,28 @@ bool parse_number(std::string_view text, std::uint32_t& out) noexcept
     return true;
 }
 
+// The accepted standalone parser used strtoul(..., 0): decimal or 0x hex and a
+// maximum of 0x2000 (the firmware's no-ACK catch-all).
+bool parse_pid(std::string_view text, std::uint16_t& out) noexcept
+{
+    int base = 10;
+    if (text.size() > 2U && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        text.remove_prefix(2U);
+        base = 16;
+    } else if (text.size() > 1U && text[0] == '0') {
+        base = 8;
+    }
+    if (text.empty()) return false;
+    std::uint32_t value = 0U;
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), value, base);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+        value > 0x2000U)
+        return false;
+    out = static_cast<std::uint16_t>(value);
+    return true;
+}
+
 // Maps the adopted public selector onto the internal S selector.  A serial
 // selection is reported NOT_FOUND because the RIO exposes no usable serial;
 // no placeholder serial is invented.
@@ -331,6 +361,8 @@ int main(int argc, char** argv)
     std::string runtime_directory;
     std::string instance;
     bool group = false;
+    int device_fd = -1;
+    siano::runtime::SianoRuntimeConfig config;
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i] != nullptr ? argv[i] : "");
         auto need_value = [&](std::string& target) noexcept {
@@ -348,6 +380,22 @@ int main(int argc, char** argv)
             if (!device.empty() || !need_value(device)) {
                 std::fprintf(stderr, "argument error: --device\n"); return 2;
             }
+        } else if (option == "--fd") {
+            std::string text;
+            std::uint32_t value = 0U;
+            if (device_fd >= 0 || !need_value(text) || !parse_number(text, value) ||
+                value > static_cast<std::uint32_t>(INT_MAX)) {
+                std::fprintf(stderr, "argument error: --fd\n"); return 2;
+            }
+            device_fd = static_cast<int>(value);
+        } else if (option == "-p" || option == "--pid") {
+            std::string text;
+            std::uint16_t pid = 0U;
+            if (!need_value(text) || !parse_pid(text, pid) ||
+                config.pid_count >= config.pids.size()) {
+                std::fprintf(stderr, "argument error: --pid\n"); return 2;
+            }
+            config.pids[config.pid_count++] = pid;
         } else if (option == "--firmware") {
             if (!firmware.empty() || !need_value(firmware)) {
                 std::fprintf(stderr, "argument error: --firmware\n"); return 2;
@@ -362,30 +410,44 @@ int main(int argc, char** argv)
             }
         } else if (option == "--group") {
             group = true;
+        } else if (!option.empty() && option.front() != '-' && i == argc - 1) {
+            std::uint32_t value = 0U;
+            if (device_fd >= 0 || !parse_number(option, value) ||
+                value > static_cast<std::uint32_t>(INT_MAX)) {
+                std::fprintf(stderr, "argument error: USB fd\n"); return 2;
+            }
+            device_fd = static_cast<int>(value);
         } else {
             std::fprintf(stderr, "argument error: unknown argument\n");
             usage();
             return 2;
         }
     }
-    if (device.empty()) {
-        std::fprintf(stderr, "argument error: --device is required\n");
+    if (device_fd < 0 && device.empty()) {
+        std::fprintf(stderr, "argument error: --device or --fd is required\n");
         usage();
         return 2;
     }
-
-    siano::runtime::SianoRuntimeConfig config;
-    std::string selector_error;
-    const auto status = map_public_selector(device, config.selector, selector_error);
-    if (status == SelectorStatus::invalid) {
-        std::fprintf(stderr, "device: %s\n", selector_error.c_str());
+    if (device_fd >= 0 && !device.empty()) {
+        std::fprintf(stderr, "argument error: --device cannot be combined with --fd\n");
         return 2;
     }
-    if (status == SelectorStatus::not_found) {
-        std::fprintf(stderr, "device: %s\n", selector_error.c_str());
-        return 3;
+
+    std::string selector_error;
+    if (device_fd < 0) {
+        const auto status = map_public_selector(device, config.selector, selector_error);
+        if (status == SelectorStatus::invalid) {
+            std::fprintf(stderr, "device: %s\n", selector_error.c_str());
+            return 2;
+        }
+        if (status == SelectorStatus::not_found) {
+            std::fprintf(stderr, "device: %s\n", selector_error.c_str());
+            return 3;
+        }
+        config.selector_text = device;
+    } else {
+        config.device_fd = device_fd;
     }
-    config.selector_text = device;
     config.firmware = firmware;
     config.own_usb = true;
     config.access = group ? ipc::posix::EndpointAccess::shared_group
