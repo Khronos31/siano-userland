@@ -31,6 +31,8 @@ $sourceFiles = @(
     'queue-policy.c',
     'queue-policy.h',
     'siano-clock.h',
+    'siano-device.c',
+    'siano-device.h',
     'siano-os.h',
     'siano-ts.c',
     'stream-state.c',

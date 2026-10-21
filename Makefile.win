@@ -23,11 +23,14 @@ test: test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.
 	.\test-write-policy.exe
 	.\test-output-integration.exe
 
-siano-ts.exe: siano-ts.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj
-	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj /link /Brepro $(LIBS)
+siano-ts.exe: siano-ts.obj siano-device.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj
+	$(CC) $(CFLAGS) /Fe:siano-ts.exe siano-ts.obj siano-device.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj /link /Brepro $(LIBS)
 
-siano-ts.obj: siano-ts.c protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h siano-os.h siano-clock.h usb-location.h queue-policy.h write-policy.h output-writer.h
+siano-ts.obj: siano-ts.c siano-device.h protocol.h stream-state.h control-parse.h control-input.h device-selector.h detach-decision.h exit-codes.h siano-os.h siano-clock.h usb-location.h queue-policy.h write-policy.h output-writer.h
 	$(CC) $(CFLAGS) /c siano-ts.c
+
+siano-device.obj: siano-device.c siano-device.h protocol.h stream-state.h device-selector.h detach-decision.h exit-codes.h siano-os.h siano-clock.h usb-location.h queue-policy.h output-writer.h
+	$(CC) $(CFLAGS) /c siano-device.c
 
 protocol.obj: protocol.c protocol.h
 	$(CC) $(CFLAGS) /c protocol.c
@@ -86,8 +89,8 @@ test-queue-policy.exe: tests\test_queue_policy.c queue-policy.obj siano-os.h
 test-write-policy.exe: tests\test_write_policy.c write-policy.h
 	$(CC) $(CFLAGS) /Fe:$@ tests\test_write_policy.c
 
-test-output-integration.exe: tests\test_output_integration_win.c siano-ts.c output-writer.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj
-	$(CC) $(CFLAGS) /Fe:$@ tests\test_output_integration_win.c output-writer.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj /link $(LIBS)
+test-output-integration.exe: tests\test_output_integration_win.c siano-ts.c siano-device.obj output-writer.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj
+	$(CC) $(CFLAGS) /Fe:$@ tests\test_output_integration_win.c siano-device.obj output-writer.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj /link $(LIBS)
 
 clean:
-	del /q siano-ts.exe test-*.exe siano-ts.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj 2>nul
+	del /q siano-ts.exe test-*.exe siano-ts.obj siano-device.obj protocol.obj stream-state.obj control-parse.obj control-input.obj device-selector.obj exit-codes.obj queue-policy.obj output-writer.obj 2>nul
