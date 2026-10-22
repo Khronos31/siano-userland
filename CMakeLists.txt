@@ -66,6 +66,7 @@ endif()
 set(DTV_USERLAND_BUILD_CAPTURE ON CACHE BOOL "Build packet capture storage" FORCE)
 set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
+set(DTV_USERLAND_BUILD_CONTROL ON CACHE BOOL "Build the shared control client" FORCE)
 set(DTV_USERLAND_BUILD_HOST_CTL ON CACHE BOOL
     "Build the optional GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_HOST_RUNTIME ON CACHE BOOL
