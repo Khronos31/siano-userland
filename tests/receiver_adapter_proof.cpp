@@ -128,7 +128,6 @@ int main()
     assert(lease);
     HzTuneRequest tune{};
     tune.lease_id = lease.value().lease_id;
-    tune.prepared_receiver = receiver;
     tune.system = ReceiverSystem::terrestrial;
     tune.requested_hz = 473142857U;
     tune.timeout_ms = 2000U;

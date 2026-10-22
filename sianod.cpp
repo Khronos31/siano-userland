@@ -154,8 +154,7 @@ int write_discovery_json()
         observed.present = true;
         observed.serial_state = w::SerialState::not_queried;
         observed.model.present = true;
-        if (!copy(observed.model.value.id, profile->name) ||
-            !copy(observed.model.value.name, profile->name)) {
+        if (!copy(observed.model.value.name, profile->name)) {
             libusb_free_device_list(devices, 1);
             libusb_exit(context);
             return 70;
@@ -200,8 +199,7 @@ int write_discovery_json()
         w::DiscoveryEnclosure enclosure{};
         enclosure.descriptor.id = static_cast<std::uint16_t>(enclosures.size());
         enclosure.descriptor.model.present = true;
-        if (!copy(enclosure.descriptor.model.value.id, profile->name) ||
-            !copy(enclosure.descriptor.model.value.name, profile->name)) {
+        if (!copy(enclosure.descriptor.model.value.name, profile->name)) {
             libusb_free_device_list(devices, 1);
             libusb_exit(context);
             return 70;

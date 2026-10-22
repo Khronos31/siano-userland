@@ -129,8 +129,7 @@ ReceiverAdapter::program_hz(ReceiverId receiver, ReceiverSystem system,
         pid_filters_sent_ = true;
     }
     TuneProgramming programming{};
-    programming.programmed_hz.present = true;
-    programming.programmed_hz.value = requested_hz;
+    programming.programmed_hz = requested_hz;
     const std::uint64_t sampled_ms = clock_.monotonic_ms();
     if (sampled_ms != 0U &&
         sampled_ms <= std::numeric_limits<std::uint64_t>::max() / 1000000U) {
