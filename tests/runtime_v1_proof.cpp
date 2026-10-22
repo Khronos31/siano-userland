@@ -196,7 +196,7 @@ bool check_status(std::string_view json, const std::string& instance,
            json.find("\"version\":\"0.0.0-dev\"") != std::string_view::npos &&
            json.find("\"epoch\":\"" + expected_epoch + "\"") != std::string_view::npos &&
            json.find("\"instance\":\"" + instance + "\"") != std::string_view::npos &&
-           json.find("\"descriptor\":{\"id\":\"0\"") != std::string_view::npos &&
+           json.find("\"descriptor\":{\"receiver\":0") != std::string_view::npos &&
            json.find("\"systems\":[\"ISDB-T\"]") != std::string_view::npos &&
            json.find(std::string("\"state\":\"") + receiver_state + "\"") !=
                std::string_view::npos &&
