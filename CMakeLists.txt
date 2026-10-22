@@ -266,7 +266,7 @@ target_compile_definitions(siano_runtime_v1_proof PRIVATE
     SIANOCTL_PATH="$<TARGET_FILE:sianoctl>"
     SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(siano_runtime_v1_proof PRIVATE
-    siano_runtime siano_libusb Threads::Threads)
+    siano_runtime dtv::json siano_libusb Threads::Threads)
 add_dependencies(siano_runtime_v1_proof sianoctl siano_wire_ts)
 
 # One focused fixture for the newly connected PID list and wrapped-FD facts.

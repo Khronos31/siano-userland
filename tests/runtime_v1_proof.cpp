@@ -4,6 +4,7 @@
 // real siano-ts client runs as a separate process.  Only the bottom USB layer
 // is replaced by the loopback fixture.
 #include "siano-enclosure.h"
+#include "siano-discovery.h"
 
 #include "px4/posix_ipc_contract.h"
 #include "px4/posix_tuner_nonce.h"
@@ -54,6 +55,58 @@ using namespace siano::runtime;
 namespace posix = px4::userland::ipc::posix;
 
 constexpr std::size_t kPackets = 5U;
+
+bool check_siano_discovery_lnb_fixture()
+{
+    namespace w = dtv::userland::wire;
+    w::DiscoveryDevice device{};
+    device.device = 23U;
+    device.vid = 0x3275U;
+    device.pid = 0x0080U;
+    device.location.bus = {true, 4U};
+    device.location.port.present = true;
+    const char path[] = "4-2";
+    device.location.port.value.length = sizeof(path) - 1U;
+    std::memcpy(device.location.port.value.bytes.data(), path, sizeof(path) - 1U);
+    device.receivers_known = true;
+    device.receiver_count = 1U;
+    w::DiscoveryReceiver receiver{};
+    receiver.receiver = 31U;
+    receiver.device = device.device;
+    receiver.local = 0U;
+    receiver.systems.mask = 1U;
+    device.receivers = &receiver;
+
+    w::DiscoveryEnclosure enclosure{};
+    if (!make_siano_discovery_enclosure(enclosure, 17U, "PX-S1UD")) return false;
+    enclosure.devices = &device;
+    w::DiscoveryScan scan{};
+    scan.complete = true;
+    const char product[] = "siano-userland";
+    scan.product.length = sizeof(product) - 1U;
+    std::memcpy(scan.product.bytes.data(), product, sizeof(product) - 1U);
+    const char version[] = "fixture";
+    scan.version.length = sizeof(version) - 1U;
+    std::memcpy(scan.version.bytes.data(), version, sizeof(version) - 1U);
+    scan.enclosure_count = 1U;
+    scan.enclosures = &enclosure;
+
+    const auto size = w::discovery_json_size(scan);
+    if (!size) return false;
+    std::vector<std::uint8_t> bytes(size.value());
+    const auto encoded = w::encode_discovery_json(scan, {bytes.data(), bytes.size()});
+    if (!encoded || encoded.value() != bytes.size()) return false;
+    const std::string json(bytes.begin(), bytes.end());
+    const bool accepted = json.find("\"lnb_15v_supported\":false") != std::string::npos &&
+        json.find("\"serial\":null") != std::string::npos &&
+        json.find("\"id\":17") != std::string::npos &&
+        json.find("\"id\":23") != std::string::npos &&
+        json.find("\"receiver\":31") != std::string::npos &&
+        json.find("\"readers\":[]") != std::string::npos;
+    if (accepted) std::fprintf(stderr, "PROOF discovery_json=%s\n", json.c_str());
+    else std::fprintf(stderr, "PROOF discovery_json fixture mismatch: %s\n", json.c_str());
+    return accepted;
+}
 
 bool deliver_ts(siano_device& device, std::uint8_t marker, std::size_t packets)
 {
@@ -234,6 +287,7 @@ SianoRuntimeConfig base_config()
 
 int main()
 {
+    if (!check_siano_discovery_lnb_fixture()) return 1;
     // 1. The published LIST is the adopted shape: one terrestrial receiver 0
     //    and an empty reader set (no external CARD).
     const std::string runtime_dir = make_private_dir();

@@ -2,6 +2,7 @@
 // Siano public runtime daemon.  It assembles the canonical P runtime subset
 // over the accepted S adapter/Consumer with the same function the proof uses.
 #include "siano-enclosure.h"
+#include "siano-discovery.h"
 
 #ifdef _WIN32
 #include "px4/windows_tuner_nonce.h"
@@ -196,16 +197,13 @@ int write_discovery_json()
         receiver.systems.mask = 1U;
         receivers.push_back(receiver);
         w::DiscoveryEnclosure enclosure{};
-        enclosure.enclosure = static_cast<std::uint16_t>(enclosures.size());
-        enclosure.status = w::DiscoveryEnclosureStatus::ready;
-        enclosure.model.present = true;
-        if (!copy(enclosure.model.value, profile->name)) {
+        if (!make_siano_discovery_enclosure(enclosure,
+                                             static_cast<std::uint16_t>(enclosures.size()),
+                                             profile->name)) {
             libusb_free_device_list(devices, 1);
             libusb_exit(context);
             return 70;
         }
-        enclosure.readers_known = true;
-        enclosure.device_count = 1U;
         // Siano has no standard B-CAS reader exposed through its TS runtime.
         enclosures.push_back(std::move(enclosure));
     }
