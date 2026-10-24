@@ -48,37 +48,6 @@ namespace {
 using namespace px4::userland;
 using namespace px4::userland::cli;
 
-#ifdef _WIN32
-std::string environment_value(const char* name) noexcept
-{
-    char* value = nullptr;
-    std::size_t length = 0U;
-    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) return {};
-    std::string result(value);
-    std::free(value);
-    return result;
-}
-#endif
-
-std::string default_runtime_directory() noexcept
-{
-#ifdef _WIN32
-    std::string base = environment_value("LOCALAPPDATA");
-    if (base.empty()) base = environment_value("TEMP");
-    return base;
-#else
-    const char* base = std::getenv("XDG_RUNTIME_DIR");
-    if (base == nullptr || base[0] == '\0') base = std::getenv("TMPDIR");
-    if (base == nullptr || base[0] == '\0') base = "/tmp";
-    if (base[0] != '/') return {};
-    std::string path(base);
-    while (path.size() > 1U && path.back() == '/') path.pop_back();
-    path += "/dtv-userland-";
-    path += std::to_string(static_cast<unsigned long long>(::geteuid()));
-    return path;
-#endif
-}
-
 volatile std::sig_atomic_t stop_flag = 0;
 void stop_handler(int) noexcept { stop_flag = 1; }
 bool platform_stop_requested() noexcept
@@ -482,9 +451,7 @@ Px4TsArguments control_arguments(const SianoArgs& args, std::uint64_t frequency_
     Px4TsArguments arguments{};
     arguments.valid = true;
     arguments.instance = args.instance;
-    arguments.runtime_directory = args.runtime_directory.empty()
-                                      ? default_runtime_directory()
-                                      : args.runtime_directory;
+    arguments.runtime_directory = args.runtime_directory;
     arguments.output = args.output;
     arguments.receiver = static_cast<std::uint8_t>(args.receiver);
     arguments.system = ipc::System::ISDB_T;
@@ -667,9 +634,6 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "siano-ts: unsupported broadcast system (ISDB-T only)\n");
         return 3;
     }
-    if (arguments.runtime_directory.empty())
-        arguments.runtime_directory = default_runtime_directory();
-
     if (!install_signals()) {
         std::fprintf(stderr, "signal setup failed\n");
         return 70;

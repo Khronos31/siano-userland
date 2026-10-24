@@ -247,9 +247,10 @@ for marker in ${ANDROID_PATH_MARKERS:-}; do
 		exit 1
 	fi
 done
-# Core's runtime fallback template is a product path, not a build path.
-# Exclude only that complete string; all other absolute host paths stay errors.
-if strings -a "$bin" | grep -Fvx '/tmp/dtv-userland-%llu' | grep -E '(^|[[:space:]])/(home|root|tmp|opt|config|workspace|usr/src|var/tmp)/' >/dev/null; then
+# Core's runtime fallback templates are product paths, not build paths.
+# Exclude only those complete strings; all other absolute host paths stay errors.
+if strings -a "$bin" | grep -Fvx -e '/tmp/dtv-userland-%llu' \
+	-e '/tmp/dtv-userland-%lu' | grep -E '(^|[[:space:]])/(home|root|tmp|opt|config|workspace|usr/src|var/tmp)/' >/dev/null; then
 	echo "absolute host path found in ELF string data" >&2
 	exit 1
 fi

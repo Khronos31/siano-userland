@@ -5,6 +5,7 @@
 // is replaced by the loopback fixture.
 #include "siano-enclosure.h"
 
+#include "px4/posix_ipc.h"
 #include "px4/posix_tuner_nonce.h"
 
 extern "C" {
@@ -151,12 +152,13 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-int run_status(const std::string& runtime_dir, const std::string& instance,
-               std::string& output, bool explicit_runtime_dir = true)
+int run_control(const std::string& runtime_dir, const std::string& instance,
+                std::string& output, const char* command,
+                bool explicit_runtime_dir = true)
 {
-    std::fprintf(stderr, "PROOF status_argv=%s --instance %s%s status\n",
+    std::fprintf(stderr, "PROOF control_argv=%s --instance %s%s %s\n",
                  SIANOCTL_PATH, instance.c_str(),
-                 explicit_runtime_dir ? " --runtime-dir <explicit>" : "");
+                 explicit_runtime_dir ? " --runtime-dir <explicit>" : "", command);
     int output_pipe[2];
     if (pipe(output_pipe) != 0) return -1;
     const pid_t pid = fork();
@@ -165,9 +167,9 @@ int run_status(const std::string& runtime_dir, const std::string& instance,
         if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
         close(output_pipe[1]);
         const char* argv_with_runtime[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
-                              "--runtime-dir", runtime_dir.c_str(), "status", nullptr};
+                              "--runtime-dir", runtime_dir.c_str(), command, nullptr};
         const char* argv_default[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
-                              "status", nullptr};
+                              command, nullptr};
         execv(SIANOCTL_PATH, const_cast<char* const*>(explicit_runtime_dir
                     ? argv_with_runtime : argv_default));
         _exit(127);
@@ -248,6 +250,16 @@ int main()
     const auto epoch = epoch_source.generate();
     assert(epoch);
 
+    SianoRuntimeConfig group_config = config;
+    group_config.access =
+        dtv::userland::host_runtime::EndpointAccess::shared_group;
+    const auto group_without_root = assemble_siano_context(
+        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION);
+    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT) {
+        std::fprintf(stderr, "PROOF groupRoot omitted root was not rejected\n");
+        return 1;
+    }
+
     auto assembly = assemble_siano_context(config, instance, runtime_dir.c_str(),
                                            epoch.value(), SIANO_RUNTIME_VERSION);
     if (!assembly) {
@@ -286,7 +298,7 @@ int main()
 
     std::string idle_status;
     const unsigned idle_controls = test_libusb_control_requests();
-    if (run_status(runtime_dir, instance, idle_status) != 0 ||
+    if (run_control(runtime_dir, instance, idle_status, "status") != 0 ||
         !check_status(idle_status, instance, epoch.value(), "free") ||
         test_libusb_control_requests() != idle_controls) {
         std::fprintf(stderr, "PROOF idle status failed: %s", idle_status.c_str());
@@ -308,7 +320,7 @@ int main()
         }
         std::string streaming_status;
         const unsigned controls_before_status = test_libusb_control_requests();
-        if (run_status(runtime_dir, instance, streaming_status) != 0 ||
+        if (run_control(runtime_dir, instance, streaming_status, "status") != 0 ||
             !check_status(streaming_status, instance, epoch.value(), "streaming") ||
             test_libusb_control_requests() != controls_before_status) {
             std::fprintf(stderr, "PROOF streaming status failed controls=%u/%u: %s",
@@ -414,36 +426,51 @@ int main()
         std::fprintf(stderr, "PROOF no_ts status=0 bytes=0 quiesced=true error=OK\n");
     }
 
-    // 4. The README form omits --runtime-dir and XDG_RUNTIME_DIR is absent;
-    //    the client must select the same fallback root that the daemon uses.
+    // 4. The README form omits --runtime-dir with XDG_RUNTIME_DIR set;
+    //    daemon, control clients, and TS clients must use the same Core root.
     {
         const std::string dir3 = make_private_dir();
-        assert(!dir3.empty());
+        const std::string xdg3 = make_private_dir();
+        assert(!dir3.empty() && !xdg3.empty());
         const std::string inst3 = "proofinst0003";
         const char* previous_xdg = std::getenv("XDG_RUNTIME_DIR");
-        const char* previous_tmp = std::getenv("TMPDIR");
         const std::string saved_xdg = previous_xdg != nullptr ? previous_xdg : "";
-        const std::string saved_tmp = previous_tmp != nullptr ? previous_tmp : "";
         const bool had_xdg = previous_xdg != nullptr;
-        const bool had_tmp = previous_tmp != nullptr;
-        (void)unsetenv("XDG_RUNTIME_DIR");
-        if (setenv("TMPDIR", "/tmp", 1) != 0) {
+        if (setenv("XDG_RUNTIME_DIR", xdg3.c_str(), 1) != 0) {
             if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
-            std::fprintf(stderr, "PROOF autoRoot setenv failed\n");
+            else (void)unsetenv("XDG_RUNTIME_DIR");
+            std::fprintf(stderr, "PROOF xdgRoot setenv failed\n");
             return 1;
         }
-        const std::string root3 = std::string("/tmp/dtv-userland-") +
-            std::to_string(static_cast<unsigned long long>(geteuid()));
-        auto a3 = assemble_siano_context(config, inst3, root3.c_str(), epoch.value(),
+        const auto selected_root = posix::select_publish_runtime_root(
+            "siano-userland", inst3.c_str());
+        if (!selected_root) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            else (void)unsetenv("XDG_RUNTIME_DIR");
+            std::fprintf(stderr, "PROOF xdgRoot select_error=%s\n",
+                         error_string(selected_root.error()));
+            return 1;
+        }
+        const std::string root3(selected_root.value());
+        if (root3 != xdg3) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            else (void)unsetenv("XDG_RUNTIME_DIR");
+            std::fprintf(stderr, "PROOF xdgRoot selected=%s expected=%s\n",
+                         root3.c_str(), xdg3.c_str());
+            return 1;
+        }
+        auto a3 = assemble_siano_context(config, inst3, nullptr, epoch.value(),
                                          SIANO_RUNTIME_VERSION);
         if (!a3) {
             if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
-            if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
-            else (void)unsetenv("TMPDIR");
-            std::fprintf(stderr, "PROOF autoRoot assemble_error=%s\n",
+            else (void)unsetenv("XDG_RUNTIME_DIR");
+            std::fprintf(stderr, "PROOF xdgRoot assemble_error=%s\n",
                          error_string(a3.error()));
             return 1;
         }
+        const auto expected_endpoint = dtv::userland::host_runtime::endpoint_path(
+            {root3, "siano-userland", inst3,
+             dtv::userland::host_runtime::EndpointAccess::private_user});
         dtv::userland::host_listener_context::EnclosureContext& owned3 =
             *a3.value().context;
         std::atomic<bool> serving3{true};
@@ -454,28 +481,33 @@ int main()
             }
         });
         std::string status3_json;
-        const int ctl_status3 = run_status(root3, inst3, status3_json, false);
+        const int ctl_status3 = run_control(root3, inst3, status3_json, "status", false);
+        std::string list3_text;
+        const int ctl_list3 = run_control(root3, inst3, list3_text, "list", false);
         const std::string out3 = dir3 + "/empty.ts";
         const int status3 = run_client(root3, inst3, out3, "time", "1", false);
         if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
-        if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
-        else (void)unsetenv("TMPDIR");
+        else (void)unsetenv("XDG_RUNTIME_DIR");
         serving3.store(false);
         server3.join();
         const auto bytes3 = read_file(out3);
         const auto closed3 = owned3.close(Timeout{15000U});
-        if (ctl_status3 != 0 || status3_json.find("\"state\":\"ready\"") ==
-                std::string::npos || status3 != 0 || !bytes3.empty() || !closed3 ||
+        if (!expected_endpoint || a3.value().endpoint_path != expected_endpoint.value() ||
+            ctl_status3 != 0 || status3_json.find("\"state\":\"ready\"") ==
+                std::string::npos || ctl_list3 != 0 ||
+            list3_text.find("ready=1 usb-functions=1 receivers=1 readers=0") ==
+                std::string::npos ||
+            status3 != 0 || !bytes3.empty() || !closed3 ||
             closed3.value() !=
                 dtv::userland::host_listener_context::CloseState::quiesced) {
             std::fprintf(stderr,
-                         "PROOF autoRoot ctl=%d ts=%d bytes=%zu quiesced=%d error=%s\n",
-                         ctl_status3, status3, bytes3.size(), closed3 && closed3.value() ==
+                         "PROOF xdgRoot status=%d list=%d text=%s ts=%d bytes=%zu quiesced=%d error=%s\n",
+                         ctl_status3, ctl_list3, list3_text.c_str(), status3, bytes3.size(), closed3 && closed3.value() ==
                              dtv::userland::host_listener_context::CloseState::quiesced,
                          error_string(closed3 ? Error::OK : closed3.error()));
             return 1;
         }
-        std::fprintf(stderr, "PROOF auto_root root=%s ctl=0 ts=0 bytes=0 quiesced=true error=OK\n",
+        std::fprintf(stderr, "PROOF xdg_root root=%s status=0 list=0 ts=0 bytes=0 quiesced=true error=OK\n",
                      root3.c_str());
     }
     return 0;
