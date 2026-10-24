@@ -198,6 +198,11 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     const char* product_version) noexcept
 {
     namespace identity = dtv::userland::identity;
+#if !defined(_WIN32)
+    if ((runtime_directory == nullptr || runtime_directory[0] == '\0') &&
+        config.access == host_runtime::EndpointAccess::shared_group)
+        return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+#endif
     std::unique_ptr<SianoFamily> family(new (std::nothrow) SianoFamily(config));
     if (!family) return Result<SianoAssembly>::failure(Error::INTERNAL);
 

@@ -250,6 +250,16 @@ int main()
     const auto epoch = epoch_source.generate();
     assert(epoch);
 
+    SianoRuntimeConfig group_config = config;
+    group_config.access =
+        dtv::userland::host_runtime::EndpointAccess::shared_group;
+    const auto group_without_root = assemble_siano_context(
+        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION);
+    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT) {
+        std::fprintf(stderr, "PROOF groupRoot omitted root was not rejected\n");
+        return 1;
+    }
+
     auto assembly = assemble_siano_context(config, instance, runtime_dir.c_str(),
                                            epoch.value(), SIANO_RUNTIME_VERSION);
     if (!assembly) {
