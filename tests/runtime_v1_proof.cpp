@@ -5,6 +5,7 @@
 // is replaced by the loopback fixture.
 #include "siano-enclosure.h"
 
+#include "px4/posix_ipc.h"
 #include "px4/posix_tuner_nonce.h"
 
 extern "C" {
@@ -151,12 +152,13 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-int run_status(const std::string& runtime_dir, const std::string& instance,
-               std::string& output, bool explicit_runtime_dir = true)
+int run_control(const std::string& runtime_dir, const std::string& instance,
+                std::string& output, const char* command,
+                bool explicit_runtime_dir = true)
 {
-    std::fprintf(stderr, "PROOF status_argv=%s --instance %s%s status\n",
+    std::fprintf(stderr, "PROOF control_argv=%s --instance %s%s %s\n",
                  SIANOCTL_PATH, instance.c_str(),
-                 explicit_runtime_dir ? " --runtime-dir <explicit>" : "");
+                 explicit_runtime_dir ? " --runtime-dir <explicit>" : "", command);
     int output_pipe[2];
     if (pipe(output_pipe) != 0) return -1;
     const pid_t pid = fork();
@@ -165,9 +167,9 @@ int run_status(const std::string& runtime_dir, const std::string& instance,
         if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
         close(output_pipe[1]);
         const char* argv_with_runtime[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
-                              "--runtime-dir", runtime_dir.c_str(), "status", nullptr};
+                              "--runtime-dir", runtime_dir.c_str(), command, nullptr};
         const char* argv_default[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
-                              "status", nullptr};
+                              command, nullptr};
         execv(SIANOCTL_PATH, const_cast<char* const*>(explicit_runtime_dir
                     ? argv_with_runtime : argv_default));
         _exit(127);
@@ -286,7 +288,7 @@ int main()
 
     std::string idle_status;
     const unsigned idle_controls = test_libusb_control_requests();
-    if (run_status(runtime_dir, instance, idle_status) != 0 ||
+    if (run_control(runtime_dir, instance, idle_status, "status") != 0 ||
         !check_status(idle_status, instance, epoch.value(), "free") ||
         test_libusb_control_requests() != idle_controls) {
         std::fprintf(stderr, "PROOF idle status failed: %s", idle_status.c_str());
@@ -308,7 +310,7 @@ int main()
         }
         std::string streaming_status;
         const unsigned controls_before_status = test_libusb_control_requests();
-        if (run_status(runtime_dir, instance, streaming_status) != 0 ||
+        if (run_control(runtime_dir, instance, streaming_status, "status") != 0 ||
             !check_status(streaming_status, instance, epoch.value(), "streaming") ||
             test_libusb_control_requests() != controls_before_status) {
             std::fprintf(stderr, "PROOF streaming status failed controls=%u/%u: %s",
@@ -432,8 +434,17 @@ int main()
             std::fprintf(stderr, "PROOF autoRoot setenv failed\n");
             return 1;
         }
-        const std::string root3 = std::string("/tmp/dtv-userland-") +
-            std::to_string(static_cast<unsigned long long>(geteuid()));
+        const auto selected_root = posix::select_publish_runtime_root(
+            "siano-userland", inst3.c_str());
+        if (!selected_root) {
+            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
+            if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
+            else (void)unsetenv("TMPDIR");
+            std::fprintf(stderr, "PROOF autoRoot select_error=%s\n",
+                         error_string(selected_root.error()));
+            return 1;
+        }
+        const std::string root3(selected_root.value());
         auto a3 = assemble_siano_context(config, inst3, root3.c_str(), epoch.value(),
                                          SIANO_RUNTIME_VERSION);
         if (!a3) {
@@ -454,7 +465,9 @@ int main()
             }
         });
         std::string status3_json;
-        const int ctl_status3 = run_status(root3, inst3, status3_json, false);
+        const int ctl_status3 = run_control(root3, inst3, status3_json, "status", false);
+        std::string list3_text;
+        const int ctl_list3 = run_control(root3, inst3, list3_text, "list", false);
         const std::string out3 = dir3 + "/empty.ts";
         const int status3 = run_client(root3, inst3, out3, "time", "1", false);
         if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
@@ -465,17 +478,20 @@ int main()
         const auto bytes3 = read_file(out3);
         const auto closed3 = owned3.close(Timeout{15000U});
         if (ctl_status3 != 0 || status3_json.find("\"state\":\"ready\"") ==
-                std::string::npos || status3 != 0 || !bytes3.empty() || !closed3 ||
+                std::string::npos || ctl_list3 != 0 ||
+            list3_text.find("ready=1 usb-functions=1 receivers=1 readers=0") ==
+                std::string::npos ||
+            status3 != 0 || !bytes3.empty() || !closed3 ||
             closed3.value() !=
                 dtv::userland::host_listener_context::CloseState::quiesced) {
             std::fprintf(stderr,
-                         "PROOF autoRoot ctl=%d ts=%d bytes=%zu quiesced=%d error=%s\n",
-                         ctl_status3, status3, bytes3.size(), closed3 && closed3.value() ==
+                         "PROOF autoRoot status=%d list=%d text=%s ts=%d bytes=%zu quiesced=%d error=%s\n",
+                         ctl_status3, ctl_list3, list3_text.c_str(), status3, bytes3.size(), closed3 && closed3.value() ==
                              dtv::userland::host_listener_context::CloseState::quiesced,
                          error_string(closed3 ? Error::OK : closed3.error()));
             return 1;
         }
-        std::fprintf(stderr, "PROOF auto_root root=%s ctl=0 ts=0 bytes=0 quiesced=true error=OK\n",
+        std::fprintf(stderr, "PROOF auto_root root=%s status=0 list=0 ts=0 bytes=0 quiesced=true error=OK\n",
                      root3.c_str());
     }
     return 0;

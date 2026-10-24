@@ -8,21 +8,17 @@ extern "C" {
 #ifdef _WIN32
 #include "px4/windows_tuner_nonce.h"
 #else
+#include "px4/posix_ipc.h"
 #include "px4/posix_tuner_nonce.h"
 #endif
 
 #include <array>
-#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <optional>
 #include <utility>
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 namespace siano::runtime {
 namespace {
@@ -34,28 +30,6 @@ namespace host_runtime = dtv::userland::host_runtime;
 namespace host_context = dtv::userland::host_listener_context;
 constexpr std::uint64_t kStreamArmBudgetMs = 5000U;
 
-#if !defined(_WIN32)
-Result<std::string> select_runtime_root() noexcept
-{
-    const char* base = std::getenv("XDG_RUNTIME_DIR");
-    if (base == nullptr || base[0] == '\0') base = std::getenv("TMPDIR");
-    if (base == nullptr || base[0] == '\0') base = "/tmp";
-    std::string path(base);
-    if (path.empty() || path.front() != '/')
-        return Result<std::string>::failure(Error::INVALID_ARGUMENT);
-    while (path.size() > 1U && path.back() == '/') path.pop_back();
-    path += "/dtv-userland-";
-    path += std::to_string(static_cast<unsigned long long>(::geteuid()));
-    if (::mkdir(path.c_str(), 0700) != 0 && errno != EEXIST)
-        return Result<std::string>::failure(Error::UNSUPPORTED);
-    struct stat info{};
-    if (::lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode) ||
-        S_ISLNK(info.st_mode) || info.st_uid != ::geteuid() ||
-        (info.st_mode & 0077) != 0)
-        return Result<std::string>::failure(Error::UNSUPPORTED);
-    return Result<std::string>::success(std::move(path));
-}
-#endif
 #ifdef _WIN32
 using PlatformTunerNonceSource = px4::userland::ipc::windows::WindowsTunerNonceSource;
 #else
@@ -322,7 +296,9 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
         if (selected_root == nullptr || selected_root[0] == '\0')
             selected_root = std::getenv("TEMP");
 #else
-        const auto selected = select_runtime_root();
+        const auto selected =
+            px4::userland::ipc::posix::select_publish_runtime_root(
+                "siano-userland", assembly.instance.c_str());
         if (!selected) return Result<SianoAssembly>::failure(selected.error());
         automatic_root = selected.value();
         selected_root = automatic_root.c_str();
