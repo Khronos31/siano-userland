@@ -2,6 +2,7 @@
 // Siano public runtime daemon.  It assembles the canonical P runtime subset
 // over the accepted S adapter/Consumer with the same function the proof uses.
 #include "siano-enclosure.h"
+#include "siano-discovery.h"
 
 #ifdef _WIN32
 #include "px4/windows_tuner_nonce.h"
@@ -41,6 +42,8 @@ extern "C" {
 namespace {
 
 namespace identity = dtv::userland::identity;
+namespace host_runtime = dtv::userland::host_runtime;
+namespace host_context = dtv::userland::host_listener_context;
 using namespace px4::userland;
 
 void usage() noexcept
@@ -76,26 +79,11 @@ constexpr std::array<SupportedId, 3U> kSupportedRioIds{{
 
 int write_models()
 {
-    namespace w = dtv::userland::wire;
-    // Static supported RIO models, not attached USB devices.
-    const auto& known = kSupportedRioIds;
-    std::array<w::SupportedModel, kSupportedRioIds.size()> entries{};
-    for (std::size_t i = 0U; i < entries.size(); ++i) {
-        const std::size_t size = std::strlen(known[i].name);
-        if (size == 0U || size > entries[i].name.bytes.size()) return 70;
-        entries[i].name.length = static_cast<std::uint16_t>(size);
-        std::memcpy(entries[i].name.bytes.data(), known[i].name, size);
-        entries[i].usb_ids.count = 1U;
-        entries[i].usb_ids.items[0] = {known[i].vid, known[i].pid};
+    for (const auto& model : kSupportedRioIds) {
+        if (std::fprintf(stdout, "%s %04x:%04x\n", model.name,
+                         model.vid, model.pid) < 0) return 70;
     }
-    const w::SupportedModels models{{entries.data(), entries.size()}};
-    const auto size = w::models_text_size(models);
-    if (!size) return 70;
-    std::vector<std::uint8_t> output(size.value());
-    const auto encoded = w::encode_models_text(models, {output.data(), output.size()});
-    if (!encoded || encoded.value() != output.size() ||
-        std::fwrite(output.data(), 1U, output.size(), stdout) != output.size() ||
-        std::fflush(stdout) != 0) return 70;
+    if (std::fflush(stdout) != 0) return 70;
     return 0;
 }
 
@@ -126,8 +114,10 @@ int write_discovery_json()
         libusb_exit(context);
         return 7;
     }
-    std::vector<w::DiscoveryFunction> functions;
+    std::vector<w::DiscoveryDevice> discovered_devices;
+    std::vector<w::DiscoveryReceiver> receivers;
     std::vector<w::DiscoveryEnclosure> enclosures;
+    std::vector<w::DiscoveryUsbObservation> ungrouped;
     for (ssize_t i = 0; i < count; ++i) {
         libusb_device* device = devices[i];
         libusb_device_descriptor descriptor{};
@@ -140,26 +130,15 @@ int write_discovery_json()
             }
         }
         if (profile == nullptr) continue;
-        if (functions.size() >= std::numeric_limits<std::uint16_t>::max()) {
+        if (discovered_devices.size() >= std::numeric_limits<std::uint16_t>::max()) {
             libusb_free_device_list(devices, 1);
             libusb_exit(context);
             return 70;
         }
-        w::DiscoveryFunction f{};
-        auto& observed = f.observation;
-        observed.id = static_cast<std::uint16_t>(functions.size());
+        w::DiscoveryDevice observed{};
+        observed.device = static_cast<std::uint16_t>(discovered_devices.size());
         observed.vid = descriptor.idVendor;
         observed.pid = descriptor.idProduct;
-        observed.mode = w::Mode::runtime;
-        observed.present = true;
-        observed.serial_state = w::SerialState::not_queried;
-        observed.model.present = true;
-        if (!copy(observed.model.value.id, profile->name) ||
-            !copy(observed.model.value.name, profile->name)) {
-            libusb_free_device_list(devices, 1);
-            libusb_exit(context);
-            return 70;
-        }
         observed.location.bus = {true, libusb_get_bus_number(device)};
         observed.location.address = {true, libusb_get_device_address(device)};
         std::uint8_t ports[8]{};
@@ -173,71 +152,60 @@ int write_discovery_json()
             }
             const std::string selector = "usb:" + path;
             if (identity::parse_device_selector(selector) &&
-                path.size() <= observed.location.usb_path.value.bytes.size() &&
-                selector.size() <= f.selector_candidates.items[0].value.bytes.size()) {
-                auto& usb_path = observed.location.usb_path;
-                usb_path.present = true;
-                usb_path.value.length = static_cast<std::uint16_t>(path.size());
-                std::memcpy(usb_path.value.bytes.data(), path.data(), path.size());
-                auto& candidate = f.selector_candidates.items[0];
-                candidate.value.length = static_cast<std::uint16_t>(selector.size());
-                std::memcpy(candidate.value.bytes.data(), selector.data(), selector.size());
-                candidate.state = w::DiscoveryCandidateState::usable;
-                f.selector_candidates.count = 1U;
+                path.size() <= observed.location.port.value.bytes.size()) {
+                observed.location.port.present = true;
+                if (!copy(observed.location.port.value, path.c_str())) {
+                    libusb_free_device_list(devices, 1);
+                    libusb_exit(context);
+                    return 70;
+                }
                 has_path = true;
             }
         }
-        if (has_path) {
-            f.grouping = w::DiscoveryGroupingState::bound;
-            f.enclosure_id = {true, static_cast<std::uint16_t>(enclosures.size())};
-        } else {
-            f.grouping = w::DiscoveryGroupingState::unresolved;
-            const char* reason = "usb_path_unavailable";
-            f.grouping_reason.present = copy(f.grouping_reason.value, reason);
+        if (!has_path) {
+            w::DiscoveryUsbObservation observation{};
+            observation.model.present = copy(observation.model.value, profile->name);
+            observation.vid = descriptor.idVendor;
+            observation.pid = descriptor.idProduct;
+            observation.status = w::DiscoveryObservationStatus::unknown;
+            observation.location = observed.location;
+            ungrouped.push_back(observation);
+            continue;
         }
-        functions.push_back(std::move(f));
-        if (!has_path) continue;
+        const auto device_id = observed.device;
+        discovered_devices.push_back(observed);
+        w::DiscoveryReceiver receiver{};
+        receiver.receiver = static_cast<std::uint16_t>(receivers.size());
+        receiver.device = device_id;
+        receiver.local = 0U;
+        receiver.systems.mask = 1U;
+        receivers.push_back(receiver);
         w::DiscoveryEnclosure enclosure{};
-        enclosure.descriptor.id = static_cast<std::uint16_t>(enclosures.size());
-        enclosure.descriptor.model.present = true;
-        if (!copy(enclosure.descriptor.model.value.id, profile->name) ||
-            !copy(enclosure.descriptor.model.value.name, profile->name)) {
+        if (!make_siano_discovery_enclosure(enclosure,
+                static_cast<std::uint16_t>(enclosures.size()), profile->name)) {
             libusb_free_device_list(devices, 1);
             libusb_exit(context);
             return 70;
         }
-        enclosure.descriptor.identity.serial_state = w::IdentitySerialState::unknown;
-        enclosure.descriptor.identity.uniqueness = w::Uniqueness::unknown;
-        enclosure.descriptor.limits.max_concurrent_streams = {true, 1U};
-        enclosure.topology.state = w::TopologyState::complete;
-        enclosure.topology.expected_function_count = {true, 1U};
-        enclosure.usb_function_ids.count = 1U;
-        enclosure.usb_function_ids.items[0] = functions.back().observation.id;
-        enclosure.selector_candidates.count = 1U;
-        enclosure.selector_candidates.items[0] =
-            functions.back().selector_candidates.items[0];
-        enclosure.receivers.present = true;
-        enclosure.receivers.value.count = 1U;
-        auto& receiver = enclosure.receivers.value.items[0];
-        receiver.id = 0U;
-        receiver.systems.mask = 1U;
-        receiver.binding.present = true;
-        receiver.binding.value = {functions.back().observation.id, 0U};
-        enclosure.readers.present = true;
-        // Siano has no standard B-CAS reader exposed through its TS runtime.
         enclosures.push_back(std::move(enclosure));
     }
     libusb_free_device_list(devices, 1);
     libusb_exit(context);
 
-    w::DiscoveryResponse document{};
-    if (!copy(document.producer.product, "siano-userland") ||
-        !copy(document.producer.version, SIANO_RUNTIME_VERSION)) return 70;
-    std::random_device entropy;
-    for (auto& byte : document.scan_id)
-        byte = static_cast<std::uint8_t>(entropy());
-    document.usb_functions = {functions.data(), functions.size()};
-    document.enclosures = {enclosures.data(), enclosures.size()};
+    for (std::size_t i = 0U; i < enclosures.size(); ++i) {
+        enclosures[i].devices = &discovered_devices[i];
+        discovered_devices[i].receivers_known = true;
+        discovered_devices[i].receiver_count = 1U;
+        discovered_devices[i].receivers = &receivers[i];
+    }
+    w::DiscoveryScan document{};
+    document.complete = true;
+    if (!copy(document.product, "siano-userland") ||
+        !copy(document.version, SIANO_RUNTIME_VERSION)) return 70;
+    document.enclosure_count = enclosures.size();
+    document.enclosures = enclosures.data();
+    document.ungrouped_usb_device_count = ungrouped.size();
+    document.ungrouped_usb_devices = ungrouped.data();
     const auto size = w::discovery_json_size(document);
     if (!size) return 70;
     std::vector<std::uint8_t> bytes(size.value());
@@ -463,8 +431,8 @@ int main(int argc, char** argv)
     }
     config.firmware = firmware;
     config.own_usb = true;
-    config.access = group ? ipc::posix::EndpointAccess::shared_group
-                          : ipc::posix::EndpointAccess::private_user;
+    config.access = group ? host_runtime::EndpointAccess::shared_group
+                          : host_runtime::EndpointAccess::private_user;
 
 #ifdef _WIN32
     ipc::windows::WindowsTunerNonceSource epoch_source;
@@ -484,30 +452,28 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "sianod: %s\n", error_string(assembly.error()));
         return exit_status(assembly.error());
     }
-    ipc::posix::EnclosureContext& owned = *assembly.value().context;
+    host_context::EnclosureContext& owned = *assembly.value().context;
 
     if (!px4::userland::px4d::install_signal_handlers()) {
         std::fprintf(stderr, "signal setup failed\n");
         return 70;
     }
-#if defined(_WIN32)
-    std::fprintf(stderr, "sianod ready: endpoint=%ls\n", owned.endpoint_path());
-#else
-    std::fprintf(stderr, "sianod ready: endpoint=%s\n", owned.endpoint_path());
-#endif
+    std::fprintf(stderr, "sianod ready: endpoint=%s\n",
+                 assembly.value().endpoint_path.c_str());
 
     Error loop_error = Error::OK;
     while (!px4::userland::px4d::stop_requested()) {
         const auto polled = owned.poll_once(Timeout{100U});
         if (!polled) { loop_error = polled.error(); break; }
     }
-    const ipc::posix::ContextCloseResult closed = owned.close(kWholeContextCloseBudget);
-    if (!closed.quiesced) {
+    const auto closed = owned.close(Timeout{
+        static_cast<std::uint32_t>(kWholeContextCloseBudget.count())});
+    if (closed && closed.value() == host_context::CloseState::pending) {
         px4::userland::px4d::exit_after_close_deadline(kCloseDeadlineExitStatus);
     }
-    if (closed.error != Error::OK) {
-        std::fprintf(stderr, "shutdown cleanup: %s\n", error_string(closed.error));
-        if (loop_error == Error::OK) loop_error = closed.error;
+    if (!closed) {
+        std::fprintf(stderr, "shutdown cleanup: %s\n", error_string(closed.error()));
+        if (loop_error == Error::OK) loop_error = closed.error();
     }
     if (loop_error != Error::OK) {
         std::fprintf(stderr, "sianod stopped: %s\n", error_string(loop_error));

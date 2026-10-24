@@ -66,10 +66,26 @@ endif()
 set(DTV_USERLAND_BUILD_CAPTURE ON CACHE BOOL "Build packet capture storage" FORCE)
 set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
+set(DTV_USERLAND_BUILD_STATUS_PROJECTION ON CACHE BOOL
+    "Build the optional status projection" FORCE)
+set(DTV_USERLAND_BUILD_AUTHORITY ON CACHE BOOL
+    "Build the optional control authority" FORCE)
+set(DTV_USERLAND_BUILD_CONTROL ON CACHE BOOL
+    "Build the optional control protocol" FORCE)
 set(DTV_USERLAND_BUILD_HOST_CTL ON CACHE BOOL
     "Build the optional GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_HOST_RUNTIME ON CACHE BOOL
     "Build the optional GPL host runtime adapter" FORCE)
+set(DTV_USERLAND_BUILD_HOST_TUNER ON CACHE BOOL
+    "Build the optional GPL host tuner adapter" FORCE)
+set(DTV_USERLAND_BUILD_HOST_WORKERS ON CACHE BOOL
+    "Build the optional GPL host control workers" FORCE)
+set(DTV_USERLAND_BUILD_HOST_AUTHORITY_OWNER ON CACHE BOOL
+    "Build the optional GPL host authority owner" FORCE)
+set(DTV_USERLAND_BUILD_HOST_AUTHORITY_BRIDGE ON CACHE BOOL
+    "Build the optional GPL host authority bridge" FORCE)
+set(DTV_USERLAND_BUILD_HOST_LISTENER_CONTEXT ON CACHE BOOL
+    "Build the optional GPL host listener Context" FORCE)
 set(DTV_USERLAND_BUILD_HOST_TS ON CACHE BOOL
     "Build the optional GPL host TS consumer" FORCE)
 set(DTV_USERLAND_BUILD_HOST_FACADE ON CACHE BOOL
@@ -81,7 +97,7 @@ set(DTV_USERLAND_HOST_RUNTIME_PRODUCT "siano-userland" CACHE STRING
 set(DTV_USERLAND_HOST_RUNTIME_INSTANCE_POLICY "lowercase" CACHE STRING
     "Siano runtime instance normalization" FORCE)
 set(_SIANO_HOST_FACADE_INCLUDE_DIRS
-    "${DTV_CORE_SOURCE}/adapters/host_daemon/include;${DTV_CORE_SOURCE}/adapters/host_facade/include;${DTV_CORE_SOURCE}/adapters/host_runtime/include;${DTV_CORE_SOURCE}/adapters/host_ts/include;${SIANO_PX4_ROOT}/include")
+    "${DTV_CORE_SOURCE}/adapters/host_daemon/include;${DTV_CORE_SOURCE}/adapters/host_facade/include;${DTV_CORE_SOURCE}/adapters/host_runtime/include;${DTV_CORE_SOURCE}/adapters/host_listener_context/include;${DTV_CORE_SOURCE}/adapters/host_ts/include;${SIANO_PX4_ROOT}/include")
 set(DTV_USERLAND_HOST_RUNTIME_FACADE_INCLUDE_DIRS
     "${_SIANO_HOST_FACADE_INCLUDE_DIRS}" CACHE STRING
     "Private host facade include directories for the GPL host runtime" FORCE)
@@ -138,7 +154,8 @@ target_include_directories(siano_px4_runtime INTERFACE
 target_link_libraries(siano_px4_runtime INTERFACE
     dtv::core dtv::wire dtv::control dtv::identity dtv::tuning
     dtv::receiver dtv::capture dtv::card dtv::host_facade dtv::host_runtime
-    dtv::host_ts dtv::host_daemon)
+    dtv::host_tuner dtv::host_workers dtv::host_authority_owner
+    dtv::host_authority_bridge dtv::host_listener_context dtv::host_ts)
 target_compile_features(siano_px4_runtime INTERFACE cxx_std_17)
 
 # --- S C backend + composition (GPL-2.0-or-later) ---
@@ -203,7 +220,9 @@ target_compile_features(siano_runtime PUBLIC cxx_std_17)
 siano_include_project_root(siano_runtime)
 target_link_libraries(siano_runtime PUBLIC
     siano_px4_runtime siano_capture_composition
-    dtv::control dtv::identity dtv::tuning dtv::host_daemon)
+    dtv::control dtv::identity dtv::tuning dtv::host_tuner
+    dtv::host_workers dtv::host_authority_owner dtv::host_authority_bridge
+    dtv::host_listener_context)
 
 # --- public artifacts ---
 add_executable(sianod sianod.cpp)

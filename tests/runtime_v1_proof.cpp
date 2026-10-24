@@ -5,7 +5,6 @@
 // is replaced by the loopback fixture.
 #include "siano-enclosure.h"
 
-#include "px4/posix_ipc_contract.h"
 #include "px4/posix_tuner_nonce.h"
 
 extern "C" {
@@ -153,10 +152,11 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
 }
 
 int run_status(const std::string& runtime_dir, const std::string& instance,
-               std::string& output)
+               std::string& output, bool explicit_runtime_dir = true)
 {
-    std::fprintf(stderr, "PROOF status_argv=%s --instance %s --runtime-dir %s status\n",
-                 SIANOCTL_PATH, instance.c_str(), runtime_dir.c_str());
+    std::fprintf(stderr, "PROOF status_argv=%s --instance %s%s status\n",
+                 SIANOCTL_PATH, instance.c_str(),
+                 explicit_runtime_dir ? " --runtime-dir <explicit>" : "");
     int output_pipe[2];
     if (pipe(output_pipe) != 0) return -1;
     const pid_t pid = fork();
@@ -164,9 +164,12 @@ int run_status(const std::string& runtime_dir, const std::string& instance,
         close(output_pipe[0]);
         if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
         close(output_pipe[1]);
-        const char* argv[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
+        const char* argv_with_runtime[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
                               "--runtime-dir", runtime_dir.c_str(), "status", nullptr};
-        execv(SIANOCTL_PATH, const_cast<char* const*>(argv));
+        const char* argv_default[] = {SIANOCTL_PATH, "--instance", instance.c_str(),
+                              "status", nullptr};
+        execv(SIANOCTL_PATH, const_cast<char* const*>(explicit_runtime_dir
+                    ? argv_with_runtime : argv_default));
         _exit(127);
     }
     close(output_pipe[1]);
@@ -196,7 +199,7 @@ bool check_status(std::string_view json, const std::string& instance,
            json.find("\"version\":\"0.0.0-dev\"") != std::string_view::npos &&
            json.find("\"epoch\":\"" + expected_epoch + "\"") != std::string_view::npos &&
            json.find("\"instance\":\"" + instance + "\"") != std::string_view::npos &&
-           json.find("\"descriptor\":{\"id\":\"0\"") != std::string_view::npos &&
+           json.find("\"descriptor\":{\"receiver\":0") != std::string_view::npos &&
            json.find("\"systems\":[\"ISDB-T\"]") != std::string_view::npos &&
            json.find(std::string("\"state\":\"") + receiver_state + "\"") !=
                std::string_view::npos &&
@@ -251,22 +254,23 @@ int main()
         std::fprintf(stderr, "assemble_error=%s\n", error_string(assembly.error()));
         return 1;
     }
-    posix::EnclosureContext& owned = *assembly.value().context;
+    dtv::userland::host_listener_context::EnclosureContext& owned =
+        *assembly.value().context;
     SianoFamily* family = assembly.value().family;
     assert(family != nullptr);
     siano_device& device = family->adapter().device();
 
-    px4::userland::ipc::posix::ControlContext control{};
+    wire::ListResponse control{};
     const auto facts_result = resolve_rio_facts(nullptr, config.selector, config.selector_text);
     assert(facts_result);
-    assert(build_siano_control_context(facts_result.value(), instance, epoch.value(),
-                                       SIANO_RUNTIME_VERSION, owned.tuner_service(), control));
-    assert(control.list.readers.present && control.list.readers.value.count == 0U);
-    assert(control.list.receivers.present && control.list.receivers.value.count == 1U);
-    assert(control.list.receivers.value.items[0].systems.mask == 1U);
+    assert(build_siano_control_context(facts_result.value(), epoch.value(),
+                                       SIANO_RUNTIME_VERSION, control));
+    assert(control.readers.present && control.readers.value.count == 0U);
+    assert(control.receivers.present && control.receivers.value.count == 1U);
+    assert(control.receivers.value.items[0].systems.mask == 1U);
     std::fprintf(stderr, "PROOF list readers=%u receivers=%u\n",
-                 static_cast<unsigned>(control.list.readers.value.count),
-                 static_cast<unsigned>(control.list.receivers.value.count));
+                 static_cast<unsigned>(control.readers.value.count),
+                 static_cast<unsigned>(control.receivers.value.count));
 
     std::atomic<bool> serving{true};
     std::thread server([&]() {
@@ -359,10 +363,13 @@ int main()
     std::fprintf(stderr, "PROOF ts_bytes=%zu hz=%u tune_requests=%u\n",
                  actual.size(), test_libusb_last_tune_hz(), test_libusb_tune_requests());
 
-    const posix::ContextCloseResult closed = owned.close(std::chrono::milliseconds(15000));
-    if (!closed.quiesced || closed.error != Error::OK) {
+    const auto closed = owned.close(Timeout{15000U});
+    if (!closed || closed.value() !=
+            dtv::userland::host_listener_context::CloseState::quiesced) {
         std::fprintf(stderr, "PROOF close quiesced=%d error=%s\n",
-                     closed.quiesced ? 1 : 0, error_string(closed.error));
+                     closed && closed.value() ==
+                         dtv::userland::host_listener_context::CloseState::quiesced,
+                     error_string(closed ? Error::OK : closed.error()));
         return 1;
     }
     std::fprintf(stderr, "PROOF closed quiesced=true error=OK\n");
@@ -379,7 +386,8 @@ int main()
                          error_string(a2.error()));
             return 1;
         }
-        posix::EnclosureContext& owned2 = *a2.value().context;
+        dtv::userland::host_listener_context::EnclosureContext& owned2 =
+            *a2.value().context;
         std::atomic<bool> serving2{true};
         std::thread server2([&]() {
             while (serving2.load()) {
@@ -392,12 +400,15 @@ int main()
         serving2.store(false);
         server2.join();
         const auto bytes2 = read_file(out2);
-        const posix::ContextCloseResult closed2 =
-            owned2.close(std::chrono::milliseconds(15000));
-        if (status2 != 0 || !bytes2.empty() || !closed2.quiesced || closed2.error != Error::OK) {
+        const auto closed2 = owned2.close(Timeout{15000U});
+        if (status2 != 0 || !bytes2.empty() || !closed2 ||
+            closed2.value() !=
+                dtv::userland::host_listener_context::CloseState::quiesced) {
             std::fprintf(stderr,
                          "PROOF noTs status=%d bytes=%zu quiesced=%d error=%s\n", status2,
-                         bytes2.size(), closed2.quiesced ? 1 : 0, error_string(closed2.error));
+                         bytes2.size(), closed2 && closed2.value() ==
+                             dtv::userland::host_listener_context::CloseState::quiesced,
+                         error_string(closed2 ? Error::OK : closed2.error()));
             return 1;
         }
         std::fprintf(stderr, "PROOF no_ts status=0 bytes=0 quiesced=true error=OK\n");
@@ -416,21 +427,13 @@ int main()
         const bool had_xdg = previous_xdg != nullptr;
         const bool had_tmp = previous_tmp != nullptr;
         (void)unsetenv("XDG_RUNTIME_DIR");
-        if (setenv("TMPDIR", dir3.c_str(), 1) != 0) {
+        if (setenv("TMPDIR", "/tmp", 1) != 0) {
             if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
             std::fprintf(stderr, "PROOF autoRoot setenv failed\n");
             return 1;
         }
-        const auto selected_root = posix::select_publish_runtime_root();
-        if (!selected_root) {
-            if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
-            if (had_tmp) (void)setenv("TMPDIR", saved_tmp.c_str(), 1);
-            else (void)unsetenv("TMPDIR");
-            std::fprintf(stderr, "PROOF autoRoot root_error=%s\n",
-                         error_string(selected_root.error()));
-            return 1;
-        }
-        const std::string root3(selected_root.value().data());
+        const std::string root3 = std::string("/tmp/dtv-userland-") +
+            std::to_string(static_cast<unsigned long long>(geteuid()));
         auto a3 = assemble_siano_context(config, inst3, root3.c_str(), epoch.value(),
                                          SIANO_RUNTIME_VERSION);
         if (!a3) {
@@ -441,7 +444,8 @@ int main()
                          error_string(a3.error()));
             return 1;
         }
-        posix::EnclosureContext& owned3 = *a3.value().context;
+        dtv::userland::host_listener_context::EnclosureContext& owned3 =
+            *a3.value().context;
         std::atomic<bool> serving3{true};
         std::thread server3([&]() {
             while (serving3.load()) {
@@ -449,6 +453,8 @@ int main()
                 if (!polled) break;
             }
         });
+        std::string status3_json;
+        const int ctl_status3 = run_status(root3, inst3, status3_json, false);
         const std::string out3 = dir3 + "/empty.ts";
         const int status3 = run_client(root3, inst3, out3, "time", "1", false);
         if (had_xdg) (void)setenv("XDG_RUNTIME_DIR", saved_xdg.c_str(), 1);
@@ -457,17 +463,19 @@ int main()
         serving3.store(false);
         server3.join();
         const auto bytes3 = read_file(out3);
-        const posix::ContextCloseResult closed3 =
-            owned3.close(std::chrono::milliseconds(15000));
-        if (status3 != 0 || !bytes3.empty() || !closed3.quiesced ||
-            closed3.error != Error::OK) {
+        const auto closed3 = owned3.close(Timeout{15000U});
+        if (ctl_status3 != 0 || status3_json.find("\"state\":\"ready\"") ==
+                std::string::npos || status3 != 0 || !bytes3.empty() || !closed3 ||
+            closed3.value() !=
+                dtv::userland::host_listener_context::CloseState::quiesced) {
             std::fprintf(stderr,
-                         "PROOF autoRoot status=%d bytes=%zu quiesced=%d error=%s\n",
-                         status3, bytes3.size(), closed3.quiesced ? 1 : 0,
-                         error_string(closed3.error));
+                         "PROOF autoRoot ctl=%d ts=%d bytes=%zu quiesced=%d error=%s\n",
+                         ctl_status3, status3, bytes3.size(), closed3 && closed3.value() ==
+                             dtv::userland::host_listener_context::CloseState::quiesced,
+                         error_string(closed3 ? Error::OK : closed3.error()));
             return 1;
         }
-        std::fprintf(stderr, "PROOF auto_root root=%s status=0 bytes=0 quiesced=true error=OK\n",
+        std::fprintf(stderr, "PROOF auto_root root=%s ctl=0 ts=0 bytes=0 quiesced=true error=OK\n",
                      root3.c_str());
     }
     return 0;

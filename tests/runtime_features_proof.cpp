@@ -45,12 +45,13 @@ int main()
     facts.product_id = 0x0080U;
     facts.has_bus = facts.has_address = true;
     facts.bus = facts.address = 1U;
-    px4::userland::ipc::posix::ControlContext control{};
-    if (!build_siano_control_context(facts, "features", epoch.value(),
-            "0.0.0-dev", assembly.context->tuner_service(), control)) return 1;
-    if (control.list.functions.items[0].location.usb_path.present) return 1;
-    const auto closed = assembly.context->close(std::chrono::milliseconds(15000));
-    if (!closed.quiesced || closed.error != dtv::userland::Error::OK) return 1;
+    dtv::userland::wire::ListResponse control{};
+    if (!build_siano_control_context(facts, epoch.value(),
+            "0.0.0-dev", control)) return 1;
+    if (control.functions.items[0].location.usb_path.present) return 1;
+    const auto closed = assembly.context->close(dtv::userland::Timeout{15000U});
+    if (!closed || closed.value() !=
+            dtv::userland::host_listener_context::CloseState::quiesced) return 1;
     // Context close removes sockets; remove the remaining private directories.
     const std::string leaf = std::string(directory) + "/siano-userland/v1/features";
     rmdir(leaf.c_str());

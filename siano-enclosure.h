@@ -4,6 +4,7 @@
 
 #include "siano-runtime-backend.h"
 
+#include <dtv/userland/host_listener_context/enclosure_context.h>
 #include <dtv/userland/identity.h>
 #include <dtv/userland/records.h>
 
@@ -40,18 +41,18 @@ px4::userland::Result<dtv::userland::identity::ResolvedIdentity> siano_identity(
 // enclosure: product "siano-userland", topology complete, one function, one
 // terrestrial receiver 0 and an empty reader set (no external CARD).
 dtv::userland::Result<void> build_siano_control_context(
-    const SianoFacts& facts, const std::string& instance,
-    const dtv::userland::wire::Epoch& epoch, const char* product_version,
-    const px4::userland::TunerService& tuner,
-    px4::userland::ipc::posix::ControlContext& out) noexcept;
+    const SianoFacts& facts, const dtv::userland::wire::Epoch& epoch,
+    const char* product_version,
+    dtv::userland::wire::ListResponse& out) noexcept;
 
 struct SianoAssembly final {
-    std::unique_ptr<px4::userland::ipc::posix::EnclosureContext> context;
+    std::unique_ptr<dtv::userland::host_listener_context::EnclosureContext> context;
     // Borrowed pointer to the family owned by context; valid until the context
     // has quiesced.  Proofs use it to reach the accepted S device.
     SianoFamily* family = nullptr;
     std::string instance;
     std::string lease_identity;
+    std::string endpoint_path;
 };
 
 // Builds the family, resolves the identity, claims/initializes the native
