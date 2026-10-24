@@ -32,7 +32,7 @@ def test_eof_stops_and_closes(fixture):
         stdout, stderr = process.communicate(timeout=10)
         output = stderr.decode("utf-8", errors="replace")
         assert process.returncode == 0, output
-        assert "sianod fixture cleanup complete\n" in output, output
+        assert "sianod fixture cleanup complete" in output.splitlines(), output
         assert stdout == b""
     finally:
         if process.poll() is None:
