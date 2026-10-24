@@ -16,8 +16,8 @@ def wait_ready(process):
         process.wait(timeout=5)
         reader.join(timeout=5)
         raise TimeoutError("fixture did not report ready within 10 seconds")
-    line = lines[0].decode("utf-8", errors="replace")
-    if line != "sianod fixture ready\n":
+    line = lines[0].decode("utf-8", errors="replace").rstrip("\r\n")
+    if line != "sianod fixture ready":
         raise AssertionError(f"fixture did not become ready: {line!r}")
 
 
