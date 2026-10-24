@@ -13,13 +13,13 @@ RUNTIME_BUILD_DIR = build\runtime
 all: runtime
 
 runtime:
-	for /f %V in (VERSION) do cmake -S . -B "$(RUNTIME_BUILD_DIR)" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_TESTING=OFF -DSIANO_RUNTIME_VERSION=%V -DLIBUSB_INCLUDE_DIR="$(MAKEDIR)\$(LIBUSB_DIR)\include\libusb-1.0" -DLIBUSB_LIBRARY="$(MAKEDIR)\$(LIBUSB_DIR)\libusb-1.0.lib" -DDTV_USERLAND_CORE_SOURCE_DIR="$(CORE_SOURCE_DIR)" -DSIANO_PX4_USERLAND_SOURCE_DIR="$(PX4_SOURCE_DIR)" -DCMAKE_C_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_CXX_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_EXE_LINKER_FLAGS="/Brepro"
+	for /f %V in (VERSION) do cmake -S . -B "$(RUNTIME_BUILD_DIR)" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DBUILD_TESTING=ON -DSIANO_RUNTIME_VERSION=%V -DLIBUSB_INCLUDE_DIR="$(MAKEDIR)\$(LIBUSB_DIR)\include\libusb-1.0" -DLIBUSB_LIBRARY="$(MAKEDIR)\$(LIBUSB_DIR)\libusb-1.0.lib" -DDTV_USERLAND_CORE_SOURCE_DIR="$(CORE_SOURCE_DIR)" -DSIANO_PX4_USERLAND_SOURCE_DIR="$(PX4_SOURCE_DIR)" -DCMAKE_C_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_CXX_FLAGS="/Brepro /experimental:deterministic /utf-8 /pathmap:$(MAKEDIR)=." -DCMAKE_EXE_LINKER_FLAGS="/Brepro"
 	cmake --build "$(RUNTIME_BUILD_DIR)" --target sianod sianoctl siano_wire_ts
 	copy /y "$(RUNTIME_BUILD_DIR)\sianod.exe" sianod.exe
 	copy /y "$(RUNTIME_BUILD_DIR)\sianoctl.exe" sianoctl.exe
 	copy /y "$(RUNTIME_BUILD_DIR)\siano-ts.exe" siano-ts.exe
 
-test: test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.exe test-control-input.exe test-usb-location.exe test-detach-decision.exe test-device-selector.exe test-exit-codes.exe test-queue-policy.exe test-write-policy.exe test-output-integration.exe
+test: runtime test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.exe test-control-input.exe test-usb-location.exe test-detach-decision.exe test-device-selector.exe test-exit-codes.exe test-queue-policy.exe test-write-policy.exe test-output-integration.exe
 	.\test-protocol.exe
 	.\test-clock.exe
 	.\test-stream-state.exe
@@ -32,6 +32,8 @@ test: test-protocol.exe test-clock.exe test-stream-state.exe test-control-parse.
 	.\test-queue-policy.exe
 	.\test-write-policy.exe
 	.\test-output-integration.exe
+	cmake --build "$(RUNTIME_BUILD_DIR)" --target sianod_windows_eof_fixture
+	python tests\test_sianod_windows_eof.py "$(RUNTIME_BUILD_DIR)\sianod_windows_eof_fixture.exe" sianod.exe
 
 siano-ts.exe sianod.exe sianoctl.exe: runtime
 

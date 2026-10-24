@@ -230,6 +230,13 @@ target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(sianod PRIVATE siano_runtime dtv::json siano_libusb)
 
+if(WIN32 AND BUILD_TESTING)
+    add_executable(sianod_windows_eof_fixture tests/windows_sianod_eof_fixture.cpp)
+    target_compile_features(sianod_windows_eof_fixture PRIVATE cxx_std_17)
+    target_include_directories(sianod_windows_eof_fixture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(sianod_windows_eof_fixture PRIVATE dtv::host_facade)
+endif()
+
 add_executable(sianoctl sianoctl.cpp)
 target_compile_features(sianoctl PRIVATE cxx_std_17)
 target_compile_definitions(sianoctl PRIVATE

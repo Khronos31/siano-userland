@@ -222,6 +222,7 @@ jobs:
         shell: pwsh
         run: |
           nmake /f Makefile.win test
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed' }
           .\scripts\reproducible-windows-build.ps1
           .\siano-ts.exe --help | Out-Null
           New-Item -ItemType Directory -Force -Path evidence | Out-Null
