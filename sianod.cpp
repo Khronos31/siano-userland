@@ -7,10 +7,12 @@
 #ifdef _WIN32
 #include "px4/windows_tuner_nonce.h"
 #include "px4_windows_args.h"
+#include <dtv/userland/host_facade/windows_stdin.h>
 #else
 #include "px4/posix_tuner_nonce.h"
 #endif
 #include "px4d_signals.h"
+#include "sianod-daemon-lifecycle.h"
 
 #include <dtv/userland/identity.h>
 #include <dtv/userland/json.h>
@@ -52,6 +54,9 @@ void usage() noexcept
         "usage: sianod --device usb:BUS-PORT[.PORT...] [--firmware PATH]\n"
         "              [--runtime-dir DIR] [--instance TOKEN] [--group]\n"
         "              [--fd FD] [-p PID ...]\n"
+#ifdef _WIN32
+        "              [--exit-on-stdin-eof]\n"
+#endif
         "  --device serial:|usb:  adopted selector; usb:BUS-PORT[.PORT...] is\n"
         "                         required unless --fd is used\n"
         "  --fd FD                wrap an already-open USB descriptor (Termux/\n"
@@ -64,6 +69,9 @@ void usage() noexcept
         "  --instance TOKEN       explicit connection instance (default auto;\n"
         "                         required with --fd when no port path exists)\n"
         "  --group                publish group-accessible endpoints\n"
+#ifdef _WIN32
+        "  --exit-on-stdin-eof    stop when the parent closes stdin\n"
+#endif
         "  -h, --help             print this help\n"
         "  -V, --version          print the development version\n"
         "  --models              print static supported models and USB IDs (text)\n"
@@ -342,6 +350,9 @@ int main(int argc, char** argv)
     std::string runtime_directory;
     std::string instance;
     bool group = false;
+#ifdef _WIN32
+    bool exit_on_stdin_eof = false;
+#endif
     int device_fd = -1;
     siano::runtime::SianoRuntimeConfig config;
     for (int i = 1; i < argc; ++i) {
@@ -391,6 +402,14 @@ int main(int argc, char** argv)
             }
         } else if (option == "--group") {
             group = true;
+#ifdef _WIN32
+        } else if (option == "--exit-on-stdin-eof") {
+            if (exit_on_stdin_eof) {
+                std::fprintf(stderr, "argument error: --exit-on-stdin-eof\n");
+                return 2;
+            }
+            exit_on_stdin_eof = true;
+#endif
         } else if (!option.empty() && option.front() != '-' && i == argc - 1) {
             std::uint32_t value = 0U;
             if (device_fd >= 0 || !parse_number(option, value) ||
@@ -462,22 +481,40 @@ int main(int argc, char** argv)
                  assembly.value().endpoint_path.c_str());
 
     Error loop_error = Error::OK;
-    while (!px4::userland::px4d::stop_requested()) {
-        const auto polled = owned.poll_once(Timeout{100U});
-        if (!polled) { loop_error = polled.error(); break; }
-    }
-    const auto closed = owned.close(Timeout{
-        static_cast<std::uint32_t>(kWholeContextCloseBudget.count())});
-    if (closed && closed.value() == host_context::CloseState::pending) {
-        px4::userland::px4d::exit_after_close_deadline(kCloseDeadlineExitStatus);
-    }
-    if (!closed) {
-        std::fprintf(stderr, "shutdown cleanup: %s\n", error_string(closed.error()));
-        if (loop_error == Error::OK) loop_error = closed.error();
-    }
-    if (loop_error != Error::OK) {
-        std::fprintf(stderr, "sianod stopped: %s\n", error_string(loop_error));
-    }
-    px4::userland::px4d::notify_cleanup_complete();
-    return exit_status(loop_error);
+    bool close_pending = false;
+    const int status = px4::userland::run_sianod_daemon_lifecycle(
+#ifdef _WIN32
+        exit_on_stdin_eof,
+#else
+        false,
+#endif
+        [&]() noexcept {
+            if (px4::userland::px4d::stop_requested()) return;
+            const auto polled = owned.poll_once(Timeout{100U});
+            if (!polled) {
+                loop_error = polled.error();
+                px4::userland::px4d::request_stop();
+            }
+        },
+        [&]() noexcept {
+            const auto closed = owned.close(Timeout{
+                static_cast<std::uint32_t>(kWholeContextCloseBudget.count())});
+            if (closed && closed.value() == host_context::CloseState::pending) {
+                close_pending = true;
+            }
+            if (!closed) {
+                std::fprintf(stderr, "shutdown cleanup: %s\n", error_string(closed.error()));
+                if (loop_error == Error::OK) loop_error = closed.error();
+            }
+            if (loop_error != Error::OK) {
+                std::fprintf(stderr, "sianod stopped: %s\n", error_string(loop_error));
+            }
+            return exit_status(loop_error);
+        },
+        [&]() noexcept {
+            if (close_pending) {
+                px4::userland::px4d::exit_after_close_deadline(kCloseDeadlineExitStatus);
+            }
+        });
+    return status;
 }
