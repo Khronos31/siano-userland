@@ -58,8 +58,9 @@ def test_default_is_off(fixture):
 
 def test_product_cli(sianod):
     help_result = subprocess.run([sianod, "--help"], capture_output=True, text=True)
-    assert help_result.returncode == 0, help_result.stderr
-    assert "--exit-on-stdin-eof" in help_result.stdout
+    help_output = help_result.stdout + help_result.stderr
+    assert help_result.returncode == 0, help_output
+    assert "--exit-on-stdin-eof" in help_output
 
     flag_result = subprocess.run(
         [sianod, "--exit-on-stdin-eof"], capture_output=True, text=True)
