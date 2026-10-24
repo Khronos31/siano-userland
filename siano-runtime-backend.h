@@ -3,9 +3,11 @@
 #define SIANO_RUNTIME_BACKEND_H
 
 #include "px4/card_service.h"
-#include "px4/enclosure_context.h"
 #include "px4/tuner_service.h"
 #include "siano-receiver-adapter.h"
+
+#include <dtv/userland/host_runtime/family.h>
+#include <dtv/userland/host_runtime/control_socket.h>
 
 #include <array>
 #include <cstddef>
@@ -148,11 +150,11 @@ struct SianoRuntimeConfig final {
     std::size_t queue_packets = 65536U;
     std::array<std::uint16_t, 64U> pids{};
     std::size_t pid_count = 0U;
-    px4::userland::ipc::posix::EndpointAccess access =
-        px4::userland::ipc::posix::EndpointAccess::private_user;
+    dtv::userland::host_runtime::EndpointAccess access =
+        dtv::userland::host_runtime::EndpointAccess::private_user;
 };
 
-class SianoFamily final : public px4::userland::ipc::posix::EnclosureFamily {
+class SianoFamily final : public dtv::userland::host_runtime::EnclosureFamily {
 public:
     explicit SianoFamily(const SianoRuntimeConfig& config) noexcept;
     ~SianoFamily() noexcept override;

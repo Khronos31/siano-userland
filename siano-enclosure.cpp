@@ -12,11 +12,17 @@ extern "C" {
 #endif
 
 #include <array>
+#include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <optional>
 #include <utility>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace siano::runtime {
 namespace {
@@ -24,6 +30,32 @@ namespace {
 namespace wire = dtv::userland::wire;
 using px4::userland::Result;
 using px4::userland::Error;
+namespace host_runtime = dtv::userland::host_runtime;
+namespace host_context = dtv::userland::host_listener_context;
+constexpr std::uint64_t kStreamArmBudgetMs = 5000U;
+
+#if !defined(_WIN32)
+Result<std::string> select_runtime_root() noexcept
+{
+    const char* base = std::getenv("XDG_RUNTIME_DIR");
+    if (base == nullptr || base[0] == '\0') base = std::getenv("TMPDIR");
+    if (base == nullptr || base[0] == '\0') base = "/tmp";
+    std::string path(base);
+    if (path.empty() || path.front() != '/')
+        return Result<std::string>::failure(Error::INVALID_ARGUMENT);
+    while (path.size() > 1U && path.back() == '/') path.pop_back();
+    path += "/dtv-userland-";
+    path += std::to_string(static_cast<unsigned long long>(::geteuid()));
+    if (::mkdir(path.c_str(), 0700) != 0 && errno != EEXIST)
+        return Result<std::string>::failure(Error::UNSUPPORTED);
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode) ||
+        S_ISLNK(info.st_mode) || info.st_uid != ::geteuid() ||
+        (info.st_mode & 0077) != 0)
+        return Result<std::string>::failure(Error::UNSUPPORTED);
+    return Result<std::string>::success(std::move(path));
+}
+#endif
 #ifdef _WIN32
 using PlatformTunerNonceSource = px4::userland::ipc::windows::WindowsTunerNonceSource;
 #else
@@ -118,20 +150,13 @@ px4::userland::Result<dtv::userland::identity::ResolvedIdentity> siano_identity(
 }
 
 dtv::userland::Result<void> build_siano_control_context(
-    const SianoFacts& facts, const std::string& instance,
-    const dtv::userland::wire::Epoch& epoch, const char* product_version,
-    const px4::userland::TunerService& tuner,
-    px4::userland::ipc::posix::ControlContext& out) noexcept
+    const SianoFacts& facts, const dtv::userland::wire::Epoch& epoch,
+    const char* product_version, dtv::userland::wire::ListResponse& out) noexcept
 {
-    if (product_version == nullptr || tuner.receiver_count() < 1U)
+    if (product_version == nullptr)
         return Result<void>::failure(Error::INVALID_ARGUMENT);
-    out = px4::userland::ipc::posix::ControlContext{};
-    out.epoch = epoch;
-    if (!instance.empty()) {
-        out.instance.present = copy_text(out.instance.value, instance.c_str());
-        if (!out.instance.present) return Result<void>::failure(Error::INVALID_ARGUMENT);
-    }
-    wire::ListResponse& list = out.list;
+    out = wire::ListResponse{};
+    wire::ListResponse& list = out;
     list.epoch = epoch;
     if (!copy_text(list.producer.product, "siano-userland") ||
         !copy_text(list.producer.version, product_version))
@@ -176,7 +201,6 @@ dtv::userland::Result<void> build_siano_control_context(
 
     list.receivers.present = true;
     list.receivers.value.count = 1U;
-    out.execution.receiver_count = 1U;
     wire::ReceiverDescriptor& receiver = list.receivers.value.items[0];
     receiver.id = 0U;
     receiver.systems.mask = 1U;
@@ -184,9 +208,6 @@ dtv::userland::Result<void> build_siano_control_context(
     receiver.binding.value.function_id = 0U;
     receiver.binding.value.local_id = 0U;
     receiver.capabilities.ts_scope = wire::TsScope::multiplex;
-    out.receiver_index[0] = 0U;
-    out.execution.receiver_lane[0] =
-        px4::userland::ipc::posix::ControlWorkerLane::tuner_dev1;
 
     // No external CARD reader exists in the RIO enclosure.
     list.readers.present = true;
@@ -203,7 +224,6 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     const char* product_version) noexcept
 {
     namespace identity = dtv::userland::identity;
-    using namespace px4::userland::ipc::posix;
     std::unique_ptr<SianoFamily> family(new (std::nothrow) SianoFamily(config));
     if (!family) return Result<SianoAssembly>::failure(Error::INTERNAL);
 
@@ -294,39 +314,66 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     }
 
     SianoFamily* family_ptr = family.get();
-    auto assembled = EnclosureContext::assemble(
+    const char* selected_root = runtime_directory;
+    std::string automatic_root;
+    if (selected_root == nullptr) {
+#if defined(_WIN32)
+        selected_root = std::getenv("LOCALAPPDATA");
+        if (selected_root == nullptr || selected_root[0] == '\0')
+            selected_root = std::getenv("TEMP");
+#else
+        const auto selected = select_runtime_root();
+        if (!selected) return Result<SianoAssembly>::failure(selected.error());
+        automatic_root = selected.value();
+        selected_root = automatic_root.c_str();
+#endif
+    }
+
+    host_context::ContextConfig context_config{};
+    context_config.runtime_directory = selected_root != nullptr ? selected_root : "";
+    context_config.product = "siano-userland";
+    context_config.instance = assembly.instance;
+    context_config.access = config.access;
+    const auto endpoint = host_runtime::endpoint_path(host_runtime::EndpointConfig{
+        context_config.runtime_directory, context_config.product,
+        context_config.instance, context_config.access});
+    if (!endpoint) return Result<SianoAssembly>::failure(endpoint.error());
+    assembly.endpoint_path = endpoint.value();
+    const auto built = build_siano_control_context(
+        facts, epoch, product_version, context_config.canonical_list);
+    if (!built) {
+        std::fprintf(stderr, "assemble: build %s\n", error_string(built.error()));
+        return Result<SianoAssembly>::failure(built.error());
+    }
+    context_config.server.epoch = epoch;
+    context_config.server.producer = context_config.canonical_list.producer;
+    context_config.context.epoch = epoch;
+    context_config.context.state = wire::ContextState::ready;
+    context_config.context.instance.present = copy_text(
+        context_config.context.instance.value, assembly.instance.c_str());
+    if (!context_config.context.instance.present)
+        return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+    for (std::size_t i = 0U; i < sizeof(context_config.stream_engine_epoch); ++i)
+        context_config.stream_engine_epoch =
+            (context_config.stream_engine_epoch << 8U) | epoch[i];
+    if (context_config.stream_engine_epoch == 0U) context_config.stream_engine_epoch = 1U;
+    context_config.stream_arm_budget_ms = kStreamArmBudgetMs;
+
+    auto assembled = host_context::EnclosureContext::assemble(
         std::move(family),
-        std::unique_ptr<px4::userland::TunerNonceSource>(
-            new (std::nothrow) PlatformTunerNonceSource()));
-    if (!assembled) { std::fprintf(stderr, "assemble: context %s\n", dtv::userland::error_string(assembled.error())); return Result<SianoAssembly>::failure(assembled.error()); }
+        std::unique_ptr<host_runtime::TunerNonceSource>(
+            new (std::nothrow) PlatformTunerNonceSource()), context_config);
+    if (!assembled) {
+        std::fprintf(stderr, "assemble: context %s\n", error_string(assembled.error()));
+        return Result<SianoAssembly>::failure(assembled.error());
+    }
     assembly.family = family_ptr;
     assembly.context = std::move(assembled.value());
 
-    const char* selected_root = runtime_directory;
-#if !defined(_WIN32)
-    std::array<char, kStoredPathCapacity> automatic_root{};
-    if (selected_root == nullptr) {
-        const auto selected = select_publish_runtime_root();
-        if (!selected) return Result<SianoAssembly>::failure(selected.error());
-        automatic_root = selected.value();
-        selected_root = automatic_root.data();
-    }
-#endif
-
-    EnclosurePublication publication{};
-    publication.runtime_directory = selected_root != nullptr ? selected_root : "";
-    publication.instance = assembly.instance;
-    publication.lease_identity = assembly.lease_identity;
-    publication.access = config.access;
-    const auto reserved = assembly.context->reserve_namespace(publication);
+    const auto reserved = assembly.context->reserve_namespace();
     if (!reserved) { std::fprintf(stderr, "assemble: reserve %s\n", dtv::userland::error_string(reserved.error())); return Result<SianoAssembly>::failure(reserved.error()); }
 
-    ControlContext control{};
-    const auto built = build_siano_control_context(facts, assembly.instance, epoch,
-                                                   product_version,
-                                                   assembly.context->tuner_service(), control);
-    if (!built) { std::fprintf(stderr, "assemble: build %s\n", dtv::userland::error_string(built.error())); return Result<SianoAssembly>::failure(built.error()); }
-    const auto published = assembly.context->publish(control);
+    const auto published = assembly.context->publish();
     if (!published) { std::fprintf(stderr, "assemble: publish %s\n", dtv::userland::error_string(published.error())); return Result<SianoAssembly>::failure(published.error()); }
     return Result<SianoAssembly>::success(std::move(assembly));
 }

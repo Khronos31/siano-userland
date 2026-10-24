@@ -57,6 +57,7 @@ using namespace dtv::userland;
 using namespace dtv::userland::detail;
 using namespace siano::runtime;
 namespace posix = px4::userland::ipc::posix;
+namespace host_context = dtv::userland::host_listener_context;
 
 pthread_mutex_t gate_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t gate_cond = PTHREAD_COND_INITIALIZER;
@@ -130,7 +131,7 @@ int main()
         std::fprintf(stderr, "HELD assemble_error=%s\n", error_string(assembly.error()));
         return 1;
     }
-    posix::EnclosureContext& owned = *assembly.value().context;
+    host_context::EnclosureContext& owned = *assembly.value().context;
     SianoFamily* family = assembly.value().family;
     siano_device& device = family->adapter().device();
 
@@ -165,8 +166,10 @@ int main()
     if (!gate_entered.load()) { std::fprintf(stderr, "HELD gate not entered\n"); return 1; }
 
     // A callback is held: close misses its deadline and must retain the graph.
-    const posix::ContextCloseResult early = owned.close(std::chrono::milliseconds(200));
-    if (early.quiesced) { std::fprintf(stderr, "HELD close did not expire\n"); return 1; }
+    const auto early = owned.close(Timeout{200U});
+    if (!early || early.value() != host_context::CloseState::pending) {
+        std::fprintf(stderr, "HELD close did not expire\n"); return 1;
+    }
     if (g_family_destroy_begin.load() == 0 || g_family_destroy_end.load() != 0) {
         std::fprintf(stderr, "HELD owner destroyed while held begin=%d end=%d\n",
                      g_family_destroy_begin.load(), g_family_destroy_end.load());
@@ -183,26 +186,26 @@ int main()
         pthread_cond_broadcast(&gate_cond);
         pthread_mutex_unlock(&gate_mutex);
     }
-    const posix::ContextCloseResult settled = owned.close(std::chrono::milliseconds(15000));
-    const posix::ContextCloseResult again = owned.close(std::chrono::milliseconds(1000));
+    const auto settled = owned.close(Timeout{15000U});
+    const auto again = owned.close(Timeout{1000U});
     // This proof bypasses the logical lease/stream protocol and attaches the
     // consumer directly, so the tuner shutdown worker legitimately reports
     // BUSY from the still-attached accepted adapter.  The retention/one-time
     // destruction invariants are what this proof exercises.
-    if (!settled.quiesced) {
+    if (!settled || settled.value() != host_context::CloseState::quiesced) {
         std::fprintf(stderr, "HELD settle quiesced=0 error=%s\n",
-                     error_string(settled.error));
+                     error_string(settled ? Error::OK : settled.error()));
         return 1;
     }
     if (g_family_destroy_begin.load() != 1 || g_family_destroy_end.load() != 1 ||
-        !again.quiesced) {
+        !again || again.value() != host_context::CloseState::quiesced) {
         std::fprintf(stderr, "HELD destroy counts begin=%d end=%d again_quiesced=%d\n",
                      g_family_destroy_begin.load(), g_family_destroy_end.load(),
-                     again.quiesced ? 1 : 0);
+                     again && again.value() == host_context::CloseState::quiesced ? 1 : 0);
         return 1;
     }
     std::fprintf(stderr,
                  "HELD settled quiesced=1 error=%s begin=1 end=1 again_quiesced=1\n",
-                 error_string(settled.error));
+                 error_string(Error::OK));
     return 0;
 }
