@@ -15,6 +15,18 @@
 
 namespace {
 
+#ifdef _WIN32
+std::string environment_value(const char* name) noexcept
+{
+    char* value = nullptr;
+    std::size_t length = 0U;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) return {};
+    std::string result(value);
+    std::free(value);
+    return result;
+}
+#endif
+
 const dtv::userland::host_ctl::Profile& profile() noexcept
 {
     static const dtv::userland::host_ctl::Profile value{
@@ -26,9 +38,9 @@ const dtv::userland::host_ctl::Profile& profile() noexcept
 std::string default_runtime_directory() noexcept
 {
 #ifdef _WIN32
-    const char* base = std::getenv("LOCALAPPDATA");
-    if (base == nullptr || base[0] == '\0') base = std::getenv("TEMP");
-    return base != nullptr ? std::string(base) : std::string();
+    std::string base = environment_value("LOCALAPPDATA");
+    if (base.empty()) base = environment_value("TEMP");
+    return base;
 #else
     const char* base = std::getenv("XDG_RUNTIME_DIR");
     if (base == nullptr || base[0] == '\0') base = std::getenv("TMPDIR");
