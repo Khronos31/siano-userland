@@ -545,8 +545,15 @@ $psi.Arguments = "--instance s1ud --runtime-dir `"$RT`" --control -o `"$LOG\t05.
 $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
 $control = [System.Diagnostics.Process]::Start($psi)
 $stdout = $control.StandardOutput.ReadToEndAsync(); $stderr = $control.StandardError.ReadToEndAsync()
-Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('channel 21')
-Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('channel 22')
+$C = (Resolve-Path .\sianoctl.exe).Path
+1..2 | ForEach-Object {
+    Start-Sleep -Seconds 20
+    & $C --instance s1ud --runtime-dir $RT status 2>&1 | Out-File -Append "$LOG\t05-status.txt"
+    $LASTEXITCODE | Out-File -Append "$LOG\t05-status.rc"
+    & $C --instance s1ud --runtime-dir $RT list 2>&1 | Out-File -Append "$LOG\t05-list.txt"
+    $LASTEXITCODE | Out-File -Append "$LOG\t05-list.rc"
+    $control.StandardInput.WriteLine($(if ($_ -eq 1) { 'channel 21' } else { 'channel 22' }))
+}
 Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('quit'); $control.StandardInput.Close()
 $control.WaitForExit()
 $stdout.Result | Out-File "$LOG\t05.out"; $stderr.Result | Out-File "$LOG\t05.err"; "$($control.ExitCode)" | Out-File "$LOG\t05.rc"
