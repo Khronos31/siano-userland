@@ -1,5 +1,7 @@
 # Stable リリース前検証手順
 
+現行候補の条件・共通手順は [`release-validation-current.md`](release-validation-current.md) を参照してください。以下の個別候補のmatrix・soak値・履歴結果は過去記録であり、現行候補の合格を意味しません。
+
 Status: v2 (2026-10-07)
 
 この文書は `siano-userland` の Stable リリースごとの実行手順である。`README.md` の CLI・終了コードと実装が事実の正本であり、本書の記載と食い違う場合は両者を確認して先に本書を直す。Stable releaseは次の順で進める。
