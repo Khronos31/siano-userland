@@ -126,10 +126,15 @@ int write_discovery_json()
     std::vector<w::DiscoveryReceiver> receivers;
     std::vector<w::DiscoveryEnclosure> enclosures;
     std::vector<w::DiscoveryUsbObservation> ungrouped;
+    std::vector<w::DiscoveryScanIssue> issues;
+    bool descriptor_unavailable = false;
     for (ssize_t i = 0; i < count; ++i) {
         libusb_device* device = devices[i];
         libusb_device_descriptor descriptor{};
-        if (libusb_get_device_descriptor(device, &descriptor) != 0) continue;
+        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
+            descriptor_unavailable = true;
+            continue;
+        }
         const SupportedId* profile = nullptr;
         for (const auto& known : kSupportedRioIds) {
             if (known.vid == descriptor.idVendor && known.pid == descriptor.idProduct) {
@@ -200,6 +205,14 @@ int write_discovery_json()
     libusb_free_device_list(devices, 1);
     libusb_exit(context);
 
+    if (descriptor_unavailable) {
+        w::DiscoveryScanIssue issue{};
+        if (!copy(issue.code, "usb_descriptor_unavailable") ||
+            !copy(issue.detail, "Some USB device descriptors could not be read"))
+            return 70;
+        issues.push_back(issue);
+    }
+
     for (std::size_t i = 0U; i < enclosures.size(); ++i) {
         enclosures[i].devices = &discovered_devices[i];
         discovered_devices[i].receivers_known = true;
@@ -207,9 +220,11 @@ int write_discovery_json()
         discovered_devices[i].receivers = &receivers[i];
     }
     w::DiscoveryScan document{};
-    document.complete = true;
+    document.complete = !descriptor_unavailable;
     if (!copy(document.product, "siano-userland") ||
         !copy(document.version, SIANO_RUNTIME_VERSION)) return 70;
+    document.issue_count = issues.size();
+    document.issues = issues.data();
     document.enclosure_count = enclosures.size();
     document.enclosures = enclosures.data();
     document.ungrouped_usb_device_count = ungrouped.size();
