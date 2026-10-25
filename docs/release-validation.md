@@ -93,7 +93,7 @@ D="$WORK/candidate"; LOG="$WORK/log"; RT="$WORK/runtime"; mkdir -m 700 "$LOG" "$
 python3 -c 'import json,sys; m=json.load(open("manifest.json")); assert m.get("source_ref")==sys.argv[1] and m.get("platform")==sys.argv[2]' "$SOURCE_SHA" "$TARGET"
 ```
 
-Windows PowerShell unpacks the candidate ZIP with `Expand-Archive` to a new empty `$D` and compares `Get-FileHash -Algorithm SHA256` with the matching entry in the downloaded `SHA256SUMS`. On Linux/macOS/Termux verify the outer `SHA256SUMS`, then hash the selected archive and compare it with that manifest entry. Record target archive, artifact ID/name, source/run/attempt, manifest provenance, and archive SHA. Termux uses `$PREFIX/tmp` or `$HOME`, never assumes OS `/tmp`; acquire `termux-usb -l` output and request permission only for the node whose VID/PID/name matches the Siano tuner. Check `gh`, Python 3.11+, `tar`, `unzip`, and SHA tool; Termux dependencies use `pkg install gh python coreutils tar unzip`. Host package changes require host owner approval. Linux permissions are first observed with `id`, `stat`, and `lsusb -t`; any approved udev/group change saves original state and restores it after the run. HAOS/Supervisor settings are not changed.
+Windows PowerShell unpacks the candidate ZIP with `Expand-Archive` to a new empty `$D` and compares `Get-FileHash -Algorithm SHA256` with the matching entry in the downloaded `SHA256SUMS`. On Linux/macOS/Termux verify the outer `SHA256SUMS`, then hash the selected archive and compare it with that manifest entry. Record target archive, artifact ID/name, source/run/attempt, manifest provenance, and archive SHA. Termux uses `$PREFIX/tmp` or `$HOME`, never assumes OS `/tmp`; acquire `termux-usb -l` output and request permission only for the node whose VID/PID/name matches the Siano tuner. Check `gh`, Python 3.11+, `tar`, `unzip`, and SHA tool (`python --version` on Windows); Termux dependencies use `pkg install gh python coreutils tar unzip`. Host package changes require host owner approval. Linux permissions are first observed with `id`, `stat`, and `lsusb -t`; any approved udev/group change saves original state and restores it after the run. HAOS/Supervisor settings are not changed.
 
 Windows PowerShell candidate retrieval and extraction:
 
@@ -217,7 +217,7 @@ Windowsでの固定helper呼出し。TSDuckの追加確認は§6の同一archive
 ```powershell
 $helper = '<runbook-checkout>\docs\release-validation\ts-check.py'; $ts = Join-Path $LOG '<capture>.ts'
 $json = Join-Path $LOG '<capture>.ts-check.json'; $err = Join-Path $LOG '<capture>.ts-check.err'
-& py -3 $helper $ts 1> $json 2> $err; $parserRc = $LASTEXITCODE
+& python $helper $ts 1> $json 2> $err; $parserRc = $LASTEXITCODE
 $parserRc | Set-Content (Join-Path $LOG '<capture>.ts-check.rc')
 if ($parserRc -ne 0) { throw "TS parser failed: $parserRc" }
 ```
