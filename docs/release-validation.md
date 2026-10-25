@@ -33,20 +33,39 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 
 ## 共通実行環境表
 
+### 環境表データ辞書
+
+| 列 | 意味・含める属性 | 含めない属性 | 表記・許容値 |
+|---|---|---|---|
+| ID | OS/ABIと必要なruntime/access境界を持つ実行環境シナリオの識別子 | candidate状態、過去実績 | `E` + 番号。4製品で共通するシナリオは同じID、別runtime/access scenarioは別ID |
+| OS / ABI | OS系統、CPU ABI、libcまたはOS runtime | host名、依存、実施状態 | `OS / CPU ABI / libc・runtime` の順。根拠文書にlibc記載がない場合は `未特定` |
+| 依存 / driver / permission | 実行時USB library、OS側USB access手段と権限条件 | firmware、CARD API、検証結果 | `libusb:`、`USB access:`、`FD handoff:` の属性名を使う |
+| firmware / input | 実行時に必要なfirmwareまたは製品入力と放送方式 | archiveへの同梱・埋込完了、candidate実績 | `firmware:` と `input:` を分け、該当しない属性は `なし` |
+| 製品CLIからの内蔵CARD操作 | 製品固有CLI/APIの操作範囲 | PC/SC/WinSCard adapter、実機合否 | 操作名とmodel依存条件。機能なしは `なし` |
+| native PC/SC/WinSCard adapter | OS標準APIへ接続する製品adapterの種類・配布形態 | 製品CLI CARD、adapter実機試験結果 | `Linux PC/SC:`、`macOS PC/SC:`、`Android:`、`Windows WinSCard:` を列挙 |
+| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: §...` の順 |
+
+共通IDは E02=Linux/x86_64/musl、E03=Linux/x86_64/glibc、E04=macOS/arm64、E05=Android/aarch64、E06=Android/armv7a、E07=Android/x86_64、E15-G=Linux/aarch64/glibc、E15-M=Linux/aarch64/musl、E17=Windows 11/x86_64を表す。IDはhost名や試験済み状態を表さない。SianoのLinux binaryは各architectureにつき1つの静的musl archiveであり、glibc/musl別artifactではない。
+
 | ID | OS / ABI | 依存 / driver / permission | firmware / input | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
 |---|---|---|---|---|---|---|
-| E01 | HAOS SCS Debian/glibc x86_64 | container root / USB access pathを記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
-| E02 | HAOS Alpine/musl x86_64 | add-on access pathを記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
-| E03 | AnduinOS glibc x86_64 | libusb static archive / USB permission | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
-| E04 | macOS arm64 | libusb / USB permission | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `darwin-arm64` / §7 |
-| E05 | Android Termux aarch64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-aarch64` / §7 |
-| E06 | Android Termux armv7a | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-armv7a` / §7 |
-| E07 | Bliss OS Termux x86_64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-x86_64` / §7 |
-| E08–E13 | Fedora/Gentoo/NixOS/Chimera/Alpine/OpenWrt x86_64 | conditional/historical access pathを個別記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
-| E15 | Fedora aarch64 / L4T | native USB claim | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-aarch64` / §7 |
-| E17 | Windows 11 x86_64 | WinUSB driver/access path | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `windows-x64` / §7 |
+| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `darwin-arm64`; procedure: §7 |
+| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `android-aarch64`; procedure: §7 |
+| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `android-armv7a`; procedure: §7 |
+| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `android-x86_64`; procedure: §7 |
+| E08 | Linux / x86_64 / glibc (Fedora) | libusb: 静的1.0.30; USB access: Fedoraのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E09 | Linux / x86_64 / 未特定 (Gentoo) | libusb: 静的1.0.30; USB access: Gentooのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E10 | Linux / x86_64 / glibc (NixOS) | libusb: 静的1.0.30; USB access: NixOSのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E11 | Linux / x86_64 / musl (Chimera Linux) | libusb: 静的1.0.30; USB access: Chimera Linuxのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E12 | Linux / x86_64 / musl (Alpine Linux) | libusb: 静的1.0.30; USB access: Alpineのmdev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E13 | Linux / x86_64 / 未特定 (OpenWrt) | libusb: 静的1.0.30; USB access: OpenWrtのplatform permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `linux-aarch64`; procedure: §7 |
+| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし; macOS PC/SC: なし; Android: なし; Windows WinSCard: なし | artifact: `windows-x64`; procedure: §7 |
 
-行は一般の実行環境対応であり、版ごとのhost実測・候補検証結果ではない。各版の実測OS/ABIとaccess pathは版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
+行は一般の実行環境と必要なaccess条件を記す。各版の実際のhost名と実施結果は版別記録に残す。E08–E13は各OS固有手順が適用される場合の環境であり、E14 FreeBSDとE16 Debian i386はbinary archive対象に含めない。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
 ## 共通試験シナリオ
 
@@ -109,7 +128,7 @@ USB切断時の期待終了値はREADMEと候補実測を照合する。停止/c
 | E12 | Alpine x86_64（mdev） | historical-only / conditional（`packaging/mdev/**` 変更時） | §7 / [mdev](platforms/alpine-mdev.md) |
 | E13 | OpenWrt x86_64 | historical-only / conditional | §7 / validation-results.md |
 | E14 | FreeBSD x86_64 | 対象外（README 対象外。記録は履歴のみ） | 対象外 |
-| E15 | Fedora aarch64（L4T kernel） | canonical runtime（`linux-aarch64` の実機claim環境）。historical record のみ | §7 / validation-results.md |
+| E15-G | Fedora aarch64（L4T kernel） | canonical runtime（`linux-aarch64` のnative execution environment） | §7 / validation-results.md |
 | E16 | Debian x86/i386 | source-build-only（i386 配布 artifact なし） | §7 / [Debian i386](platforms/debian-i686.md) |
 | E17 | Windows 11 x86_64 | canonical runtime（`windows-x64`、WinUSB）。product 対象 | §7 / README |
 | — | Android ad-hoc APK | 対象外（dtv-android 所管） | 対象外 |
@@ -174,7 +193,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 | 配布artifact | 環境例 | 使用機器 | 選択時の短時間確認 |
 |---|---|---|---|
 | `linux-x86_64` | E03 AnduinOS x86_64（glibc系host上で配布static binaryを実行） | PX-S1UD 1台 | §7.1aの列挙→接続中受信→USB切断で有限終了→再接続後の再列挙と30秒受信→残留確認 |
-| `linux-aarch64` | E15 Fedora aarch64 / L4T | PX-S1UD 1台 | 同上。現候補archiveをnative実行 |
+| `linux-aarch64` | E15-G Fedora aarch64 / L4T | PX-S1UD 1台 | 同上。現候補archiveをnative実行 |
 | `darwin-arm64` | E04 macOS arm64 | PX-S1UD 1台 | 同上。macOS手順のhash/依存確認も含む |
 | `android-aarch64` | E05 Termux aarch64 | PX-S1UD 1台 | 同上。Termux USB permission / `--fd` handoffを含む |
 | `android-armv7a` | E06 Termux armv7a | PX-S1UD 1台 | 同上。Termux USB permission / `--fd` handoffを含む |
@@ -198,7 +217,7 @@ v0.1.5..v0.1.9 のように差分が大きい場合は、変更したファイ�
 | C5 | firmware hash/format/load | firmware load、lock、30秒受信 | 該当binary matrix環境 | 1 | firmware初期化・stream開始 |
 | C6 | stream/queue/writer/drop policy、`--fail-on-drop`、clock/`--time`（`queue-policy.c`、`write-policy.h`、`stream-state.c`） | counter、exit 8 semantics、30秒受信。slow-sinkはoffline test | 該当binary matrix環境。source-only i386はclaim追加時 | 1（queue共有/競合変更なら同時構成も判断材料） | stream/queue/writer持続動作 |
 | C7 | device enumeration/selection、`--list-json`、USB location（`device-selector.c`、`usb-location.h`） | `sianod --list-json`で2台を列挙し、index/port/bus:address選択、不正selector→exit 3 | E03 + E04 + E17 | 2 | 列挙・識別の経路 |
-| C8 | disconnect/hotplug 分類、exit code（`stream-state.c`、`exit-codes.c`） | 受信中に片側切断→有限時間で exit 7、残存側 exit 0、再接続、再実行。1台/1 USB port しかない環境では有限 exit と再接続だけを確認でき、残存側 exit 0 は2台前提のため満たせない | E03 + E01 + E02 + E04 + E17 + E05 + E06 + E07（Termux 3 ABI は artifact が別個）。E13/E15 は claim 表示時。E16 は source-build-only で release artifact・current hardware claim がないため対象外（platform-specific な diff が i386 を直接対象とする場合を除く） | 2（Termux/E17 は port が1つなら1。1台 run は full 2台 disconnect test として数えない） | hotplug / cleanupの経路 |
+| C8 | disconnect/hotplug 分類、exit code（`stream-state.c`、`exit-codes.c`） | 受信中に片側切断→有限時間で exit 7、残存側 exit 0、再接続、再実行。1台/1 USB port しかない環境では有限 exit と再接続だけを確認でき、残存側 exit 0 は2台前提のため満たせない | E03 + E01 + E02 + E04 + E17 + E05 + E06 + E07（Termux 3 ABI は artifact が別個）。E13/E15-G は claim 表示時。E16 は source-build-only で release artifact・current hardware claim がないため対象外（platform-specific な diff が i386 を直接対象とする場合を除く） | 2（Termux/E17 は port が1つなら1。1台 run は full 2台 disconnect test として数えない） | hotplug / cleanupの経路 |
 | C9 | kernel-driver detach decision（`detach-decision.h`） | bound 時の拒否→exit 4。live unbind はしない | E03（blacklist 状態は reboot で復元） | 1 | driver bind/accessの安全性 |
 | C10 | `--control` parsing と retune | stdin `channel`/`tune`/`quit`、open 中の retune、exit 0 | E03 + E17 | 1 | 受信中controlの継続性 |
 | C11 | access-setup 材料: `packaging/mdev/*`、docs の udev/OpenRC/procd 記述 | node 権限、非root 実行 | E12（mdev）または記述を変えた環境 | 2 | access setup / 権限 |
@@ -297,7 +316,7 @@ kill -INT "$PID_A"; wait "$PID_A"
 
 ### 7.1a 選択された短時間実機確認（1台）
 
-E01/E02/E03/E04/E15/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`$DAEMON --list-json`の`enclosures[].devices[]`から`model=PX-S1UD`, `usb=3275:0080`, `port=`を記録する。`sianoctl list/status`のdaemon inventoryがreadyであることも確認する。候補archiveの同じdaemon/clientと同梱firmwareを使う。
+E01/E02/E03/E04/E15-G/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`$DAEMON --list-json`の`enclosures[].devices[]`から`model=PX-S1UD`, `usb=3275:0080`, `port=`を記録する。`sianoctl list/status`のdaemon inventoryがreadyであることも確認する。候補archiveの同じdaemon/clientと同梱firmwareを使う。
 
 ```sh
 # 接続中受信。-tを付けず、deviceを開いた状態で維持する
@@ -342,7 +361,7 @@ kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 - **E12 Alpine x86_64 / mdev**: [Alpine/mdev](platforms/alpine-mdev.md) に従い `mdev -s`、`siano-ts-mdev --scan`、非root 2台受信。`packaging/mdev/**` は配布物に含まれるため、変更時はこの環境を実施する。
 - **E13 OpenWrt x86_64**: 既存記録は `0315bd5` で exit 1（変更前コード）。current claim にしない。OpenWrt 手順を新設・変更した場合にだけ procd 起動停止・hotplug 権限を確認する。
 - **E14 FreeBSD x86_64**: 対象外。記録は履歴のみで、gate・canary・soak に含めない。
-- **E15 Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
+- **E15-G Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
 - **E16 Debian x86/i386**: 配布artifactはなく、配布binaryのnative matrix対象外。source-build claimを変更する場合は[Debian i386](platforms/debian-i686.md)のnative buildと`make test`、30秒のnonblocking receive、slow-sinkの`--fail-on-drop`/exit 8を確認する。5分を超える実機負荷が必要なら他OSと同じユーザー決定soak手順にする。
 - **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの3 programを使う。OS build、Zadig/WinUSB version、各EXEのcandidate固有SHA（同じZIPのmanifestと照合）を記録する。旧`packaging/windows-baseline.sha256`は単体版の履歴であり、現行candidateとの一致を要求しない。USB IDとselectorを確認して、PowerShellで次の操作を行う。S-CTRLは`--control`付きconsumerのconsole stdinから渡す。[今回の統合3program記録](platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)では1台の30秒受信・TS整合性・lease解放・正常停止を確認した。hotplug・soak・最終RC認定は未実施であり、以下の手順の記載自体を成功記録と扱わない。
 
