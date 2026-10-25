@@ -8,6 +8,8 @@ PLEX PX-S1UD などの Siano RIO 系 USB チューナーに対応した、ユー
 
 daemon 構成では、USB の `--fd` と `-p/--pid` は **`sianod` に指定**します。FD は daemon 自身が継承したオープン済み USB FD であり、別プロセスの FD 番号を IPC で渡す機能ではありません。元の FD は呼び出し元が所有します。`termux-usb -e` が末尾に追加する FD 整数も受理します。ポートパスを取得できない環境では `--instance` を明示してください。
 
+`siano-ts --receiver` は共通 CLI の範囲 `0..7` を受け付けますが、Siano が公開する受信機は `0` のみです。未搭載の受信機 ID は daemon への照会後に `NOT_FOUND`（終了コード `3`）になります。
+
 ```sh
 ./sianod --device usb:1-4.2 --instance s1ud --pid 0x2000
 ./sianoctl --instance s1ud status
@@ -87,7 +89,7 @@ Linux ディストリビューション別の実機検証済み構成例は [Lin
 
 > [!WARNING]
 > - チューナー接続前にカーネルモジュール（`smsusb`、`smsdvb`、`smsmdtv`）をblacklistへ登録する。
-> - 稼働中のチューナーをカーネルから `siano-ts` へ動的に切り替える運用（live handoff）は安全と判定していない。`siano-ts` は既定では**カーネルのドライバが掴んでいるデバイスを奪わず**、理由を表示して終了する（奪うのは `--detach-kernel-driver` を付けたときだけ）。
+> - 通常の3 program構成で USB を開いて所有するのは `sianod` です。`siano-ts` は daemon への client で、USB デバイスを直接開かず、従来の単体版の `--detach-kernel-driver` も受け付けません。
 > - すでにbind済みの場合は、blacklistを反映したうえでOSを再起動する。
 > - 詳細は [AppArmor文書の競合説明](docs/platforms/apparmor.md#smsusbとの競合) を参照する。
 
@@ -179,7 +181,7 @@ termux-usb -r -e './siano-ts --channel 27' /dev/bus/usb/001/004
 | `-o, --output` | `PATH` | MPEG-TS の出力先ファイルパス。省略時は標準出力 (stdout)。 |
 | `-d, --device` | `SPEC` | 対応 RIO デバイスを選択。インデックス (0 起算)、ポートパス (`0-1.3` / `1-4.3`)、bus:address (`0:4` / `1:4`) を受理。既定値はインデックス `0`。 |
 | `-l, --list` | なし | デバイスを開かずに一覧表示。`--device` 指定で一覧結果は絞り込まれません。`px4d --list` に揃えた `key=value` 形式で、各行に `bus=` / `address=` / `port=` を付ける（下記）。 |
-| `--detach-kernel-driver` | なし | カーネルのドライバ (`smsusb` など) が掴んでいても切り離して使う。既定では、`siano-ts` が使うインターフェースをカーネルのドライバが掴んでいれば奪わずに `interface N is bound to a kernel driver` と表示して終了する (live handoff は安全と判定していないため)。Windows など libusb が判定できない環境では従来どおり開く。 |
+| `--detach-kernel-driver` | なし | 従来の単体版専用。カーネルのドライバ (`smsusb` など) が掴んでいても切り離して使う。既定では、`siano-ts` が使うインターフェースをカーネルのドライバが掴んでいれば奪わずに `interface N is bound to a kernel driver` と表示して終了する (live handoff は安全と判定していないため)。Windows など libusb が判定できない環境では従来どおり開く。 |
 | `--fd` | `FD` | オープン済みの USB ファイルディスクリプタ番号。`termux-usb -e` が末尾に追加する整数引数も同義。`--list` または 0 以外の `--device` とは併用不可。 |
 | `-p, --pid` | `PID` | 受信する PID (複数回指定可、最大64個)。1個以上指定した場合は指定 PID 群のみを設定。未指定時はキャッチオール `0x2000` を設定。明示した `0x2000` も ACK を待たずに設定する。最初の選局成功後に一度だけ設定する。 |
 | `-F, --firmware` | `PATH` | ファームウェアファイル (`isdbt_rio.inp`) のパス。 |
