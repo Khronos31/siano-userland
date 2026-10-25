@@ -22,11 +22,11 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 
 ## 共通の検証項目と頻度
 
-用語は4製品で共通とする。代表機はLinux x86_64 glibc、機種はチューナー、製品はドライバ、ソークは30分以上の連続TS取得を指す。Sianoの標準機種はPX-S1UD。
+用語は4製品で共通とする。代表機はLinux x86_64 glibc、機種はチューナー、製品はドライバ、ソークは30分以上の連続TS取得を指す。Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対象を限定しない。Sianoが対象とする全機種で初回手順を個別に実施し、結果は[`release-validation/initial-model-checks.md`](release-validation/initial-model-checks.md)へ機種別に記録する。
 
 | 区分 | 適用頻度 | Sianoでの確認 |
 |---|---|---|
-| 機種初回 | PX-S1UDを代表機で2時間連続受信し、毎releaseの回帰項目を代表機だけで行う。必要時項目も通し、結果は[`release-validation/initial-model-checks.md`](release-validation/initial-model-checks.md)へ記録する。 | 地上波receiver 0。CARD、LNB、衛星は製品機能外。 |
+| 機種初回 | Sianoの各機種を個別に代表機で2時間連続受信し、その機種で毎release回帰項目を代表機だけで行う。必要時項目も通し、結果は[`release-validation/initial-model-checks.md`](release-validation/initial-model-checks.md)へ機種別に記録する。 | PX-S1UDでは地上波receiver 0を確認する。CARD、LNB、衛星は製品機能外。ほかの機種はその機種の能力に応じて確認する。 |
 | 回帰（毎release） | 代表機2時間連続受信。全配布archiveの各OS/ABIで短時間実機回帰、`--list-json`、最大能力の同時受信とTS/counter/終了値を確認する。最大試験で3波が不足する場合は不足分の短時間TSを個別確認する。受信中status、反復制御、正常停止とprocess/FD/IPC残留なし、USB抜去/再挿入も行う。 | 受信中statusと停止を確認する。単一receiverなのでAPDU、CARD挿抜、WinSCard/PCSCは適用しない。 |
 | 必要に応じて | LNB実測と非対応機種の拒否、複数チューナー列挙/daemon並列、変更機能に応じた機種×OS/ABIの追加確認。 | LNB/CARD/PCSCは対象外。複数台対応やselector/USB変更時はS-DUAL/S-DISC。 |
 | 初回/major | 必要時項目を通し、代表機で全無料channelを各10秒TS取得。macOS/Windows各30分連続、残るOS/ABI各10分連続で取得する。全channel取得は代表機だけ。別途指示されたソークは別記する。 | 地上波の実地域channelを現地planから選ぶ。衛星channelは対象外。 |
