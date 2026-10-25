@@ -142,7 +142,7 @@ void usage() noexcept
     std::fprintf(stderr,
         "usage: siano-ts (-c CHANNEL | -f HZ) [--system ISDB-T] --instance TOKEN\n"
         "                [-t SECONDS|-] [-o FILE|-] [--runtime-dir DIR]\n"
-        "                [--receiver 0] [--tune-timeout-ms MS] [--packet-count N]\n"
+        "                [--receiver N] [--tune-timeout-ms MS] [--packet-count N]\n"
         "                [--control]\n"
         "  -c, --channel TEXT     ISDB-T channel (13..62/T13..T62)\n"
         "  -f, --freq HZ          exact requested Hz (1..2^53-1)\n"
@@ -153,7 +153,7 @@ void usage() noexcept
         "                         re-select through the shared UDTV API\n"
         "      --runtime-dir DIR  runtime namespace root\n"
         "      --instance TOKEN   connection instance token (required)\n"
-        "      --receiver N       receiver index (only 0 on this enclosure)\n"
+        "      --receiver N       receiver index (0..7; only 0 is present; others return NOT_FOUND)\n"
         "      --tune-timeout-ms  tune end-to-end timeout in ms\n"
         "      --packet-count N   stop after N written 188-byte packets\n"
         "  -h, --help             print this help\n"
