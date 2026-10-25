@@ -1,6 +1,6 @@
 # Stable リリース前検証手順
 
-現行候補の条件・共通手順は [`release-validation-current.md`](release-validation-current.md) を参照してください。以下の個別候補のmatrix・soak値・履歴結果は過去記録であり、現行候補の合格を意味しません。
+この文書の製品固有の検証操作・詳細コマンドは引き続き使用します。candidateへの適用頻度と1.0.0固有matrixは [`release-validation-current.md`](release-validation-current.md) に従います。以下の個別候補の実測値・結果は今回候補の合格を意味しません。
 
 Status: v2 (2026-10-07)
 
@@ -64,7 +64,7 @@ Status: v2 (2026-10-07)
 4. 対象 claim ごとに `継承` / `今回再検証` / `未認定` / `対象外` を根拠付きで記録する。時間経過・release 回数だけを理由にした再検証はしない。
 5. 前回の長時間試験の日付やrelease数は事実情報として記録できるが、エージェントがsoak有無・時間・OSを決める規則として使わない。
 
-影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。配布artifactごとの必須短時間matrixは影響判定に関係なく毎回実施する。
+影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。選択する短時間実機確認のarchiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は [`release-validation-current.md`](release-validation-current.md) に従う。
 
 ## 2. source / CI / candidate artifact gate（毎回）
 
@@ -97,11 +97,11 @@ cmp <new-empty-dir>/SHA256SUMS <another-new-empty-dir>/SHA256SUMS
 
 CI が行う build・audit・smoke を成功後にローカル再実行しない。新しい汎用検証スクリプトは作らない。
 
-## 3. 配布artifactごとの実機短時間確認（毎回必須）
+## 3. 配布artifactごとの実機短時間確認手順
 
-1. §2で固定したfinal candidateから、次の各archiveを対応する実機環境へ配布して確認する。これは同じx86_64実行ファイルを複数ディストリビューションで総当たりする手順ではない。環境IDの特異な名前にかかわらず、artifactのOS/ABIに対応した試験対象として扱う。
+1. [`release-validation-current.md`](release-validation-current.md) によって選択されたfinal candidate archiveを対応する実機環境で確認する。下表はarchiveごとの操作方法とnative環境の対応表であり、全archiveを各releaseで実施する指定ではない。1.0.0 matrixでは全対象binaryを含める。これは同じx86_64実行ファイルを複数ディストリビューションで総当たりする手順ではない。環境IDの特異な名前にかかわらず、artifactのOS/ABIに対応した試験対象として扱う。
 
-| 配布artifact | 必須実機環境 | 使用機器 | 毎回の短時間確認 |
+| 配布artifact | 環境例 | 使用機器 | 選択時の短時間確認 |
 |---|---|---|---|
 | `linux-x86_64` | E03 AnduinOS x86_64（glibc系host上で配布static binaryを実行） | PX-S1UD 1台 | §7.1aの列挙→接続中受信→USB切断で有限終了→再接続後の再列挙と30秒受信→残留確認 |
 | `linux-aarch64` | E15 Fedora aarch64 / L4T | PX-S1UD 1台 | 同上。現候補archiveをnative実行 |
@@ -204,7 +204,7 @@ wait
 #   確認できる。残存側 exit 0 は2台前提のため満たせず、1台 run を full 2台 disconnect test と数えない。
 ```
 
-### 7.1a 毎回の短時間実機確認（1台）
+### 7.1a 選択された短時間実機確認（1台）
 
 E01/E02/E03/E04/E15/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`--list`の`model=PX-S1UD usb=3275:0080 status=ready`と`port=`を記録する。候補archiveの同じ`$B`と同梱firmwareを使う。
 
@@ -232,8 +232,8 @@ echo $? > "$LOG/reconnected.rc"
 
 - **E01 HAOS x86_64 Debian/glibc SCS**: container root で実行し、そのことを記録する（非root claim に使わない）。`ha core info` で HAOS/kernel を記録。`linux-x86_64` を使い、base は §7.1。既存記録は revision がなく current claim ではない。
 - **E02 HAOS x86_64 Alpine/musl add-on**: add-on options を現行値で退避し、ユーザー承認のうえ試験用 options で起動、終了後に復元・停止する。restart loop がないことを確認。base は §7.1。`linux-x86_64` と同じ static binary を使う。
-- **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveの必須matrix環境。
-- **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveの必須matrix環境。
+- **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveのnative確認環境例。
+- **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveのnative確認環境例。
 - **E05–E07 Android Termux**: 短時間試験の受信起動は `termux-usb -r -e "$B -F $FW -c 22 -o $LOG/hotplug.ts" /dev/bus/usb/BBB/AAA` とし、受信を止めずにユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後にUSB nodeを取り直して`termux-usb`で30秒受信。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
 - **E08 Fedora x86_64（SELinux）**: [Fedora SELinux](platforms/fedora-selinux.md) の再検証手順（context、label、`ausearch -m AVC`、exit code）に従う。この環境の構成・再検証手順を含む Fedora SELinux 文書、または Fedora に関する in-repo 材料を変更したとき、もしくは Fedora claim を変更するときのみ実施する。
 - **E09 Gentoo x86_64**: 記録がない。Gentoo 手順を新設・変更した場合に exact archive を OpenRC と udev `usb` グループ構成で実施し、doc を作る。それ以外は未確認。
@@ -243,7 +243,7 @@ echo $? > "$LOG/reconnected.rc"
 - **E13 OpenWrt x86_64**: 既存記録は `0315bd5` で exit 1（変更前コード）。current claim にしない。OpenWrt 手順を新設・変更した場合にだけ procd 起動停止・hotplug 権限を確認する。
 - **E14 FreeBSD x86_64**: 対象外。記録は履歴のみで、gate・canary・soak に含めない。
 - **E15 Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
-- **E16 Debian x86/i386**: 配布artifactはなく、毎回必須matrix外。source-build claimを変更する場合は[Debian i386](platforms/debian-i686.md)のnative buildと`make test`、30秒のnonblocking receive、slow-sinkの`--fail-on-drop`/exit 8を確認する。5分を超える実機負荷が必要なら他OSと同じユーザー決定soak手順にする。
+- **E16 Debian x86/i386**: 配布artifactはなく、配布binaryのnative matrix対象外。source-build claimを変更する場合は[Debian i386](platforms/debian-i686.md)のnative buildと`make test`、30秒のnonblocking receive、slow-sinkの`--fail-on-drop`/exit 8を確認する。5分を超える実機負荷が必要なら他OSと同じユーザー決定soak手順にする。
 - **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの3 programを使う。OS build、Zadig/WinUSB version、各EXEのcandidate固有SHA（同じZIPのmanifestと照合）を記録する。旧`packaging/windows-baseline.sha256`は単体版の履歴であり、現行candidateとの一致を要求しない。USB IDとselectorを確認して、PowerShellで次の操作を行う。S-CTRLは`--control`付きconsumerのconsole stdinから渡す。[今回の統合3program記録](platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)では1台の30秒受信・TS整合性・lease解放・正常停止を確認した。hotplug・soak・最終RC認定は未実施であり、以下の手順の記載自体を成功記録と扱わない。
 
 ```powershell
@@ -283,16 +283,16 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 
 ## 8. 切断時の exit code（事実）
 
-現行 v0.1.9 では、受信中の fatal transfer failure を `stream-state.c` の `siano_stream_disconnect_error()` が `LIBUSB_ERROR_IO` / `LIBUSB_ERROR_PIPE` / `LIBUSB_ERROR_NO_DEVICE` から `LIBUSB_ERROR_NO_DEVICE` に写像し、`exit-codes.c` が exit 7 を返す。README の「受信中の USB 切断 = exit 7」はこの受信経路について現行実装と一致している。v0.1.5のexit 1は変更前コード（`exit-codes.c`はv0.1.8 `d333ff5`、`IO`/`PIPE`写像はv0.1.9 `9883025`で導入）の測定である。現行candidateのexit 7は、必須matrixで各OS/architectureごとに毎回実機確認し、そのcandidate recordに結果を記す。過去結果は今回の確認を代替しない。
+現行 v0.1.9 では、受信中の fatal transfer failure を `stream-state.c` の `siano_stream_disconnect_error()` が `LIBUSB_ERROR_IO` / `LIBUSB_ERROR_PIPE` / `LIBUSB_ERROR_NO_DEVICE` から `LIBUSB_ERROR_NO_DEVICE` に写像し、`exit-codes.c` が exit 7 を返す。README の「受信中の USB 切断 = exit 7」はこの受信経路について現行実装と一致している。v0.1.5のexit 1は変更前コード（`exit-codes.c`はv0.1.8 `d333ff5`、`IO`/`PIPE`写像はv0.1.9 `9883025`で導入）の測定である。現行candidateのexit 7は、`release-validation-current.md` が選択したOS/architectureで実機確認し、そのcandidate recordに結果を記す。過去結果は今回の確認を代替しない。
 
 ## 9. 記録
 
-検証結果は [`platforms/validation-results.md`](platforms/validation-results.md) へ日付付きで追記する。新しい records directory や template framework、汎用スクリプトは作らない。release recordにはversion、commit、workflow run、7 binary archiveとsource archiveのchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、必須matrix各runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、Soakについてユーザー決定（実施有無・時間・OS）と結果、soakのFD数・RSS記録系列と`安定` / `頭打ち` / `判定保留`のdispositionおよび理由、物理操作を行えなかった場合の理由、公開assetとcandidateのbyte一致判定、残存blocker・既知の非blocking制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
+検証結果は [`platforms/validation-results.md`](platforms/validation-results.md) へ日付付きで追記する。新しい records directory や template framework、汎用スクリプトは作らない。release recordにはversion、commit、workflow run、7 binary archiveとsource archiveのchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、適用したmatrix runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、Soakについてユーザー決定（実施有無・時間・OS）と結果、soakのFD数・RSS記録系列と`安定` / `頭打ち` / `判定保留`のdispositionおよび理由、物理操作を行えなかった場合の理由、公開assetとcandidateのbyte一致判定、残存blocker・既知の非blocking制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
 
 次をすべて満たすまで Stable 公開へ進まない。
 
 - CI・artifact audit・source/license・checksum gate が成功。
-- final candidateの全配布artifactで短時間matrixが成功し、ユーザーが選択した場合はSoakの指定試験も完了している。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
+- final candidateについて、release-validation-current.mdで当該releaseに適用される短時間matrixが成功し、ユーザーが選択した場合はSoakの指定試験も完了している。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
 - README の各 claim が実証または適格な baseline 継承に対応し、未試験の組合せを認定表示していない。
 - crash、hang、stale state、再接続不能、重大な未解決 issue がない。
 - 短時間matrixに未完了の配布artifactがある場合はStable gate未完了とし、support表示だけで完了扱いしない。
