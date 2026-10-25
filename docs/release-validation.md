@@ -70,6 +70,56 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 
 ## 共通試験シナリオ T00–T14
 
+### run別candidateの取得と作業directory
+
+手順書commitとcandidate source SHAは一致不要。成功した`release.yml` runのhead SHA、attempt、結論、artifact ID/name/expiryを照合し、版別matrixのtargetを選ぶ。手動dispatchや正式Releaseを候補代用に実行しない。
+
+```sh
+set -eu
+gh run list --repo Khronos31/siano-userland --workflow release.yml --limit 20
+RUN_ID='<successful-candidate-run-id>'; TARGET='<linux-x86_64|linux-aarch64|darwin-arm64|android-aarch64|android-armv7a|android-x86_64|windows-x64>'
+RUN_JSON=$(gh run view "$RUN_ID" --repo Khronos31/siano-userland --json headSha,attempt,conclusion)
+SOURCE_SHA=$(printf '%s\n' "$RUN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["headSha"])')
+printf '%s\n' "$RUN_JSON" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["conclusion"] == "success" and r["headSha"] and r["attempt"] > 0'
+test -n "$SOURCE_SHA"
+gh api "repos/Khronos31/siano-userland/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[] | [.id,.name,.expired] | @tsv'
+WORK=$(mktemp -d "${TMPDIR:-$HOME}/siano-run-${RUN_ID}.XXXXXX"); chmod 700 "$WORK"; mkdir -m 700 "$WORK/download"
+gh run download "$RUN_ID" --repo Khronos31/siano-userland --name release-candidate --dir "$WORK/download"
+cd "$WORK/download"; sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS
+VERSION='<candidate-version>'; ARCHIVE="siano-ts-$VERSION-$TARGET.tar.gz"
+if [ "$TARGET" = windows-x64 ]; then ARCHIVE="siano-ts-$VERSION-windows-x64.zip"; fi
+mkdir "$WORK/candidate"; case "$ARCHIVE" in *.tar.gz) tar -xzf "$WORK/download/$ARCHIVE" -C "$WORK/candidate";; *.zip) unzip -q "$WORK/download/$ARCHIVE" -d "$WORK/candidate";; esac
+D="$WORK/candidate"; LOG="$WORK/log"; RT="$WORK/runtime"; mkdir -m 700 "$LOG" "$RT"; cd "$D"; export PATH="$D:$PATH"
+python3 -c 'import json,sys; m=json.load(open("manifest.json")); assert m.get("source_ref")==sys.argv[1] and m.get("platform")==sys.argv[2]' "$SOURCE_SHA" "$TARGET"
+```
+
+Windows PowerShell unpacks the candidate ZIP with `Expand-Archive` to a new empty `$D` and compares `Get-FileHash -Algorithm SHA256` with the matching entry in the downloaded `SHA256SUMS`. On Linux/macOS/Termux verify the outer `SHA256SUMS`, then hash the selected archive and compare it with that manifest entry. Record target archive, artifact ID/name, source/run/attempt, manifest provenance, and archive SHA. Termux uses `$PREFIX/tmp` or `$HOME`, never assumes OS `/tmp`; acquire `termux-usb -l` output and request permission only for the node whose VID/PID/name matches the Siano tuner. Check `gh`, Python 3.11+, `tar`, `unzip`, and SHA tool; Termux dependencies use `pkg install gh python coreutils tar unzip`. Host package changes require host owner approval. Linux permissions are first observed with `id`, `stat`, and `lsusb -t`; any approved udev/group change saves original state and restores it after the run. HAOS/Supervisor settings are not changed.
+
+Windows PowerShell candidate retrieval and extraction:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$RunId = '<successful-candidate-run-id>'; $Target = 'windows-x64'; $Version = '<candidate-version>'
+$Work = Join-Path $HOME "siano-run-$RunId"; $Download = Join-Path $Work 'download'; $D = Join-Path $Work 'candidate'
+if (Test-Path $Work) { throw "refusing to reuse $Work" }
+New-Item -ItemType Directory -Path $Download,$D,(Join-Path $Work 'log'),(Join-Path $Work 'runtime') | Out-Null
+$run = gh run view $RunId --repo Khronos31/siano-userland --json headSha,attempt,conclusion | ConvertFrom-Json
+if ($run.conclusion -ne 'success') { throw 'candidate run is not successful' }
+$CandidateSourceSha = $run.headSha
+gh api "repos/Khronos31/siano-userland/actions/runs/$RunId/artifacts" --jq '.artifacts[] | [.id,.name,.expired] | @tsv'
+gh run download $RunId --repo Khronos31/siano-userland --name release-candidate --dir $Download
+$ZIP = Join-Path $Download "siano-ts-$Version-$Target.zip"
+if (-not (Test-Path $ZIP)) { throw "candidate ZIP missing: $ZIP" }
+$sum = Get-Content (Join-Path $Download 'SHA256SUMS') | Where-Object { $_ -match "  $([regex]::Escape((Split-Path $ZIP -Leaf)))$" }
+if (-not $sum) { throw 'candidate ZIP checksum entry missing' }
+$expected = ($sum -split '\s+')[0]; $actual = (Get-FileHash -Algorithm SHA256 $ZIP).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw 'candidate ZIP checksum mismatch' }
+Expand-Archive -LiteralPath $ZIP -DestinationPath $D
+$manifest = Get-Content (Join-Path $D 'manifest.json') -Raw | ConvertFrom-Json
+if ($manifest.source_ref -ne $CandidateSourceSha) { throw 'candidate source commit mismatch' }
+$LOG = Join-Path $Work 'log'; $RT = Join-Path $Work 'runtime'; Set-Location $D
+```
+
 各IDを同じ順序・同じ6項目で実施する。$RT/$LOG/$BUS-PORT/$CHANNEL_PLANはrunごとの実値に置換し、空のcandidate専用runtime/logを使う。物理操作を依頼する各回は既定通知を行い、最大5分で応答がなければ未完了として停止する。OS/API固有の長い操作は同じT-IDから後続recipeを参照する。
 
 ### T00 候補/配布物固定
@@ -156,11 +206,21 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 ### T09 TS・counter・終了値判定
 
 - **適用対象/頻度:** 全capture/soak。
-- **準備:** TS parser/SPEC条件とdaemon counterを確認できるようにする。
-- **実操作/利用者への依頼:** TSDuck version記録、188-byte remainderとtsanalyze --normalized <file>、sync/TEI/continuity/drop確認。
+- **準備:** Python 3.11以上を`python3 --version`で確認し、手順書checkoutの[`ts-check.py`](release-validation/ts-check.py)を使う。TSDuck 3.45-4798は§6の追加確認にも使う。
+- **実操作/利用者への依頼:** 各TSで`python3 <runbook-checkout>/docs/release-validation/ts-check.py "$LOG/<capture>.ts" > "$LOG/<capture>.ts-check.json"`を実行する。§6のTSDuck `tsanalyze --normalized`も実行し、同じTSの結果を併記する。Android TermuxからのcaptureはTermux内でhelperを実行し、TSDuck追加確認用の転送では送受信前後のSHA-256一致を確認する。
 - **期待値/終了値:** 全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
 - **停止/cleanup:** 元TS/hash/logを残してT08 cleanup。
-- **記録:** parser/version、TS hash、sync/TEI/continuity/drop/counter、exit。
+- **記録:** Python version、helperのGit SHA、TSDuck version、TS hash、両parserの結果/終了値、sync/TEI/continuity/drop/counter、client exit。
+
+Windowsでの固定helper呼出し。TSDuckの追加確認は§6の同一archive hostまたは転送先で別途実行する。
+
+```powershell
+$helper = '<runbook-checkout>\docs\release-validation\ts-check.py'; $ts = Join-Path $LOG '<capture>.ts'
+$json = Join-Path $LOG '<capture>.ts-check.json'; $err = Join-Path $LOG '<capture>.ts-check.err'
+& py -3 $helper $ts 1> $json 2> $err; $parserRc = $LASTEXITCODE
+$parserRc | Set-Content (Join-Path $LOG '<capture>.ts-check.rc')
+if ($parserRc -ne 0) { throw "TS parser failed: $parserRc" }
+```
 
 ### T10 native PC/SC・WinSCard
 
@@ -193,7 +253,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 
 - **適用対象/頻度:** 毎releaseおよび全model初回/major。
 - **準備:** 確定頻度表の対象archive/model/timeをmatrixへ展開する。
-- **実操作/利用者への依頼:** 毎release代表Linux x86_64 glibc 2h/全archive native short; 初回全modelの地上channel 10s、macOS/Windows 30m、他ABI 10m。
+- **実操作/利用者への依頼:** 各runで適用頻度表の時間を`CAPTURE_SECONDS='<matrix seconds>'; S="$CAPTURE_SECONDS"`へ代入し、`test "$S" -gt 0`の後にS-RXをその秒数以上連続実行する。毎release代表Linux x86_64 glibc 2h/全archive native short; 初回全modelの地上channel 10s、macOS/Windows 30m、他ABI 10m。
 - **期待値/終了値:** 指定連続時間完了かつTS条件合格。追加soakは明示ユーザー決定分のみ。
 - **停止/cleanup:** T08通常stopと全resource cleanup。
 - **記録:** model/OS/ABI/archive、時間、TS/counter、FD/RSS、未実施理由。
@@ -364,9 +424,10 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 ### 7.1 共通部品
 
 ```sh
-D=<extracted dir>; DAEMON=$D/sianod; C=$D/sianoctl; B=$D/siano-ts
-FW=$D/firmware/isdbt_rio.inp; LOG=<log dir>; RT=<runtime dir>; INSTANCE=s1ud
-mkdir -p "$RT" "$LOG"
+D="$WORK/candidate"; DAEMON="$D/sianod"; C="$D/sianoctl"; B="$D/siano-ts"
+FW="$D/firmware/isdbt_rio.inp"; LOG="$WORK/log"; RT="$WORK/runtime"; INSTANCE=s1ud
+CAPTURE_SECONDS=10; S="$CAPTURE_SECONDS"
+mkdir -m 700 -p "$RT" "$LOG"; test -x "$DAEMON"; test -x "$C"; test -x "$B"
 if [ "$(uname -s)" = Darwin ]; then
   printf '%s  %s\n' '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818' "$FW" | shasum -a 256 -c -
 else
@@ -470,16 +531,37 @@ kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 - **E02 HAOS x86_64 Alpine/musl add-on**: add-on options を現行値で退避し、ユーザー承認のうえ試験用 options で起動、終了後に復元・停止する。restart loop がないことを確認。base は §7.1。`linux-x86_64` と同じ static binary を使う。
 - **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveのnative確認環境例。
 - **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveのnative確認環境例。
-- **E05–E07 Android Termux**: daemonのUSB起動は `termux-usb -r -e "$DAEMON --instance $INSTANCE --runtime-dir $RT --firmware $FW" /dev/bus/usb/BBB/AAA` とし、`termux-usb -e` が渡すFDをdaemonが所有する。別terminalの`$C`/`$B`には同じinstance/runtimeを指定し、clientへUSB FDやfirmwareを渡さない。受信中にユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後にUSB nodeを取り直し、daemonを同じinstance/runtimeで起動し直して30秒受信。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
+- **E05–E07 Android Termux**: `termux-usb -l`は次のPythonでSiano VID/PID `3275:0080`に一致するUSB pathを一意に取り出し、一覧と選択値を記録する。0件/複数件ならUSB permissionを求めず未実施で止める。
+
+```sh
+termux-usb -l > "$LOG/termux-usb.json"
+USB_NODE=$(python - "$LOG/termux-usb.json" <<'PY'
+import json, sys
+devices = json.load(open(sys.argv[1]))
+matches = [d for d in devices if int(str(d.get('vendor_id', -1)), 0) == 0x3275 and int(str(d.get('product_id', -1)), 0) == 0x0080]
+assert len(matches) == 1, f'expected one PX-S1UD 3275:0080 node, got {len(matches)}'
+path = matches[0].get('device_path')
+assert path and path.startswith('/dev/bus/usb/'), 'matching USB path missing'
+print(path)
+PY
+)
+printf '%s\n' "$USB_NODE" > "$LOG/termux-usb-selected.txt"
+termux-usb -r "$USB_NODE"
+```
+
+daemonのUSB起動は `termux-usb -r -e "$DAEMON --instance $INSTANCE --runtime-dir $RT --firmware $FW" "$USB_NODE"` とし、`termux-usb -e` が渡すFDをdaemonが所有する。別terminalの`$C`/`$B`には同じinstance/runtimeを指定し、clientへUSB FDやfirmwareを渡さない。受信中にユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後は上の列挙・一意選択手順を再実行して新nodeを記録し、daemonを同じinstance/runtimeで起動し直して30秒受信する。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
 - 追加の移植性確認（Fedora SELinux、Gentoo、NixOS、Chimera、Alpine/mdev、OpenWrt、FreeBSD、Debian i386）は[移植性確認手順](platforms/portability-checks.md)を参照する。Stable release gateのmatrix・合否対象には含めない。
 - **E15-G Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
 - **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの3 programを使う。OS build、Zadig/WinUSB version、各EXEのcandidate固有SHA（同じZIPのmanifestと照合）を記録する。旧`packaging/windows-baseline.sha256`は単体版の履歴であり、現行candidateとの一致を要求しない。USB IDとselectorを確認して、PowerShellで次の操作を行う。S-CTRLは`--control`付きconsumerのconsole stdinから渡す。[今回の統合3program記録](platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)では1台の30秒受信・TS整合性・lease解放・正常停止を確認した。hotplug・soak・最終RC認定は未実施であり、以下の手順の記載自体を成功記録と扱わない。
 
 ```powershell
 $D = (Resolve-Path .\sianod.exe).Path
+$CandidateDir = (Get-Location).Path
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
 $FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$firmwareSha = (Get-FileHash -LiteralPath $FW -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($firmwareSha -ne '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818') { throw 'candidate firmware hash mismatch' }
 $INSTANCE = 's1ud'
 $LOG = 'C:\siano-e17-<run-id>-logs'
 if (Test-Path $LOG) { throw "refusing to reuse existing log path: $LOG" }
@@ -503,17 +585,20 @@ $INSTANCE = 's1ud'
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
 & $C --instance $INSTANCE --runtime-dir $RT status
-$p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c 22 -o hotplug.ts" -PassThru -NoNewWindow -RedirectStandardError hotplug.err
+$hotplugTs = Join-Path $LOG 'hotplug.ts'; $hotplugErr = Join-Path $LOG 'hotplug.err'
+$p = Start-Process -FilePath $B -ArgumentList @('--instance',$INSTANCE,'--runtime-dir',$RT,'-c','22','-o',$hotplugTs) -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardError $hotplugErr
 Start-Sleep -Seconds 20
 # ここで利用者がUSBを抜く。2分以内に終了し、ExitCode 7であることを確認する
-if ($p.WaitForExit(120000)) { $p.Refresh(); $p.ExitCode }
-else { 'HANG: record PID and timeout; return to the owning console and stop with Ctrl+C; do not force-terminate' }
+if ($p.WaitForExit(120000)) { $p.Refresh(); $usbRc = $p.ExitCode }
+else { $usbRc = 'timeout'; 'HANG: record PID and timeout; return to the owning console and stop with Ctrl+C; do not force-terminate' }
+"$usbRc" | Set-Content (Join-Path $LOG 'hotplug.rc')
 # daemon consoleでCtrl+C。利用者がUSBを戻してから同consoleで
 # --list-jsonでselectorを確認し、上と同じdaemon起動を行う。
 # daemonがreadyになったらconsumer consoleで:
 & $C --instance s1ud --runtime-dir $RT status
-& $B --instance s1ud --runtime-dir $RT -c 22 -t 30 -o reconnected.ts 2> reconnected.err
-$LASTEXITCODE                 # 0を期待
+$reconnectedTs = Join-Path $LOG 'reconnected.ts'; $reconnectedErr = Join-Path $LOG 'reconnected.err'
+& $B --instance $INSTANCE --runtime-dir $RT -c 22 -t 30 -o $reconnectedTs 2> $reconnectedErr
+$LASTEXITCODE | Set-Content (Join-Path $LOG 'reconnected.rc') # 0を期待
 Get-Process siano-ts -ErrorAction SilentlyContinue
 # 終了時はdaemon consoleでCtrl+C。
 ```
