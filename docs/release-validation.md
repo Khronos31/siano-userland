@@ -191,7 +191,7 @@ PORT=<enumerated USB port>
 "$C" --instance "$INSTANCE" --runtime-dir "$RT" list > "$LOG/list.txt"
 ```
 
-USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` にPX-S1UD、USB ID、`port`、受信機情報があること。通常の一覧・稼働状態は `sianoctl list/status` でdaemonへ照会し、旧単体版の `siano-ts --list` のテキスト出力を配布手順の判定に使わない。
+USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` にPX-S1UD、USB ID、`port`、受信機情報があること。通常の一覧・稼働状態は `sianoctl list/status` でdaemonへ照会し、discoveryとdaemon状態の記録を区別する。
 
 ```sh
 # S-RX（$S 秒受信。Sianoのreceiverは0のみ）
