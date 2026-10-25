@@ -11,13 +11,11 @@ Status: v3 (2026-10-25)
 3. 試験結果をversion別文書へ記録してcommitする。
 4. 候補sourceから製品codeの変更がない文書only commitであることを確認し、そのcommitへのrelease tagから自動build/releaseする。
 
-Sianoの現在の`.github/workflows/release.yml`は`workflow_dispatch`だけをtriggerに持ち、tag eventによる自動build/releaseは定義していない。従って現workflowのままでは工程4は未達であり、Stable公開へ進めない。このdocs-only変更ではworkflow/sourceを変更せず、未実装のtag用コマンドや自動動線を記載しない。
-
 candidateのsource、package、build inputを回帰・soak完了前に変更した場合は新candidateを作成し、影響する試験を行う。結果記録commit後はcandidateと製品codeが同一であることを確認し、共通release方針のtag/build工程へ進む。ソークは30分以上の連続TS取得を指し、別途指示された場合はその指示を適用する。物理抜差しをユーザーに依頼する場合、各操作の直前に通知し、依頼後最大5分待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
 
 ## 変更記録
 
-- v3 (2026-10-25): 各release全配布archiveのnative回帰を維持し、試験結果commit・製品code不変確認後のtag自動build/releaseへ共通工程を整合。現workflowがtag自動build/releaseに未対応のため、その工程を未達と記録。
+- v3 (2026-10-25): 各release全配布archiveのnative回帰を維持し、試験結果commit・製品code不変確認後のrelease工程へ共通手順を整合。
 - v2 (2026-10-07): 当時の7 archive短時間確認・candidate bytes公開方針を記録。現行release頻度と最終release工程は上記の共通方針に従う。
 
 ## 共通の検証項目と頻度
@@ -32,6 +30,64 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 | 初回/major | 必要時項目を通し、代表機で全無料channelを各10秒TS取得。macOS/Windows各30分連続、残るOS/ABI各10分連続で取得する。全channel取得は代表機だけ。別途指示されたソークは別記する。 | 地上波の実地域channelを現地planから選ぶ。衛星channelは対象外。 |
 
 全配布archiveは各archiveのnative OS/ABI上で回帰し、代表機用の全channel10秒試験は他archiveへ広げない。下記は具体的な候補準備・起動・操作・cleanup手順であり、版別文書に実施した操作と結果を記録する。
+
+## 共通実行環境表
+
+| ID | OS / ABI | 依存 / driver / permission | firmware / input | CARD backend | 配布artifact / 手順 |
+|---|---|---|---|---|---|
+| E01 | HAOS SCS Debian/glibc x86_64 | container root / USB access pathを記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
+| E02 | HAOS Alpine/musl x86_64 | add-on access pathを記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
+| E03 | AnduinOS glibc x86_64 | libusb static archive / USB permission | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
+| E04 | macOS arm64 | libusb / USB permission | 対応PX-S1UD firmware | 非対応 | `darwin-arm64` / §7 |
+| E05 | Android Termux aarch64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-aarch64` / §7 |
+| E06 | Android Termux armv7a | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-armv7a` / §7 |
+| E07 | Bliss OS Termux x86_64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-x86_64` / §7 |
+| E08–E13 | Fedora/Gentoo/NixOS/Chimera/Alpine/OpenWrt x86_64 | conditional/historical access pathを個別記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
+| E15 | Fedora aarch64 / L4T | native USB claim | 対応PX-S1UD firmware | 非対応 | `linux-aarch64` / §7 |
+| E17 | Windows 11 x86_64 | WinUSB driver/access path | 対応PX-S1UD firmware | 非対応 | `windows-x64` / §7 |
+
+行は一般の実行環境対応であり、版ごとのhost実測・候補検証結果ではない。各版の実測OS/ABIとaccess pathは版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
+
+## 共通試験シナリオ
+
+各項目は「適用頻度/対象能力、準備/起動、操作/利用者への依頼、期待値、停止/cleanup、記録」の順に記す。HAOS/SCSの物理操作は各依頼直前にCodexが`beep`、Claude Codeが`vibe`を実行し、利用者へ具体的操作を依頼してから最大5分待つ。期限内に完了しなければ未完了として物理機器を使う工程を中断する。
+
+### A. 列挙と最大同時受信
+
+| 適用頻度 / 対象能力 | 準備 / 起動 | 操作 / 利用者への依頼 | 期待値 | 停止 / cleanup | 記録 |
+|---|---|---|---|---|---|
+| 毎release。単一PX-S1UD receiver | candidate native archive、firmware hash、USB `port=`、空のruntimeを用意 | `sianod --list-json`で列挙後、`sianod`を起動し`sianoctl status/list`、短時間`--receiver 0`受信を実施 | daemon/client exit、TS同期・TEI/continuity、packet/USB counterを確認。公開receiver 1以外の能力を要求しない | clientを正常停止しdaemonを正常停止。process/FD/IPC残留なし | source/candidate/archive SHA、host/OS/ABI、USB port、firmware hash、command/exit、TS/counters |
+
+client稼働中に別terminalから`"$D/sianoctl" --instance "$INSTANCE" --runtime-dir "$RT" status`と`list`を照会する。受信中control/retuneが変更対象または指定されたときは、§7.1のS-CTRL手順で`--control` clientへ`channel`/`tune`/`quit`を入力し、各応答、stream状態、client/daemon exitを対応付けて記録する。
+
+### B. CARD適用性
+
+SianoはCARD reader、ATR/APDU、PC/SC/WinSCard機能を提供しない。CARD抜去・再挿入コマンドは実行せず、結果欄は「対象外」とする。USB抜去/再接続は次の独立シナリオで行う。
+
+### C. USB抜去・再接続
+
+| 適用頻度 / 対象能力 | 準備 / 起動 | 操作 / 利用者への依頼 | 期待値 | 停止 / cleanup | 記録 |
+|---|---|---|---|---|---|
+| 毎release。idle時および単一receiver streaming時 | `sianod --list-json`でUSB portを固定し、idle/streamingを別runにする | 親が対象機器を抜くよう利用者へ依頼し、依頼後最大5分待つ。抜去後、同じ物理portへ戻すよう依頼する | client/daemon切断表示とexitを記録。切断clientが有限時間で終了し、再列挙後に短時間取得できること。hotplug自動復帰は期待しない | 旧daemonを通常停止後、新しいdaemon/runtimeで起動し、短時間取得・正常停止・process/FD/IPC残留なしを確認 | USB操作時刻、host/port、client/daemon exit、再列挙/再受信、log/cleanup |
+
+| 条件付き。2台列挙/selector/切断処理変更時、または2 device試験を指定された場合 | `sianod --list-json`で`PORT_A`/`PORT_B`を選び、別runtime `RT_A`/`RT_B`を用意 | 下記のように2 daemon/runtime/clientを開始し、親がdevice A抜去を利用者へ依頼して最大5分待つ | A clientは有限時間で切断exit 7、B clientは受信を継続して正常終了exit 0。A再接続後に再列挙し、新daemon/runtimeから短時間取得 | A/B clientを正常停止し各daemonを別々に停止・wait。両runtime/process/FD cleanupを確認 | port/device別daemon・client PID、切断側/残存側exit、stream継続、再列挙/再取得、cleanup |
+
+```sh
+"$D/sianod" --device "usb:$PORT_A" --instance A --firmware "$FW" --runtime-dir "$RT_A" & PID_A=$!
+"$D/sianod" --device "usb:$PORT_B" --instance B --firmware "$FW" --runtime-dir "$RT_B" & PID_B=$!
+"$D/siano-ts" --instance A --runtime-dir "$RT_A" --receiver 0 -c 22 -t 30 -o "$LOG/A.ts" & CLIENT_A=$!
+"$D/siano-ts" --instance B --runtime-dir "$RT_B" --receiver 0 -c 22 -t 30 -o "$LOG/B.ts" & CLIENT_B=$!
+"$D/sianoctl" --instance A --runtime-dir "$RT_A" status
+"$D/sianoctl" --instance B --runtime-dir "$RT_B" status
+```
+
+device Aを戻した後は`"$D/sianod" --list-json`で再列挙し、Aの旧client/daemonを停止・waitしてから同じruntimeを通常cleanupする。新しい`RT_A2`で`sianod --device "usb:$PORT_A" --instance A2 --firmware "$FW" --runtime-dir "$RT_A2"`を起動し、`sianoctl status/list`と30秒`-c 22 -t 30`受信を行う。試験終了時はclientごとの終了値を保存し、A/B daemonをそれぞれSIGINTで通常停止・waitしてprocess/IPC/USB FD残留を確認する。
+
+1台しか使えない環境では2台同時/残存側継続を未実施と記録し、単体切断手順を2台試験の代替にしない。
+
+### D. teardown・結果
+
+USB切断時の期待終了値はREADMEと候補実測を照合する。停止/cleanupの各結果は成功値を仮定せず保存する。頻度別の実施状況・未実施・失敗は版別記録へ置き、物理操作の応答がない工程は未完了とする。
 
 ## 0. 環境IDと状態語彙
 
@@ -327,9 +383,9 @@ Get-Process siano-ts -ErrorAction SilentlyContinue
 
 USBを物理的に外しても有限終了しない場合はhangとして失敗を記録する。各物理操作は依頼直前に通知し、依頼から最大5分待つ。
 
-## 8. 切断時の exit code（事実）
+## 8. USB切断時の期待値
 
-現行 v0.1.9 では、受信中の fatal transfer failure を `stream-state.c` の `siano_stream_disconnect_error()` が `LIBUSB_ERROR_IO` / `LIBUSB_ERROR_PIPE` / `LIBUSB_ERROR_NO_DEVICE` から `LIBUSB_ERROR_NO_DEVICE` に写像し、`exit-codes.c` が exit 7 を返す。README の「受信中の USB 切断 = exit 7」はこの受信経路について現行実装と一致している。v0.1.5のexit 1は変更前コード（`exit-codes.c`はv0.1.8 `d333ff5`、`IO`/`PIPE`写像はv0.1.9 `9883025`で導入）の測定である。現行candidateのexit 7は該当版が選択したOS/architectureで実機確認し、その版別記録に結果を記す。過去結果は今回の確認を代替しない。
+受信中にUSBが切断されたclientはREADMEのUSB error contractに従ってexit 7を返すことを期待する。対象candidateのOS/ABIごとに実測し、他版の終了値で代用しない。
 
 ## 9. 記録
 
