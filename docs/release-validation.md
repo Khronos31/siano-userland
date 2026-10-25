@@ -1,6 +1,6 @@
 # Stable リリース前検証手順
 
-この文書の製品固有の検証操作・詳細コマンドは引き続き使用します。candidateへの適用頻度と1.0.0固有matrixは [`release-validation-current.md`](release-validation-current.md) に従います。以下の個別候補の実測値・結果は今回候補の合格を意味しません。
+この文書はSiano Stable releaseで再利用する準備・操作・判定・cleanupの正本です。版ごとの適用matrixと検証記録は [`release-validation/1.0.0.md`](release-validation/1.0.0.md) のように版別文書へ記録します。個別候補の実測値・結果は今回候補の合格を意味しません。
 
 Status: v2 (2026-10-07)
 
@@ -64,7 +64,7 @@ Status: v2 (2026-10-07)
 4. 対象 claim ごとに `継承` / `今回再検証` / `未認定` / `対象外` を根拠付きで記録する。時間経過・release 回数だけを理由にした再検証はしない。
 5. 前回の長時間試験の日付やrelease数は事実情報として記録できるが、エージェントがsoak有無・時間・OSを決める規則として使わない。
 
-影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。選択する短時間実機確認のarchiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は [`release-validation-current.md`](release-validation-current.md) に従う。
+影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。選択する短時間実機確認のarchiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は該当版の `docs/release-validation/<version>.md` に従う。
 
 ## 2. source / CI / candidate artifact gate（毎回）
 
@@ -99,7 +99,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 
 ## 3. 配布artifactごとの実機短時間確認手順
 
-1. [`release-validation-current.md`](release-validation-current.md) によって選択されたfinal candidate archiveを対応する実機環境で確認する。下表はarchiveごとの操作方法とnative環境の対応表であり、全archiveを各releaseで実施する指定ではない。1.0.0 matrixでは全対象binaryを含める。これは同じx86_64実行ファイルを複数ディストリビューションで総当たりする手順ではない。環境IDの特異な名前にかかわらず、artifactのOS/ABIに対応した試験対象として扱う。
+1. 該当版の `docs/release-validation/<version>.md` で選択されたfinal candidate archiveを対応する実機環境で確認する。下表はarchiveごとの操作方法とnative環境の対応表であり、全archiveを各releaseで実施する指定ではない。1.0.0 matrixでは全対象binaryを含める。これは同じx86_64実行ファイルを複数ディストリビューションで総当たりする手順ではない。環境IDの特異な名前にかかわらず、artifactのOS/ABIに対応した試験対象として扱う。
 
 | 配布artifact | 環境例 | 使用機器 | 選択時の短時間確認 |
 |---|---|---|---|
@@ -283,7 +283,7 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 
 ## 8. 切断時の exit code（事実）
 
-現行 v0.1.9 では、受信中の fatal transfer failure を `stream-state.c` の `siano_stream_disconnect_error()` が `LIBUSB_ERROR_IO` / `LIBUSB_ERROR_PIPE` / `LIBUSB_ERROR_NO_DEVICE` から `LIBUSB_ERROR_NO_DEVICE` に写像し、`exit-codes.c` が exit 7 を返す。README の「受信中の USB 切断 = exit 7」はこの受信経路について現行実装と一致している。v0.1.5のexit 1は変更前コード（`exit-codes.c`はv0.1.8 `d333ff5`、`IO`/`PIPE`写像はv0.1.9 `9883025`で導入）の測定である。現行candidateのexit 7は、`release-validation-current.md` が選択したOS/architectureで実機確認し、そのcandidate recordに結果を記す。過去結果は今回の確認を代替しない。
+現行 v0.1.9 では、受信中の fatal transfer failure を `stream-state.c` の `siano_stream_disconnect_error()` が `LIBUSB_ERROR_IO` / `LIBUSB_ERROR_PIPE` / `LIBUSB_ERROR_NO_DEVICE` から `LIBUSB_ERROR_NO_DEVICE` に写像し、`exit-codes.c` が exit 7 を返す。README の「受信中の USB 切断 = exit 7」はこの受信経路について現行実装と一致している。v0.1.5のexit 1は変更前コード（`exit-codes.c`はv0.1.8 `d333ff5`、`IO`/`PIPE`写像はv0.1.9 `9883025`で導入）の測定である。現行candidateのexit 7は該当版が選択したOS/architectureで実機確認し、その版別記録に結果を記す。過去結果は今回の確認を代替しない。
 
 ## 9. 記録
 
@@ -292,7 +292,7 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 次をすべて満たすまで Stable 公開へ進まない。
 
 - CI・artifact audit・source/license・checksum gate が成功。
-- final candidateについて、release-validation-current.mdで当該releaseに適用される短時間matrixが成功し、ユーザーが選択した場合はSoakの指定試験も完了している。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
+- final candidateについて、該当版の `docs/release-validation/<version>.md` で当該releaseに適用される短時間matrixが成功し、ユーザーが選択した場合はSoakの指定試験も完了している。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
 - README の各 claim が実証または適格な baseline 継承に対応し、未試験の組合せを認定表示していない。
 - crash、hang、stale state、再接続不能、重大な未解決 issue がない。
 - 短時間matrixに未完了の配布artifactがある場合はStable gate未完了とし、support表示だけで完了扱いしない。
