@@ -33,18 +33,18 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 
 ## 共通実行環境表
 
-| ID | OS / ABI | 依存 / driver / permission | firmware / input | CARD backend | 配布artifact / 手順 |
-|---|---|---|---|---|---|
-| E01 | HAOS SCS Debian/glibc x86_64 | container root / USB access pathを記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
-| E02 | HAOS Alpine/musl x86_64 | add-on access pathを記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
-| E03 | AnduinOS glibc x86_64 | libusb static archive / USB permission | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
-| E04 | macOS arm64 | libusb / USB permission | 対応PX-S1UD firmware | 非対応 | `darwin-arm64` / §7 |
-| E05 | Android Termux aarch64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-aarch64` / §7 |
-| E06 | Android Termux armv7a | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-armv7a` / §7 |
-| E07 | Bliss OS Termux x86_64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 非対応 | `android-x86_64` / §7 |
-| E08–E13 | Fedora/Gentoo/NixOS/Chimera/Alpine/OpenWrt x86_64 | conditional/historical access pathを個別記録 | 対応PX-S1UD firmware | 非対応 | `linux-x86_64` / §7 |
-| E15 | Fedora aarch64 / L4T | native USB claim | 対応PX-S1UD firmware | 非対応 | `linux-aarch64` / §7 |
-| E17 | Windows 11 x86_64 | WinUSB driver/access path | 対応PX-S1UD firmware | 非対応 | `windows-x64` / §7 |
+| ID | OS / ABI | 依存 / driver / permission | firmware / input | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
+|---|---|---|---|---|---|---|
+| E01 | HAOS SCS Debian/glibc x86_64 | container root / USB access pathを記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
+| E02 | HAOS Alpine/musl x86_64 | add-on access pathを記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
+| E03 | AnduinOS glibc x86_64 | libusb static archive / USB permission | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
+| E04 | macOS arm64 | libusb / USB permission | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `darwin-arm64` / §7 |
+| E05 | Android Termux aarch64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-aarch64` / §7 |
+| E06 | Android Termux armv7a | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-armv7a` / §7 |
+| E07 | Bliss OS Termux x86_64 | Termux USB permission / 1-FD | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `android-x86_64` / §7 |
+| E08–E13 | Fedora/Gentoo/NixOS/Chimera/Alpine/OpenWrt x86_64 | conditional/historical access pathを個別記録 | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-x86_64` / §7 |
+| E15 | Fedora aarch64 / L4T | native USB claim | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `linux-aarch64` / §7 |
+| E17 | Windows 11 x86_64 | WinUSB driver/access path | 対応PX-S1UD firmware | 内蔵CARD CLI/APIなし | native adapterなし | `windows-x64` / §7 |
 
 行は一般の実行環境対応であり、版ごとのhost実測・候補検証結果ではない。各版の実測OS/ABIとaccess pathは版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
