@@ -184,8 +184,8 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 
 - **適用対象/頻度:** 必要時、複数device/selector/access変更時。
 - **準備:** USB port/selectorとinstance/runtimeをdeviceごとに割り当てる。
-- **実操作/利用者への依頼:** PORT_A/B別runtime/instanceのsianodとsiano-ts clientを同時起動し、A抜去時B継続を確認。
-- **期待値/終了値:** device/selector対応一意。別deviceの結果を混同せず、要求時は各sideを独立判定。
+- **実操作/利用者への依頼:** PORT_A/B別runtime/instanceでsianodとsiano-tsを起動し各TSを保存する。受信中に利用者へAの抜去を依頼し、A/Bのclient終了値とstatusを別々に採取する。再接続後Aを再列挙して新daemon/runtimeから再取得する。
+- **期待値/終了値:** Aの切断clientはexit 7、Bの継続clientはexit 0でTS/counter合格。A再接続後の新規受信はexit 0。Bの結果をAの復帰証拠にしない。
 - **停止/cleanup:** 各client/daemon個別wait/stopしFD/IPC/socket確認。
 - **記録:** device/port/PID/runtime、各exit/継続/再取得/access/cleanup。
 
