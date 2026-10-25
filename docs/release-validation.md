@@ -75,8 +75,8 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 ### T00 候補/配布物固定
 
 - **適用対象/頻度:** 毎releaseのcandidate作成時。
-- **準備:** source SHA、CI run/attempt、archive targetとhashを固定。POSIX git rev-parse HEAD/sha256sum、Windows Get-FileHashを保存。
-- **実操作/利用者への依頼:** 固定したsource commitとCI runから候補archiveを取得し、POSIXではsha256sum -c SHA256SUMS、WindowsではGet-FileHashでarchive hashを照合する。archive manifest/source refがcandidate commit/runと一致することを確認する。
+- **準備:** source SHA、CI run/attempt、archive targetとhashを固定。POSIXではgit rev-parse HEADを保存し、macOSはshasum -a 256、Linuxはsha256sum、WindowsはGet-FileHashでhashを確認する。
+- **実操作/利用者への依頼:** 固定したsource commitとCI runから候補archiveを取得し、macOSでは`shasum -a 256 -c SHA256SUMS`、Linuxでは`sha256sum -c SHA256SUMS`、WindowsではGet-FileHashでarchive hashを照合する。対象archive個別のdigestもmacOSでは`shasum -a 256 "$ARCHIVE"`、Linuxでは`sha256sum "$ARCHIVE"`で表示し、manifest entryと一致することを確認する。archive manifest/source refがcandidate commit/runと一致することを確認する。
 - **期待値/終了値:** provenance/hash一致の候補だけ次へ進む。候補不在は未完了。
 - **停止/cleanup:** deviceを開かず、archive/logを保持。
 - **記録:** source SHA、CI run/attempt、artifact ID/target/hash、取得日時、未取得理由。
@@ -273,17 +273,25 @@ OS/ABI固有の起動方法は以下の環境recipeと§3のarchive手順を使�
    - `siano-ts-<version>-source.tar.gz`
 4. 候補 commit が変わったら、その commit の CI と artifact を取り直す。PR run や旧 candidate、手元 build を代用しない。
 5. `release.yml` の `Package, audit, and compare deterministic archives` step が、同一run内で全archiveを2回packageしてbyte一致を確認していること、Windows jobの`reproducible-windows-build.ps1`が成功していることを確認する。正規化（timestamp等のマスク）による一致は認めない。
-6. 工程4の公開後、GitHub Releaseからassetを新しい空ディレクトリへ取得し、試験に使ったcandidateの`SHA256SUMS`と`cmp`で一致すること、および各archiveが`sha256sum -c`を通ることを確認する。差があれば公開を取り下げて原因を調べる。比較したrunとrelease、判定を記録する。
+6. 工程4の公開後、GitHub Releaseからassetを新しい空ディレクトリへ取得し、試験に使ったcandidateの`SHA256SUMS`と`cmp`で一致すること、および各archiveがmacOSでは`shasum -a 256 -c`、Linuxでは`sha256sum -c`を通ることを確認する。差があれば公開を取り下げて原因を調べる。比較したrunとrelease、判定を記録する。
 
 ```sh
 gh workflow run release.yml --ref <candidate-ref>          # 未実行のときのみ
 gh run list --workflow release.yml --limit 10
 gh run view <run-id> --json headSha,conclusion
 gh run download <run-id> --name release-candidate --dir <new-empty-dir>
-(cd <new-empty-dir> && sha256sum -c SHA256SUMS)
+if [ "$(uname -s)" = Darwin ]; then
+  (cd <new-empty-dir> && shasum -a 256 -c SHA256SUMS)
+else
+  (cd <new-empty-dir> && sha256sum -c SHA256SUMS)
+fi
 # 工程4の公開後
 gh release download v<version> --dir <another-new-empty-dir>
-(cd <another-new-empty-dir> && sha256sum -c SHA256SUMS)
+if [ "$(uname -s)" = Darwin ]; then
+  (cd <another-new-empty-dir> && shasum -a 256 -c SHA256SUMS)
+else
+  (cd <another-new-empty-dir> && sha256sum -c SHA256SUMS)
+fi
 cmp <new-empty-dir>/SHA256SUMS <another-new-empty-dir>/SHA256SUMS
 ```
 
@@ -359,7 +367,11 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 D=<extracted dir>; DAEMON=$D/sianod; C=$D/sianoctl; B=$D/siano-ts
 FW=$D/firmware/isdbt_rio.inp; LOG=<log dir>; RT=<runtime dir>; INSTANCE=s1ud
 mkdir -p "$RT" "$LOG"
-sha256sum "$FW"                       # 054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818
+if [ "$(uname -s)" = Darwin ]; then
+  printf '%s  %s\n' '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818' "$FW" | shasum -a 256 -c -
+else
+  printf '%s  %s\n' '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818' "$FW" | sha256sum -c -
+fi
 "$DAEMON" --list-json > "$LOG/discovery.json"  # enclosures[].devices[].portからPORTを選択
 PORT=<enumerated USB port>
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
@@ -388,9 +400,12 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 # S-SIG（clientを止め、daemonは維持）
 "$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -o "$LOG/sig.ts" \
   2> "$LOG/sig.err" & CLIENT_PID=$!
-sleep 30; kill -INT "$CLIENT_PID"; wait "$CLIENT_PID"
+sleep 30
+kill -INT "$CLIENT_PID"
+if wait "$CLIENT_PID"; then CLIENT_RC=0; else CLIENT_RC=$?; fi
+printf '%s\n' "$CLIENT_RC" > "$LOG/sig-client.rc"
 "$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/status-after-client-stop.txt"
-# S-RESID: client processなし、TS出力close、ctl status/listが同じdaemonへ接続
+# S-RESID: client processなし、TS出力close、ctl status/listが同じdaemonへ接続。CLIENT_RCはsignal後の実値として記録し、daemon/cleanupの終了値と混ぜない。非zeroでも後続の記録とcleanupを続ける。
 ```
 
 ```sh
