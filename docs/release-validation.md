@@ -13,11 +13,6 @@ Status: v3 (2026-10-25)
 
 candidateのsource、package、build inputを回帰・soak完了前に変更した場合は新candidateを作成し、影響する試験を行う。結果記録commit後はcandidateと製品codeが同一であることを確認し、共通release方針のtag/build工程へ進む。ソークは一定時間以上の連続したTS取得を指し、具体的な時間は適用頻度と版別matrixに従う。物理抜差しをユーザーに依頼する場合、各操作の直前に通知し、依頼後最大5分待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
 
-## 変更記録
-
-- v3 (2026-10-25): 各release全配布archiveのnative回帰を維持し、試験結果commit・製品code不変確認後のrelease工程へ共通手順を整合。
-- v2 (2026-10-07): 当時の7 archive短時間確認・candidate bytes公開方針を記録。現行release頻度と最終release工程は上記の共通方針に従う。
-
 ## 共通の検証項目と頻度
 
 用語は4製品で共通とする。代表機はLinux x86_64 glibc、機種はチューナー、製品はドライバ、ソークは一定時間以上の連続したTS取得を指す。時間条件は適用頻度と版別matrixに従う。Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対象を限定しない。Sianoが対象とする全機種で初回手順を個別に実施し、結果は[`release-validation/initial-model-checks.md`](release-validation/initial-model-checks.md)へ機種別に記録する。
@@ -44,29 +39,23 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 | RF試験入力（system / channel） | 実際に受信させる放送systemと現地channel | firmware、機種data、candidate実績 | `system:` と `channel:`。対応波がない場合は `なし（理由）` |
 | 製品CLIからの内蔵CARD操作 | 製品固有CLI/APIの操作範囲 | PC/SC/WinSCard adapter、実機合否 | 操作名とmodel依存条件。機能なしは `なし` |
 | native PC/SC/WinSCard adapter | その行のOS標準APIへ接続する製品adapterの種類・配布形態 | 製品CLI CARD、adapter実機試験結果、他OSのadapter | OS/ABI行に該当する`Linux PC/SC:`、`macOS PC/SC:`、`Android:`または`Windows WinSCard:`だけを記載 |
-| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: §番号` の順 |
+| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: [archive別手順](#3-release-archive-procedure)` の順 |
 
 共通IDは E02=Linux/x86_64/musl、E03=Linux/x86_64/glibc、E04=macOS/arm64、E05=Android/aarch64、E06=Android/armv7a、E07=Android/x86_64、E15-G=Linux/aarch64/glibc、E15-M=Linux/aarch64/musl、E17=Windows 11/x86_64を表す。IDはhost名や試験済み状態を表さない。SianoのLinux binaryは各architectureにつき1つの静的musl archiveであり、glibc/musl別artifactではない。
 
 | ID | OS / ABI | 依存 / driver / permission | firmware / 補助data | RF試験入力（system / channel） | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
 |---|---|---|---|---|---|---|---|
-| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: §7 |
-| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-aarch64`; procedure: §7 |
-| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-armv7a`; procedure: §7 |
-| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-x86_64`; procedure: §7 |
-| E08 | Linux / x86_64 / glibc (Fedora) | libusb: 静的1.0.30; USB access: Fedoraのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E09 | Linux / x86_64 / 未特定 (Gentoo) | libusb: 静的1.0.30; USB access: Gentooのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E10 | Linux / x86_64 / glibc (NixOS) | libusb: 静的1.0.30; USB access: NixOSのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E11 | Linux / x86_64 / musl (Chimera Linux) | libusb: 静的1.0.30; USB access: Chimera Linuxのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E12 | Linux / x86_64 / musl (Alpine Linux) | libusb: 静的1.0.30; USB access: Alpineのmdev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E13 | Linux / x86_64 / 未特定 (OpenWrt) | libusb: 静的1.0.30; USB access: OpenWrtのplatform permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: §7 |
-| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: §7 |
+| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-aarch64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-armv7a`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: [archive別手順](#3-release-archive-procedure) |
 
-行は一般の実行環境と必要なaccess条件を記す。各版の実際のhost名と実施結果は版別記録に残す。E08–E13は各OS固有手順が適用される場合の環境であり、E14 FreeBSDとE16 Debian i386はbinary archive対象に含めない。SianoにはCARD、PC/SC、WinSCardのbackendはない。
+行は正式配布archiveのnative/canonical runtimeと必要なaccess条件を記す。追加のOS/ABI・access path確認は[移植性確認手順](platforms/portability-checks.md)へ分離する。各版のhost名と実施結果は版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
 ## 共通試験シナリオ T00–T14
 
@@ -209,42 +198,26 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 
 N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsupported、candidate欠落、未実施、失敗、環境不能は版別結果で未達とし、passに読み替えない。手順に記した期待値は実測結果ではない。
 
-## 0. 環境IDと状態語彙
+## 0. 共通artifact matrixと共通手順
 
-短時間確認は配布artifactと対応する環境で実施する。soak対象OSはユーザー決定後に選ぶ。AppArmor、usbip、SELinux、mdev などはその環境の access path note として記録する。
+各冊の「共通実行環境表」は、Stable release gateで確認する正式配布artifactとnative/canonical runtimeの対応matrixである。環境IDはOS/ABIとUSB access boundaryを識別し、host名や試験状態を表さない。正式な対象archiveはREADME/SPECと各版のmatrixに従う。
 
-| ID | 環境 | siano の位置づけ | 主 artifact / doc |
-|---|---|---|---|
-| E01 | HAOS x86_64 Debian/glibc SCS | canonical runtime（`linux-x86_64`、container root）。production host | §7 / [validation-results.md](platforms/validation-results.md) |
-| E02 | HAOS x86_64 Alpine/musl add-on | canonical runtime（`linux-x86_64` と同一 static binary、Supervisor add-on）。production host | §7 / validation-results.md |
-| E03 | AnduinOS x86_64 | canonical Linux x86_64 runtime | §7 / validation-results.md |
-| E04 | macOS arm64 | canonical runtime（`darwin-arm64`） | §7 / validation-results.md |
-| E05 | Android Termux aarch64 | canonical runtime（`android-aarch64`、1-FD） | §7 / validation-results.md |
-| E06 | Android Termux armv7a | canonical runtime（`android-armv7a`、1-FD、唯一の配布32-bit） | §7 / validation-results.md |
-| E07 | Bliss OS x86_64 Termux | canonical runtime（`android-x86_64`、1-FD） | §7 / validation-results.md |
-| E08 | Fedora x86_64（SELinux） | historical-only / conditional | §7 / [Fedora SELinux](platforms/fedora-selinux.md) |
-| E09 | Gentoo x86_64 | unverified（記録なし） | §7 |
-| E10 | NixOS x86_64 | historical-only / conditional | §7 / [NixOS](platforms/nixos.md) |
-| E11 | Chimera Linux x86_64 | historical-only / conditional | §7 / [Chimera](platforms/chimera-linux.md) |
-| E12 | Alpine x86_64（mdev） | historical-only / conditional（`packaging/mdev/**` 変更時） | §7 / [mdev](platforms/alpine-mdev.md) |
-| E13 | OpenWrt x86_64 | historical-only / conditional | §7 / validation-results.md |
-| E14 | FreeBSD x86_64 | 対象外（README 対象外。記録は履歴のみ） | 対象外 |
-| E15-G | Fedora aarch64（L4T kernel） | canonical runtime（`linux-aarch64` のnative execution environment） | §7 / validation-results.md |
-| E16 | Debian x86/i386 | source-build-only（i386 配布 artifact なし） | §7 / [Debian i386](platforms/debian-i686.md) |
-| E17 | Windows 11 x86_64 | canonical runtime（`windows-x64`、WinUSB）。product 対象 | §7 / README |
-| — | Android ad-hoc APK | 対象外（dtv-android 所管） | 対象外 |
+| 共通要素 | 役割 |
+|---|---|
+| 環境ID | OS/ABIとruntime/access条件の識別子。host名・実施状態は版別記録に残す。 |
+| 配布artifact matrix | 上の環境表で正式archiveと試験環境を対応付ける。追加の移植性確認環境はこのmatrixへ含めない。 |
+| T00–T14 | 共通の試験項目・操作・期待値・cleanup・記録項目を示す。 |
+| 共通コマンド | CLIやOS固有の実コマンドは製品ごとに異なる。各環境表の「配布artifact / 手順」リンク先と続くrecipeを使い、製品間で同じCLIを仮定しない。 |
+| 状態語彙 | 実施状態は下の共通語彙を版別記録で使う。試験結果の合否とは別に記録する。 |
 
-このmatrixは現行release archiveの7 targetと、PX-S1UDを使った既存実機記録を対応させている。根拠となる歴史的な受入結果は[validation-results.md](platforms/validation-results.md)にあり、[PR #14](https://github.com/Khronos31/siano-userland/pull/14)には2台のport選択・制御試験と、release前にhardware validationを別途行う記録、[Issue #3](https://github.com/Khronos31/siano-userland/issues/3)にはディストリビューション以外の検証軸がある。これら過去結果は、今回のexact candidate試験を代替しない。
+### 検証状態の共通語彙
 
-用語:
-
-- **canonical runtime**: その artifact の実機検証を代表する環境。同一 static binary を共有する runtime（E01/E02/E03/E08–E13）でも access path が違えば証拠は自動継承しない。
-- **conditional**: その環境に固有の材料（配布設定、構成手順）を変更したときだけ実行する。
-- **source-build-only**: 配布 artifact を持たず、source archive の native build だけで記録する。
-- **historical-only**: 過去の記録だけがあり current claim ではない。
-- **unverified**: 記録がなく current claim がない。
-
-証拠の軸は model/device profile（PX-S1UD、port path で個体を識別）、runtime/access path、feature/path、artifact/source、test context とする。PX-S1UD は serial を持たないため、個体は USB `port=`（または `bus:address`）で識別し、記録に残す。継承は同一 model・同一 runtime/access path・同一 feature について、対象 archive の bytes が baseline と同一であるか、変更の影響がないと証明できる場合に限る。未知の影響は affected として扱う。観測された失敗は原因を切り分けるまで、その host/device tuple に限定して扱う。
+| 状態 | 意味 |
+|---|---|
+| `継承` | 同一model・runtime/access path・featureで、artifact同一性または非影響の根拠がある既存証拠を適用する。 |
+| `今回再検証` | 今回のcandidateで対象を実行し、結果を記録する。 |
+| `未認定` | 対象の現行証拠がなく、合格を示せない。 |
+| `対象外` | 製品仕様の対象外に限る。未実施・環境不能・candidate欠落・失敗には使わない。 |
 
 ## 1. 候補と baseline を固定する
 
@@ -287,7 +260,7 @@ cmp <new-empty-dir>/SHA256SUMS <another-new-empty-dir>/SHA256SUMS
 
 CI が行う build・audit・smoke を成功後にローカル再実行しない。新しい汎用検証スクリプトは作らない。
 
-## 3. 配布artifactごとの実機短時間確認手順
+## 3. Release archive procedure
 
 1. 該当releaseの全配布archiveを対応するnative OS/ABIで確認する。下表はarchiveごとの操作方法とnative環境の対応表である。同じx86_64実行ファイルを複数のaccess pathで重複実行する場合はOS/ABIのnative確認と分けて記録する。
 
@@ -316,12 +289,11 @@ v0.1.5..v0.1.9 のように差分が大きい場合は、変更したファイ�
 | C3 | compiler/toolchain/SDK/NDK/runner image、`packaging/windows-baseline.sha256` 変更 | 30秒受信、正常停止 | rebuildされたbinaryを含む配布matrix | 1 | ABI/targetへの影響 |
 | C4 | platform shim: `siano-os.h`、Windows pipe（`control-input.c`）、QPC clock、`--fd`/wrap | shim された feature | Windows→E17。`--fd`/wrap→E05 + E06 + E07 と E03（Termux 3 ABI は artifact が別個） | 1 | platform shim / FD handoff |
 | C5 | firmware hash/format/load | firmware load、lock、30秒受信 | 該当binary matrix環境 | 1 | firmware初期化・stream開始 |
-| C6 | stream/queue/writer/drop policy、`--fail-on-drop`、clock/`--time`（`queue-policy.c`、`write-policy.h`、`stream-state.c`） | counter、exit 8 semantics、30秒受信。slow-sinkはoffline test | 該当binary matrix環境。source-only i386はclaim追加時 | 1（queue共有/競合変更なら同時構成も判断材料） | stream/queue/writer持続動作 |
+| C6 | stream/queue/writer/drop policy、`--fail-on-drop`、clock/`--time`（`queue-policy.c`、`write-policy.h`、`stream-state.c`） | counter、exit 8 semantics、30秒受信。slow-sinkはoffline test | 該当binary matrix環境 | 1（queue共有/競合変更なら同時構成も判断材料） | stream/queue/writer持続動作 |
 | C7 | device enumeration/selection、`--list-json`、USB location（`device-selector.c`、`usb-location.h`） | `sianod --list-json`で2台を列挙し、index/port/bus:address選択、不正selector→exit 3 | E03 + E04 + E17 | 2 | 列挙・識別の経路 |
-| C8 | disconnect/hotplug 分類、exit code（`stream-state.c`、`exit-codes.c`） | 受信中に片側切断→有限時間で exit 7、残存側 exit 0、再接続、再実行。1台/1 USB port しかない環境では有限 exit と再接続だけを確認でき、残存側 exit 0 は2台前提のため満たせない | E03 + E01 + E02 + E04 + E17 + E05 + E06 + E07（Termux 3 ABI は artifact が別個）。E13/E15-G は claim 表示時。E16 は source-build-only で release artifact・current hardware claim がないため対象外（platform-specific な diff が i386 を直接対象とする場合を除く） | 2（Termux/E17 は port が1つなら1。1台 run は full 2台 disconnect test として数えない） | hotplug / cleanupの経路 |
+| C8 | disconnect/hotplug 分類、exit code（`stream-state.c`、`exit-codes.c`） | 受信中に片側切断→有限時間で exit 7、残存側 exit 0、再接続、再実行。1台/1 USB port しかない環境では有限 exit と再接続だけを確認でき、残存側 exit 0 は2台前提のため満たせない | E01–E07、E15-G、E17（正式archiveのnative環境） | 2（Termux/E17 は port が1つなら1。1台 run は full 2台 disconnect test として数えない） | hotplug / cleanupの経路 |
 | C9 | kernel-driver detach decision（`detach-decision.h`） | bound 時の拒否→exit 4。live unbind はしない | E03（blacklist 状態は reboot で復元） | 1 | driver bind/accessの安全性 |
 | C10 | `--control` parsing と retune | stdin `channel`/`tune`/`quit`、open 中の retune、exit 0 | E03 + E17 | 1 | 受信中controlの継続性 |
-| C11 | access-setup 材料: `packaging/mdev/*`、docs の udev/OpenRC/procd 記述 | node 権限、非root 実行 | E12（mdev）または記述を変えた環境 | 2 | access setup / 権限 |
 | C12 | `tests/test_cli.sh` と unit test で覆われる CLI/引数変更 | CLI動作 | 変更対象に対応するmatrix環境 | 1 | CLI/API互換性 |
 | C13 | docs、license、metadata | gate のみ | — | — | 安定性への直接影響なし（追加soakはユーザー指示による） |
 
@@ -348,7 +320,7 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 2. `tsanalyze --normalized <file>` で invalid sync 0、TEI 0、PID ごとの continuity discontinuity 0。各 PID の先頭 packet、および `--control` の retune 境界2点は除外する。
 3. `TS queue dropped` が stderr になく、exit code が 8 でないこと。正常は exit 0。
 
-## 7. 環境別手順（E01–E17）
+## 7. 正式artifactの環境別手順
 
 各項は次の共通部品と追加手順で構成する。物理操作（USB 抜差し、アンテナ、電源、WinUSB 割当、kernel module blacklist 変更）はユーザーが事前確認のうえ実施する。E01/E02 は production host であり、Supervisor 状態変更は承認・退避・復元を伴う。HA Core・アドオン・mirakc・サービスを再起動しない。
 
@@ -455,15 +427,8 @@ kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 - **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveのnative確認環境例。
 - **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveのnative確認環境例。
 - **E05–E07 Android Termux**: daemonのUSB起動は `termux-usb -r -e "$DAEMON --instance $INSTANCE --runtime-dir $RT --firmware $FW" /dev/bus/usb/BBB/AAA` とし、`termux-usb -e` が渡すFDをdaemonが所有する。別terminalの`$C`/`$B`には同じinstance/runtimeを指定し、clientへUSB FDやfirmwareを渡さない。受信中にユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後にUSB nodeを取り直し、daemonを同じinstance/runtimeで起動し直して30秒受信。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
-- **E08 Fedora x86_64（SELinux）**: [Fedora SELinux](platforms/fedora-selinux.md) の再検証手順（context、label、`ausearch -m AVC`、exit code）に従う。この環境の構成・再検証手順を含む Fedora SELinux 文書、または Fedora に関する in-repo 材料を変更したとき、もしくは Fedora claim を変更するときのみ実施する。
-- **E09 Gentoo x86_64**: 記録がない。Gentoo 手順を新設・変更した場合に exact archive を OpenRC と udev `usb` グループ構成で実施し、doc を作る。それ以外は未確認。
-- **E10 NixOS x86_64**: [NixOS](platforms/nixos.md) に従い 2台同時受信と cold boot 後の module 未ロードを確認。構成手順の変更時のみ。
-- **E11 Chimera Linux x86_64**: [Chimera](platforms/chimera-linux.md) に従い Clang native build、全 test、static/dynamic binary の 2台同時受信。構成手順の変更時のみ。
-- **E12 Alpine x86_64 / mdev**: [Alpine/mdev](platforms/alpine-mdev.md) に従い `mdev -s`、`siano-ts-mdev --scan`、非root 2台受信。`packaging/mdev/**` は配布物に含まれるため、変更時はこの環境を実施する。
-- **E13 OpenWrt x86_64**: 既存記録は `0315bd5` で exit 1（変更前コード）。current claim にしない。OpenWrt 手順を新設・変更した場合にだけ procd 起動停止・hotplug 権限を確認する。
-- **E14 FreeBSD x86_64**: 対象外。記録は履歴のみで、gate・canary・soak に含めない。
+- 追加の移植性確認（Fedora SELinux、Gentoo、NixOS、Chimera、Alpine/mdev、OpenWrt、FreeBSD、Debian i386）は[移植性確認手順](platforms/portability-checks.md)を参照する。Stable release gateのmatrix・合否対象には含めない。
 - **E15-G Fedora aarch64（L4T）**: `linux-aarch64` の canonical runtime。`uname -r` と `getenforce` を記録し、S-RX・S-DUAL・S-DISC を実施する。claim は特定 kernel に限定する。既存記録 `b2c9466` は履歴。
-- **E16 Debian x86/i386**: 配布artifactはなく、配布binaryのnative matrix対象外。source-build claimを変更する場合は[Debian i386](platforms/debian-i686.md)のnative buildと`make test`、30秒のnonblocking receive、slow-sinkの`--fail-on-drop`/exit 8を確認する。5分を超える実機負荷が必要なら他OSと同じユーザー決定soak手順にする。
 - **E17 Windows 11 x86_64**: product対象。ZIPを展開し、WinUSB割当後にZIP rootの3 programを使う。OS build、Zadig/WinUSB version、各EXEのcandidate固有SHA（同じZIPのmanifestと照合）を記録する。旧`packaging/windows-baseline.sha256`は単体版の履歴であり、現行candidateとの一致を要求しない。USB IDとselectorを確認して、PowerShellで次の操作を行う。S-CTRLは`--control`付きconsumerのconsole stdinから渡す。[今回の統合3program記録](platforms/validation-results.md#2026-10-21-windows統合3program短時間受信)では1台の30秒受信・TS整合性・lease解放・正常停止を確認した。hotplug・soak・最終RC認定は未実施であり、以下の手順の記載自体を成功記録と扱わない。
 
 ```powershell
@@ -522,3 +487,8 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 - README、COPYING、LICENCE.siano、checksum、support表示、release archiveの内容が一致し、公開前レビュー済み。
 
 リリースノートには利用者向け変更、短い検証結果、必要な既知制限だけを書く。試験matrix、内部証拠系譜、詳細log、hash一覧は掲載せず、本記録とREADMEへ分離する。
+
+## 変更記録
+
+- v3 (2026-10-25): 各release全配布archiveのnative回帰を維持し、試験結果commit・製品code不変確認後のrelease工程へ共通手順を整合。
+- v2 (2026-10-07): 当時の7 archive短時間確認・candidate bytes公開方針を記録。現行release頻度と最終release工程は上記の共通方針に従う。
