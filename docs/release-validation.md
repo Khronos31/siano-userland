@@ -2,22 +2,36 @@
 
 この文書はSiano Stable releaseで再利用する準備・操作・判定・cleanupの正本です。版ごとの適用matrixと検証記録は [`release-validation/1.0.0.md`](release-validation/1.0.0.md) のように版別文書へ記録します。個別候補の実測値・結果は今回候補の合格を意味しません。
 
-Status: v2 (2026-10-07)
+Status: v3 (2026-10-25)
 
 この文書は `siano-userland` の Stable リリースごとの実行手順である。`README.md` の CLI・終了コードと実装が事実の正本であり、本書の記載と食い違う場合は両者を確認して先に本書を直す。Stable releaseは次の順で進める。
 
-1. リリース候補のsource commit（`VERSION`を更新した`main`のcommit）を固定し、そのcommitで`release.yml`を実行してcandidate artifactを作る。
-2. candidate artifactを展開し、必要な全OS/architectureで実機試験と変更影響の試験を完了する。
-3. 試験結果を文書に記録してcommitする。
-4. 候補source commitにタグを付け、試験に使ったcandidate archiveと`SHA256SUMS`をそのままGitHub Releaseへ公開する。
+1. 候補source commitを固定してRC candidateをbuildする。
+2. candidateで回帰・soakを完了する。毎releaseの回帰項目と適用頻度は「共通の検証項目と頻度」に従う。
+3. 試験結果をversion別文書へ記録してcommitする。
+4. 候補sourceから製品codeの変更がない文書only commitであることを確認し、そのcommitへのrelease tagから自動build/releaseする。
 
-工程2の全試験が完了するまではcandidate commitを固定して使う。candidateのsource、package、build inputを工程2の完了前に変更した場合は、その変更を含む新candidateをCIで作り、影響する試験を行う。工程3の記録commitはcandidateの差し替えではなく、タグは記録commitではなく候補source commitに付ける。工程3の後に工程2へ戻って実機試験を繰り返さない。公開物は試験したbytesそのものであり、release用に再buildしない。
+Sianoの現在の`.github/workflows/release.yml`は`workflow_dispatch`だけをtriggerに持ち、tag eventによる自動build/releaseは定義していない。従って現workflowのままでは工程4は未達であり、Stable公開へ進めない。このdocs-only変更ではworkflow/sourceを変更せず、未実装のtag用コマンドや自動動線を記載しない。
 
-配布する各主要OS/architecture binary artifactについて、工程2でfinal candidateの実機確認を行う。必須検証の一連の操作に総時間上限は設けない。物理抜差しをユーザーに依頼した時点から、その操作への応答を最大5分待つ。各依頼の直前にHAOS側でCodexは`beep`、Claude Codeは`vibe`を実行する。5分を超える連続負荷試験は別のsoak手順にする。安定性に影響し得る変更のsoak有無、時間（10分/30分/2時間）、対象OSはユーザーが決める。エージェントは変更差分・過去記録・影響し得る範囲を要約し、判断を待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
+candidateのsource、package、build inputを回帰・soak完了前に変更した場合は新candidateを作成し、影響する試験を行う。結果記録commit後はcandidateと製品codeが同一であることを確認し、共通release方針のtag/build工程へ進む。ソークは30分以上の連続TS取得を指し、別途指示された場合はその指示を適用する。物理抜差しをユーザーに依頼する場合、各操作の直前に通知し、依頼後最大5分待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
 
 ## 変更記録
 
-- v2 (2026-10-07): 7つの配布binary archiveごとの実機短時間確認を毎回必須化。短時間確認に総時間上限を設けず、5分は各物理操作の応答待ち上限とする。5分を超える連続負荷は別soakとし、soakの有無・時間（10/30/120分）・対象OSをユーザーが決める。release工程（candidate固定→試験→記録→候補commitへのタグとcandidateそのものの公開）と公開前後のbyte一致確認を明記。
+- v3 (2026-10-25): 各release全配布archiveのnative回帰を維持し、試験結果commit・製品code不変確認後のtag自動build/releaseへ共通工程を整合。現workflowがtag自動build/releaseに未対応のため、その工程を未達と記録。
+- v2 (2026-10-07): 当時の7 archive短時間確認・candidate bytes公開方針を記録。現行release頻度と最終release工程は上記の共通方針に従う。
+
+## 共通の検証項目と頻度
+
+用語は4製品で共通とする。代表機はLinux x86_64 glibc、機種はチューナー、製品はドライバ、ソークは30分以上の連続TS取得を指す。Sianoの標準機種はPX-S1UD。
+
+| 区分 | 適用頻度 | Sianoでの確認 |
+|---|---|---|
+| 機種初回 | PX-S1UDを代表機で2時間連続受信し、毎releaseの回帰項目を代表機だけで行う。必要時項目も通し、結果は[`release-validation/initial-model-checks.md`](release-validation/initial-model-checks.md)へ記録する。 | 地上波receiver 0。CARD、LNB、衛星は製品機能外。 |
+| 回帰（毎release） | 代表機2時間連続受信。全配布archiveの各OS/ABIで短時間実機回帰、`--list-json`、最大能力の同時受信とTS/counter/終了値を確認する。最大試験で3波が不足する場合は不足分の短時間TSを個別確認する。受信中status、反復制御、正常停止とprocess/FD/IPC残留なし、USB抜去/再挿入も行う。 | 受信中statusと停止を確認する。単一receiverなのでAPDU、CARD挿抜、WinSCard/PCSCは適用しない。 |
+| 必要に応じて | LNB実測と非対応機種の拒否、複数チューナー列挙/daemon並列、変更機能に応じた機種×OS/ABIの追加確認。 | LNB/CARD/PCSCは対象外。複数台対応やselector/USB変更時はS-DUAL/S-DISC。 |
+| 初回/major | 必要時項目を通し、代表機で全無料channelを各10秒TS取得。macOS/Windows各30分連続、残るOS/ABI各10分連続で取得する。全channel取得は代表機だけ。別途指示されたソークは別記する。 | 地上波の実地域channelを現地planから選ぶ。衛星channelは対象外。 |
+
+全配布archiveは各archiveのnative OS/ABI上で回帰し、代表機用の全channel10秒試験は他archiveへ広げない。下記は具体的な候補準備・起動・操作・cleanup手順であり、版別文書に実施した操作と結果を記録する。
 
 ## 0. 環境IDと状態語彙
 
@@ -99,7 +113,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 
 ## 3. 配布artifactごとの実機短時間確認手順
 
-1. 該当版の `docs/release-validation/<version>.md` で選択されたfinal candidate archiveを対応する実機環境で確認する。下表はarchiveごとの操作方法とnative環境の対応表であり、全archiveを各releaseで実施する指定ではない。1.0.0 matrixでは全対象binaryを含める。これは同じx86_64実行ファイルを複数ディストリビューションで総当たりする手順ではない。環境IDの特異な名前にかかわらず、artifactのOS/ABIに対応した試験対象として扱う。
+1. 該当releaseの全配布archiveを対応するnative OS/ABIで確認する。下表はarchiveごとの操作方法とnative環境の対応表である。同じx86_64実行ファイルを複数のaccess pathで重複実行する場合はOS/ABIのnative確認と分けて記録する。
 
 | 配布artifact | 環境例 | 使用機器 | 選択時の短時間確認 |
 |---|---|---|---|
@@ -111,7 +125,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 | `android-x86_64` | E07 Bliss OS Termux x86_64 | PX-S1UD 1台 | 同上。Termux USB permission / `--fd` handoffを含む |
 | `windows-x64` | E17 Windows 11 x86_64 / WinUSB | PX-S1UD 1台 | 同上。Windows固有手順で列挙、30秒受信、停止、切断/再接続、再受信 |
 
-2. 必須確認の一連の操作に総時間上限は設けない。候補archiveのhash確認・展開、firmware hash確認、アンテナ/電源、host準備、ログ先作成は検証開始前に済ませる。`--list`、接続中受信、USBを物理的に抜いて有限時間で終了すること、再接続後の`--list`復帰と30秒受信、プロセス残留なしを確認する。USB抜差しはユーザーが実施する。各物理操作を依頼する直前にHAOS/SCS側でCodexは`beep`、Claude Codeは`vibe`を実行し、依頼した時点から最大5分待つ。5分以内に操作が行われなければ、その操作を未完了として記録し、物理deviceを使う工程を中断する。各archiveで別々のrunを記録し、別artifactや過去candidateの結果を今回の結果に代用しない。
+2. 必須確認の一連の操作に総時間上限は設けない。候補archiveのhash確認・展開、firmware hash確認、アンテナ/電源、host準備、ログ先作成は検証開始前に済ませる。`sianod --list-json`でUSB discoveryを確認し、daemon起動後は`sianoctl status/list`、単体receiverの短時間受信、通常client停止、USB切断終了と再接続後の再列挙/受信、process残留なしを確認する。USB抜差しはユーザーが実施する。各物理操作を依頼する直前にHAOS/SCS側でCodexは`beep`、Claude Codeは`vibe`を実行し、依頼した時点から最大5分待つ。5分以内に操作が行われなければ、その操作を未完了として記録し、物理deviceを使う工程を中断する。各archiveで別々のrunを記録し、別artifactや過去candidateの結果を今回の結果に代用しない。
 3. 30秒受信のTSは§6で検査する。5分を超える連続負荷は短時間確認に混ぜず、§5のsoakとしてユーザーの決定を待つ。各runの記録にはarchive名/SHA-256、source commit、環境ID/OS version/architecture、USB `port=`、実施時刻（UTC）、コマンド、終了値、TS検査結果、残留の有無を残す。
 4. host/deviceが使えない、archiveが起動しない、または必須物理操作を実施できない場合は該当artifactのgate未完了とする。環境を別のOS/ABIで黙って代替せず、ユーザーに状況と必要な選択肢を提示する。
 
@@ -127,27 +141,27 @@ v0.1.5..v0.1.9 のように差分が大きい場合は、変更したファイ�
 | C4 | platform shim: `siano-os.h`、Windows pipe（`control-input.c`）、QPC clock、`--fd`/wrap | shim された feature | Windows→E17。`--fd`/wrap→E05 + E06 + E07 と E03（Termux 3 ABI は artifact が別個） | 1 | platform shim / FD handoff |
 | C5 | firmware hash/format/load | firmware load、lock、30秒受信 | 該当binary matrix環境 | 1 | firmware初期化・stream開始 |
 | C6 | stream/queue/writer/drop policy、`--fail-on-drop`、clock/`--time`（`queue-policy.c`、`write-policy.h`、`stream-state.c`） | counter、exit 8 semantics、30秒受信。slow-sinkはoffline test | 該当binary matrix環境。source-only i386はclaim追加時 | 1（queue共有/競合変更なら同時構成も判断材料） | stream/queue/writer持続動作 |
-| C7 | device enumeration/selection、`--list`、USB location（`device-selector.c`、`usb-location.h`） | `--list` 2台、index/port/bus:address 選択、不正 selector→exit 3 | E03 + E04 + E17 | 2 | 列挙・識別の経路 |
+| C7 | device enumeration/selection、`--list-json`、USB location（`device-selector.c`、`usb-location.h`） | `sianod --list-json`で2台を列挙し、index/port/bus:address選択、不正selector→exit 3 | E03 + E04 + E17 | 2 | 列挙・識別の経路 |
 | C8 | disconnect/hotplug 分類、exit code（`stream-state.c`、`exit-codes.c`） | 受信中に片側切断→有限時間で exit 7、残存側 exit 0、再接続、再実行。1台/1 USB port しかない環境では有限 exit と再接続だけを確認でき、残存側 exit 0 は2台前提のため満たせない | E03 + E01 + E02 + E04 + E17 + E05 + E06 + E07（Termux 3 ABI は artifact が別個）。E13/E15 は claim 表示時。E16 は source-build-only で release artifact・current hardware claim がないため対象外（platform-specific な diff が i386 を直接対象とする場合を除く） | 2（Termux/E17 は port が1つなら1。1台 run は full 2台 disconnect test として数えない） | hotplug / cleanupの経路 |
 | C9 | kernel-driver detach decision（`detach-decision.h`） | bound 時の拒否→exit 4。live unbind はしない | E03（blacklist 状態は reboot で復元） | 1 | driver bind/accessの安全性 |
 | C10 | `--control` parsing と retune | stdin `channel`/`tune`/`quit`、open 中の retune、exit 0 | E03 + E17 | 1 | 受信中controlの継続性 |
 | C11 | access-setup 材料: `packaging/mdev/*`、docs の udev/OpenRC/procd 記述 | node 権限、非root 実行 | E12（mdev）または記述を変えた環境 | 2 | access setup / 権限 |
 | C12 | `tests/test_cli.sh` と unit test で覆われる CLI/引数変更 | CLI動作 | 変更対象に対応するmatrix環境 | 1 | CLI/API互換性 |
-| C13 | docs、license、metadata | gate のみ | — | — | 安定性への直接影響なし（soak有無はユーザー判断） |
+| C13 | docs、license、metadata | gate のみ | — | — | 安定性への直接影響なし（追加soakはユーザー指示による） |
 
-platform-only の hunk は、そのplatformのmatrix環境で機能確認を行う。classが不明または複数にまたがる場合は影響し得るpathをユーザー提示用に整理する。追加確認のうち5分を超える連続負荷はsoakとして扱い、ユーザーに実施有無・時間・対象OSを確認して決定を待つ。物理操作の待機は§3と同じく依頼ごとに最大5分とする。
+platform-only の hunk は、そのplatformのmatrix環境で機能確認を行う。classが不明または複数にまたがる場合は影響し得るpathをユーザー提示用に整理する。追加確認のうち5分を超える連続負荷はsoakとして扱う。毎releaseの代表機2時間と初回/majorの時間条件は「共通の検証項目と頻度」に従い、別途の追加soakが指定された場合はその時間・OSを記録する。物理操作の待機は§3と同じく依頼ごとに最大5分とする。
 
-## 5. Soak（5分を超える負荷試験。ユーザー決定）
+## 5. 連続受信・soak
 
-短時間確認とは独立した手順である。エージェントはコード変更、差分、実機記録、影響し得るOS/artifact/USB path、既知の失敗・変化を要約してユーザーへ提示する。次の3点は必ずユーザーが決めるまで開始しない: **実施するか（実施しない選択を含む）、10分/30分/2時間のいずれか、実施対象OS**。エージェントはclass表、安定性影響の分析、決め打ちの順序を根拠に自動選択・既定化しない。releaseごとに最大1 OS/runtimeという旧来の制約も適用しない。
+短時間回帰とは分けて連続受信を行う。毎releaseの代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。ユーザーから別途soakが指示された場合は、追加分の実施有無・時間・OSをその指示に従う。
 
-判断材料は既存の変更class C1–C13、過去の長時間試験記録、アーキテクチャ固有変更、実機counterの変化である。これらはsoakを自動発火させる条件ではない。ユーザーがsoakなしを選んだ場合は、その決定を記録してrelease gateを継続する。
+各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、TS品質、process/FD/RSSの観測値、cleanupを記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
 
 ### soak の内容
 
-- ユーザーが選んだ10分、30分、または2時間を実施する。受信台数/topologyは、選んだOSとユーザー承認済みの物理構成に合わせる。過去記録から台数を自動で決めない。
+- 共通の頻度表またはユーザーの追加指示で指定された時間、OS、topologyを用いる。
 - 10秒以下の間隔で RSS と FD 数を記録し、傾向を示す。**数値の合否基準は設けない**。記録系列が最終観測まで安定化しない持続的な増加を示し、外部要因も特定できない場合、その soak は `判定保留` として pass にせず、release前に原因を調査する。途中で頭打ちになる増加は自動的な失敗ではなく、証拠と理由を記録する。この disposition は soak の受入規則であり、新しい soak trigger でも、trigger のない追加 run を要求するものでもない。
-- 各 cycle の出力を §6 で検査する。終了後にプロセス残存と `--list` の `ready` を確認する。
+- 各 cycle の出力を §6 で検査する。終了後にprocess残存と`sianoctl status/list`を確認する。
 - S1UD は `port=` で個体を選ぶ。ユーザー指定OSで必要な台数/topologyを用意できない場合は、制約を報告してユーザーに次の判断を求める。他OSへの振替やsoak中止をagentが決めない。
 
 ## 6. TS 検査
@@ -165,52 +179,76 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 ### 7.1 共通部品
 
 ```sh
-D=<extracted dir>; B=$D/siano-ts; FW=$D/firmware/isdbt_rio.inp; LOG=<log dir>
+D=<extracted dir>; DAEMON=$D/sianod; C=$D/sianoctl; B=$D/siano-ts
+FW=$D/firmware/isdbt_rio.inp; LOG=<log dir>; RT=<runtime dir>; INSTANCE=s1ud
+mkdir -p "$RT" "$LOG"
 sha256sum "$FW"                       # 054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818
-"$B" --list > "$LOG/list.txt"          # model=PX-S1UD usb=3275:0080 ... status=ready receivers=1、port= を記録
+"$DAEMON" --list-json > "$LOG/discovery.json"  # enclosures[].devices[].portからPORTを選択
+PORT=<enumerated USB port>
+"$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
+  2> "$LOG/sianod.err" & DAEMON_PID=$!
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/status.txt"
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" list > "$LOG/list.txt"
 ```
 
+USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` にPX-S1UD、USB ID、`port`、受信機情報があること。通常の一覧・稼働状態は `sianoctl list/status` でdaemonへ照会し、旧単体版の `siano-ts --list` のテキスト出力を配布手順の判定に使わない。
+
 ```sh
-# S-RX（$S 秒受信。$sel は port または bus:address）
-"$B" -F "$FW" -d "$sel" -c 22 -t "$S" -o "$LOG/si.ts" 2> "$LOG/si.err"; echo $? > "$LOG/si.rc"
+# S-RX（$S 秒受信。Sianoのreceiverは0のみ）
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/si.ts" \
+  2> "$LOG/si.err"; echo $? > "$LOG/si.rc"
 # S-ANA: §6 の 1–3 を si.ts に適用
 ```
 
 ```sh
-# S-CTRL（open のまま retune）
+# S-CTRL（daemonは維持し、client stdinからretune）
 { sleep 20; echo 'channel 21'; sleep 20; echo 'channel 22'; sleep 20; echo quit; } \
-  | "$B" -F "$FW" -d "$sel" --control -c 22 -o "$LOG/ctrl.ts" 2> "$LOG/ctrl.err"; echo $?
+  | "$B" --instance "$INSTANCE" --runtime-dir "$RT" --control -o "$LOG/ctrl.ts" \
+    2> "$LOG/ctrl.err"; echo $?
 ```
 
 ```sh
-# S-SIG
-"$B" -F "$FW" -d "$sel" -c 22 -o "$LOG/sig.ts" & p=$!; sleep 30; kill -INT "$p"; wait "$p"
-# S-RESID: pgrep -fl '[s]iano-ts' が空、出力ファイルがクローズ済み、--list が ready
+# S-SIG（clientを止め、daemonは維持）
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -o "$LOG/sig.ts" \
+  2> "$LOG/sig.err" & CLIENT_PID=$!
+sleep 30; kill -INT "$CLIENT_PID"; wait "$CLIENT_PID"
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/status-after-client-stop.txt"
+# S-RESID: client processなし、TS出力close、ctl status/listが同じdaemonへ接続
 ```
 
 ```sh
-# S-DUAL（2台。$portA/$portB を明示）
-"$B" -F "$FW" -d "$portA" -c 22 -t "$S" -o "$LOG/a.ts" 2> "$LOG/a.err" &
-"$B" -F "$FW" -d "$portB" -c 21 -t "$S" -o "$LOG/b.ts" 2> "$LOG/b.err" &
-wait
-# 各 process が意図した node を持つことを /proc/<pid>/fd と /dev/bus/usb/BBB/AAA の対応で確認する
+# S-DUAL（2台。deviceごとにdaemon/instanceを分け、runtime rootは共有）
+"$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" \
+  2> "$LOG/daemon-a.err" & PID_A=$!
+"$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" \
+  2> "$LOG/daemon-b.err" & PID_B=$!
+"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/a.ts" 2> "$LOG/a.err" & CLIENT_A=$!
+"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/b.ts" 2> "$LOG/b.err" & CLIENT_B=$!
+wait "$CLIENT_A"; RC_A=$?
+wait "$CLIENT_B"; RC_B=$?
+# 各processが意図したUSB nodeをdaemon経由で所有していることを /proc/<pid>/fd で確認
 ```
 
 ```sh
 # S-DISC（物理。ユーザーが実施）
-# S-DUAL 中に device A を抜く。A は有限時間で exit 7、B は受信を継続して exit 0。
-# 再接続（reboot なし）後、--list → 60秒 S-RX で復帰確認。
-# 1台/1 USB port しかない環境（例: Termux、Windows）では、その device の有限 exit と再接続だけを
-#   確認できる。残存側 exit 0 は2台前提のため満たせず、1台 run を full 2台 disconnect test と数えない。
+# S-DUAL中にdevice Aを抜く。Aのclient終了値とBの継続を個別記録する。
+# 切断後は該当daemonを通常停止し、USB再接続後に--list-jsonでportを確認して同じinstance/runtimeで再取得する。
+# 1台/1 USB portしかない環境ではそのdeviceの挙動のみを確認し、2台試験と混同しない。
+kill -INT "$PID_A"; wait "$PID_A"
+"$DAEMON" --list-json > "$LOG/discovery-reconnected.json"
+# portを再確認した後、上記S-DUALと同じdaemon起動・S-RXを実行
 ```
 
 ### 7.1a 選択された短時間実機確認（1台）
 
-E01/E02/E03/E04/E15/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`--list`の`model=PX-S1UD usb=3275:0080 status=ready`と`port=`を記録する。候補archiveの同じ`$B`と同梱firmwareを使う。
+E01/E02/E03/E04/E15/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`$DAEMON --list-json`の`enclosures[].devices[]`から`model=PX-S1UD`, `usb=3275:0080`, `port=`を記録する。`sianoctl list/status`のdaemon inventoryがreadyであることも確認する。候補archiveの同じdaemon/clientと同梱firmwareを使う。
 
 ```sh
 # 接続中受信。-tを付けず、deviceを開いた状態で維持する
-"$B" -F "$FW" -d "$sel" -c 22 -o "$LOG/hotplug.ts" 2> "$LOG/hotplug.err" & p=$!
+"$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
+  2> "$LOG/hotplug-daemon.err" & DAEMON_PID=$!
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -o "$LOG/hotplug.ts" \
+  2> "$LOG/hotplug.err" & p=$!
 sleep 20
 # vibe/beep の直後に利用者へUSBを物理的に抜くよう依頼する（応答待ちは最大5分）。
 # 抜去の観測から120秒以内に終了し、exit 7であることを確認:
@@ -220,10 +258,16 @@ if kill -0 "$p" 2>/dev/null; then hung=1; kill -TERM "$p"; fi
 if wait "$p"; then rc=0; else rc=$?; fi
 echo "hung=$hung exit=$rc" > "$LOG/hotplug.rc"  # 期待: hung=0 exit=7
 # vibe/beep の直後に再接続を依頼し（応答待ちは最大5分）、再接続された後:
-"$B" --list > "$LOG/relist.txt"       # 再列挙後のport=から $sel を更新する
-"$B" -F "$FW" -d "$sel" -c 22 -t 30 -o "$LOG/reconnected.ts" 2> "$LOG/reconnected.err"
+kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
+"$DAEMON" --list-json > "$LOG/discovery-reconnected.json" # 新しいportを選ぶ
+PORT=<reconnected USB port>
+"$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
+  2> "$LOG/reconnected-daemon.err" & DAEMON_PID=$!
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" status
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t 30 -o "$LOG/reconnected.ts" 2> "$LOG/reconnected.err"
 echo $? > "$LOG/reconnected.rc"
 # 期待: 再列挙ready、30秒受信exit 0、TS §6 pass、終了後process残留なし
+kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 ```
 
 一連の操作に総時間上限はない。各物理操作の依頼から操作完了までの待機だけを最大5分とする。抜去後に有限時間内に終了しない場合はhangとして失敗を記録し、processを止めて復旧する。WindowsとTermuxでは次の環境別起動法を使い、同じ物理順・待機条件を守る。2台を使う追加topology試験はこの1台必須試験の代用ではない。
@@ -234,7 +278,7 @@ echo $? > "$LOG/reconnected.rc"
 - **E02 HAOS x86_64 Alpine/musl add-on**: add-on options を現行値で退避し、ユーザー承認のうえ試験用 options で起動、終了後に復元・停止する。restart loop がないことを確認。base は §7.1。`linux-x86_64` と同じ static binary を使う。
 - **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveのnative確認環境例。
 - **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveのnative確認環境例。
-- **E05–E07 Android Termux**: 短時間試験の受信起動は `termux-usb -r -e "$B -F $FW -c 22 -o $LOG/hotplug.ts" /dev/bus/usb/BBB/AAA` とし、受信を止めずにユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後にUSB nodeを取り直して`termux-usb`で30秒受信。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
+- **E05–E07 Android Termux**: daemonのUSB起動は `termux-usb -r -e "$DAEMON --instance $INSTANCE --runtime-dir $RT --firmware $FW" /dev/bus/usb/BBB/AAA` とし、`termux-usb -e` が渡すFDをdaemonが所有する。別terminalの`$C`/`$B`には同じinstance/runtimeを指定し、clientへUSB FDやfirmwareを渡さない。受信中にユーザーがUSBを抜く。Termux/Android versionを記録。E06はarmv7a、E07はBliss OS x86_64で、E07は検証中だけ画面常時点灯とTermux前面表示を使い`stay_on_while_plugged_in`を元へ戻す。再接続後にUSB nodeを取り直し、daemonを同じinstance/runtimeで起動し直して30秒受信。凍結したrunはinvalid。`--control`はstdinをファイルから渡す。
 - **E08 Fedora x86_64（SELinux）**: [Fedora SELinux](platforms/fedora-selinux.md) の再検証手順（context、label、`ausearch -m AVC`、exit code）に従う。この環境の構成・再検証手順を含む Fedora SELinux 文書、または Fedora に関する in-repo 材料を変更したとき、もしくは Fedora claim を変更するときのみ実施する。
 - **E09 Gentoo x86_64**: 記録がない。Gentoo 手順を新設・変更した場合に exact archive を OpenRC と udev `usb` グループ構成で実施し、doc を作る。それ以外は未確認。
 - **E10 NixOS x86_64**: [NixOS](platforms/nixos.md) に従い 2台同時受信と cold boot 後の module 未ロードを確認。構成手順の変更時のみ。
@@ -251,6 +295,8 @@ $D = (Resolve-Path .\sianod.exe).Path
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
 $FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$RT = Join-Path $env:TEMP "siano-rc-runtime-$PID"
+New-Item -ItemType Directory -Path $RT | Out-Null
 $manifest = Get-Content .\manifest.json -Raw | ConvertFrom-Json
 foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
     $actual = (Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -259,12 +305,12 @@ foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
 }
 & $D --list-json                    # PX-S1UD / 3275:0080とenclosures[].devices[].portを記録し、usb:<port>を使う
 $selector = 'usb:BUS-PORT'          # 実際に列挙されたselectorへ置換
-& $D --device $selector --instance s1ud --firmware $FW
+& $D --device $selector --instance s1ud --firmware $FW --runtime-dir $RT
 # daemonがreadyになったら別のPowerShell（同じZIP root）で:
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
-& $C --instance s1ud status
-$p = Start-Process -FilePath $B -ArgumentList '--instance s1ud -c 22 -o hotplug.ts' -PassThru -NoNewWindow -RedirectStandardError hotplug.err
+& $C --instance s1ud --runtime-dir $RT status
+$p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c 22 -o hotplug.ts" -PassThru -NoNewWindow -RedirectStandardError hotplug.err
 Start-Sleep -Seconds 20
 # ここで利用者がUSBを抜く。2分以内に終了し、ExitCode 7であることを確認する
 if ($p.WaitForExit(120000)) { $p.Refresh(); $p.ExitCode }
@@ -272,8 +318,8 @@ else { 'HANG'; Stop-Process -Id $p.Id -Force }
 # daemon consoleでCtrl+C。利用者がUSBを戻してから同consoleで
 # --list-jsonでselectorを確認し、上と同じdaemon起動を行う。
 # daemonがreadyになったらconsumer consoleで:
-& $C --instance s1ud status
-& $B --instance s1ud -c 22 -t 30 -o reconnected.ts 2> reconnected.err
+& $C --instance s1ud --runtime-dir $RT status
+& $B --instance s1ud --runtime-dir $RT -c 22 -t 30 -o reconnected.ts 2> reconnected.err
 $LASTEXITCODE                 # 0を期待
 Get-Process siano-ts -ErrorAction SilentlyContinue
 # 終了時はdaemon consoleでCtrl+C。
@@ -287,7 +333,7 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 
 ## 9. 記録
 
-検証結果は [`platforms/validation-results.md`](platforms/validation-results.md) へ日付付きで追記する。新しい records directory や template framework、汎用スクリプトは作らない。release recordにはversion、commit、workflow run、7 binary archiveとsource archiveのchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、適用したmatrix runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、Soakについてユーザー決定（実施有無・時間・OS）と結果、soakのFD数・RSS記録系列と`安定` / `頭打ち` / `判定保留`のdispositionおよび理由、物理操作を行えなかった場合の理由、公開assetとcandidateのbyte一致判定、残存blocker・既知の非blocking制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
+検証結果は各版の [`release-validation/<version>.md`](release-validation/1.0.0.md) へ記録する。release recordにはversion、commit、workflow run、各binary archiveとsource archiveのchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、matrix runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、連続受信の実施時間/OS/結果、FD/RSS系列とdisposition、物理操作を行えなかった場合の理由、公開assetとcandidateのbyte一致判定、残存blocker・既知の制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
 
 次をすべて満たすまで Stable 公開へ進まない。
 
