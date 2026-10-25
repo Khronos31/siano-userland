@@ -40,73 +40,174 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 | ID | OS/ABIと必要なruntime/access境界を持つ実行環境シナリオの識別子 | candidate状態、過去実績 | `E` + 番号。4製品で共通するシナリオは同じID、別runtime/access scenarioは別ID |
 | OS / ABI | OS系統、CPU ABI、libcまたはOS runtime | host名、依存、実施状態 | `OS / CPU ABI / libc・runtime` の順。根拠文書にlibc記載がない場合は `未特定` |
 | 依存 / driver / permission | 実行時USB library、OS側USB access手段と権限条件 | firmware、CARD API、検証結果 | `libusb:`、`USB access:`、`FD handoff:` の属性名を使う |
-| firmware / input | 実行時に必要なfirmwareまたは製品入力と放送方式 | archiveへの同梱・埋込完了、candidate実績 | `firmware:` と `input:` を分け、該当しない属性は `なし` |
+| firmware / 補助data | 機器へ渡す実行時firmwareと、RF channelとは別の機種固有データ | RF試験channel、archiveへの同梱・埋込完了、candidate実績 | `firmware:` と `補助data:` を分け、ない属性は `なし` |
+| RF試験入力（system / channel） | 実際に受信させる放送systemと現地channel | firmware、機種data、candidate実績 | `system:` と `channel:`。対応波がない場合は `なし（理由）` |
 | 製品CLIからの内蔵CARD操作 | 製品固有CLI/APIの操作範囲 | PC/SC/WinSCard adapter、実機合否 | 操作名とmodel依存条件。機能なしは `なし` |
 | native PC/SC/WinSCard adapter | その行のOS標準APIへ接続する製品adapterの種類・配布形態 | 製品CLI CARD、adapter実機試験結果、他OSのadapter | OS/ABI行に該当する`Linux PC/SC:`、`macOS PC/SC:`、`Android:`または`Windows WinSCard:`だけを記載 |
-| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: §...` の順 |
+| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: §番号` の順 |
 
 共通IDは E02=Linux/x86_64/musl、E03=Linux/x86_64/glibc、E04=macOS/arm64、E05=Android/aarch64、E06=Android/armv7a、E07=Android/x86_64、E15-G=Linux/aarch64/glibc、E15-M=Linux/aarch64/musl、E17=Windows 11/x86_64を表す。IDはhost名や試験済み状態を表さない。SianoのLinux binaryは各architectureにつき1つの静的musl archiveであり、glibc/musl別artifactではない。
 
-| ID | OS / ABI | 依存 / driver / permission | firmware / input | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
-|---|---|---|---|---|---|---|
-| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: §7 |
-| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Android: なし | artifact: `android-aarch64`; procedure: §7 |
-| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Android: なし | artifact: `android-armv7a`; procedure: §7 |
-| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Android: なし | artifact: `android-x86_64`; procedure: §7 |
-| E08 | Linux / x86_64 / glibc (Fedora) | libusb: 静的1.0.30; USB access: Fedoraのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E09 | Linux / x86_64 / 未特定 (Gentoo) | libusb: 静的1.0.30; USB access: Gentooのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E10 | Linux / x86_64 / glibc (NixOS) | libusb: 静的1.0.30; USB access: NixOSのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E11 | Linux / x86_64 / musl (Chimera Linux) | libusb: 静的1.0.30; USB access: Chimera Linuxのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E12 | Linux / x86_64 / musl (Alpine Linux) | libusb: 静的1.0.30; USB access: Alpineのmdev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E13 | Linux / x86_64 / 未特定 (OpenWrt) | libusb: 静的1.0.30; USB access: OpenWrtのplatform permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
-| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: §7 |
-| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; input: ISDB-T channel | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: §7 |
+| ID | OS / ABI | 依存 / driver / permission | firmware / 補助data | RF試験入力（system / channel） | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
+|---|---|---|---|---|---|---|---|
+| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: §7 |
+| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-aarch64`; procedure: §7 |
+| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-armv7a`; procedure: §7 |
+| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-x86_64`; procedure: §7 |
+| E08 | Linux / x86_64 / glibc (Fedora) | libusb: 静的1.0.30; USB access: Fedoraのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E09 | Linux / x86_64 / 未特定 (Gentoo) | libusb: 静的1.0.30; USB access: Gentooのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E10 | Linux / x86_64 / glibc (NixOS) | libusb: 静的1.0.30; USB access: NixOSのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E11 | Linux / x86_64 / musl (Chimera Linux) | libusb: 静的1.0.30; USB access: Chimera Linuxのudev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E12 | Linux / x86_64 / musl (Alpine Linux) | libusb: 静的1.0.30; USB access: Alpineのmdev permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E13 | Linux / x86_64 / 未特定 (OpenWrt) | libusb: 静的1.0.30; USB access: OpenWrtのplatform permissionとkernel-module ownership | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: §7 |
+| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: §7 |
+| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: §7 |
 
 行は一般の実行環境と必要なaccess条件を記す。各版の実際のhost名と実施結果は版別記録に残す。E08–E13は各OS固有手順が適用される場合の環境であり、E14 FreeBSDとE16 Debian i386はbinary archive対象に含めない。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
-## 共通試験シナリオ
+## 共通試験シナリオ T00–T14
 
-各項目は「適用頻度/対象能力、準備/起動、操作/利用者への依頼、期待値、停止/cleanup、記録」の順に記す。HAOS/SCSの物理操作は各依頼直前にCodexが`beep`、Claude Codeが`vibe`を実行し、利用者へ具体的操作を依頼してから最大5分待つ。期限内に完了しなければ未完了として物理機器を使う工程を中断する。
+各IDを同じ順序・同じ6項目で実施する。$RT/$LOG/$BUS-PORT/$CHANNEL_PLANはrunごとの実値に置換し、空のcandidate専用runtime/logを使う。物理操作を依頼する各回は既定通知を行い、最大5分で応答がなければ未完了として停止する。OS/API固有の長い操作は同じT-IDから後続recipeを参照する。
 
-### A. 列挙と最大同時受信
+### T00 候補/配布物固定
 
-| 適用頻度 / 対象能力 | 準備 / 起動 | 操作 / 利用者への依頼 | 期待値 | 停止 / cleanup | 記録 |
-|---|---|---|---|---|---|
-| 毎release。単一PX-S1UD receiver | candidate native archive、firmware hash、USB `port=`、空のruntimeを用意 | `sianod --list-json`で列挙後、`sianod`を起動し`sianoctl status/list`、短時間`--receiver 0`受信を実施 | daemon/client exit、TS同期・TEI/continuity、packet/USB counterを確認。公開receiver 1以外の能力を要求しない | clientを正常停止しdaemonを正常停止。process/FD/IPC残留なし | source/candidate/archive SHA、host/OS/ABI、USB port、firmware hash、command/exit、TS/counters |
+- **適用対象/頻度:** 毎releaseのcandidate作成時。
+- **準備:** source SHA、CI run/attempt、archive targetとhashを固定。POSIX git rev-parse HEAD/sha256sum、Windows Get-FileHashを保存。
+- **実操作/利用者への依頼:** 固定したsource commitとCI runから候補archiveを取得し、POSIXではsha256sum -c SHA256SUMS、WindowsではGet-FileHashでarchive hashを照合する。archive manifest/source refがcandidate commit/runと一致することを確認する。
+- **期待値/終了値:** provenance/hash一致の候補だけ次へ進む。候補不在は未完了。
+- **停止/cleanup:** deviceを開かず、archive/logを保持。
+- **記録:** source SHA、CI run/attempt、artifact ID/target/hash、取得日時、未取得理由。
 
-client稼働中に別terminalから`"$D/sianoctl" --instance "$INSTANCE" --runtime-dir "$RT" status`と`list`を照会する。受信中control/retuneが変更対象または指定されたときは、§7.1のS-CTRL手順で`--control` clientへ`channel`/`tune`/`quit`を入力し、各応答、stream状態、client/daemon exitを対応付けて記録する。
+### T01 環境/permission/input
 
-### B. CARD適用性
+- **適用対象/頻度:** 全native archive。初回は全modelごと。
+- **準備:** E-ID/OS/ABI、USB access、firmware/model data、channel planを環境表と照合。
+- **実操作/利用者への依頼:** Linux uname -a/uname -m/ldd --version、macOS sw_vers、Android getprop、Windows PowerShell OS。firmware isdbt_rio.inpとUSB portを確認。
+- **期待値/終了値:** OS/ABIがarchiveに一致し、アクセス許可/入力が揃う。不一致はdevice操作前に止める。
+- **停止/cleanup:** 権限不足やdriver変更が必要なら操作せず未実施記録。
+- **記録:** E-ID/host/OS/ABI/model、USB topology/permission、firmware/data、channel plan。
 
-SianoはCARD reader、ATR/APDU、PC/SC/WinSCard機能を提供しない。CARD抜去・再挿入コマンドは実行せず、結果欄は「対象外」とする。USB抜去/再接続は次の独立シナリオで行う。
+### T02 列挙/selector/ready
 
-### C. USB抜去・再接続
+- **適用対象/頻度:** 毎release、対象model/device。
+- **準備:** 候補archiveのlist-json/models入口とdevice selectorを準備しdaemon専用runtimeを作る。
+- **実操作/利用者への依頼:** sianod --list-json; sianod --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT"; sianoctl --instance "$INSTANCE" --runtime-dir "$RT" status; sianoctl --instance "$INSTANCE" --runtime-dir "$RT" list。
+- **期待値/終了値:** JSON/portが一意、status ready、receiver数が公開能力と一致。不正selectorは成功でない。
+- **停止/cleanup:** daemon通常停止しprocess/FD/IPC/socket残留を確認。
+- **記録:** JSON、selector、status/list、各exit、residual。
 
-| 適用頻度 / 対象能力 | 準備 / 起動 | 操作 / 利用者への依頼 | 期待値 | 停止 / cleanup | 記録 |
-|---|---|---|---|---|---|
-| 毎release。idle時および単一receiver streaming時 | `sianod --list-json`でUSB portを固定し、idle/streamingを別runにする | 親が対象機器を抜くよう利用者へ依頼し、依頼後最大5分待つ。抜去後、同じ物理portへ戻すよう依頼する | client/daemon切断表示とexitを記録。切断clientが有限時間で終了し、再列挙後に短時間取得できること。hotplug自動復帰は期待しない | 旧daemonを通常停止後、新しいdaemon/runtimeで起動し、短時間取得・正常停止・process/FD/IPC残留なしを確認 | USB操作時刻、host/port、client/daemon exit、再列挙/再受信、log/cleanup |
+### T03 最大同時受信
 
-| 条件付き。2台列挙/selector/切断処理変更時、または2 device試験を指定された場合 | `sianod --list-json`で`PORT_A`/`PORT_B`を選び、別runtime `RT_A`/`RT_B`を用意 | 下記のように2 daemon/runtime/clientを開始し、親がdevice A抜去を利用者へ依頼して最大5分待つ | A clientは有限時間で切断exit 7、B clientは受信を継続して正常終了exit 0。A再接続後に再列挙し、新daemon/runtimeから短時間取得 | A/B clientを正常停止し各daemonを別々に停止・wait。両runtime/process/FD cleanupを確認 | port/device別daemon・client PID、切断側/残存側exit、stream継続、再列挙/再取得、cleanup |
+- **適用対象/頻度:** 毎release、各modelの公開最大能力。
+- **準備:** 各公開receiver/deviceを一意に割り当て、各clientに別TS出力/ログを用意。
+- **実操作/利用者への依頼:** siano-ts --instance "$INSTANCE" --runtime-dir "$RT" --receiver 0 -c "$CHANNEL" -t "$SECONDS" -o "$LOG/one.ts"。receiver 0は1 stream。
+- **期待値/終了値:** 各clientの稼働時間が重なり、各exit 0とTS/counter合格。順次取得を同時試験の代用にしない。
+- **停止/cleanup:** 全client通常終了後daemon通常停止、残留なし。
+- **記録:** model/receiver/system/channel、各start/end/exit、TS/counter、cleanup。
 
-```sh
-"$D/sianod" --device "usb:$PORT_A" --instance A --firmware "$FW" --runtime-dir "$RT_A" & PID_A=$!
-"$D/sianod" --device "usb:$PORT_B" --instance B --firmware "$FW" --runtime-dir "$RT_B" & PID_B=$!
-"$D/siano-ts" --instance A --runtime-dir "$RT_A" --receiver 0 -c 22 -t 30 -o "$LOG/A.ts" & CLIENT_A=$!
-"$D/siano-ts" --instance B --runtime-dir "$RT_B" --receiver 0 -c 22 -t 30 -o "$LOG/B.ts" & CLIENT_B=$!
-"$D/sianoctl" --instance A --runtime-dir "$RT_A" status
-"$D/sianoctl" --instance B --runtime-dir "$RT_B" status
-```
+### T04 不足波/全無料channel
 
-device Aを戻した後は`"$D/sianod" --list-json`で再列挙し、Aの旧client/daemonを停止・waitしてから同じruntimeを通常cleanupする。新しい`RT_A2`で`sianod --device "usb:$PORT_A" --instance A2 --firmware "$FW" --runtime-dir "$RT_A2"`を起動し、`sianoctl status/list`と30秒`-c 22 -t 30`受信を行う。試験終了時はclientごとの終了値を保存し、A/B daemonをそれぞれSIGINTで通常停止・waitしてprocess/IPC/USB FD残留を確認する。
+- **適用対象/頻度:** 毎releaseは不足波。初回/majorは全機種の代表機で全無料channel各10秒。
+- **準備:** 現地channel planとmodel能力から対象system/channel一覧を作る。
+- **実操作/利用者への依頼:** ISDB-Tのみ、channelごと "$D/siano-ts" --instance "$INSTANCE" --runtime-dir "$RT" --receiver 0 -c "$CHANNEL" -t 10 -o "$LOG/$CHANNEL.ts"。
+- **期待値/終了値:** 各対象channelのTS/exit合格。未取得は未完了、非対応波だけ根拠付きN/A。
+- **停止/cleanup:** client wait/exit保存、daemon通常停止。
+- **記録:** model/system/channel/全channel list、TS解析/counter/exit、未取得理由。
 
-1台しか使えない環境では2台同時/残存側継続を未実施と記録し、単体切断手順を2台試験の代替にしない。
+### T05 stream中monitor/control
 
-### D. teardown・結果
+- **適用対象/頻度:** 毎release。CARD/controlは製品能力に従う。
+- **準備:** capture clientを起動し、別terminalでstatus/list/controlを行えるようにする。
+- **実操作/利用者への依頼:** stream中sianoctl status/list。control時は§7.1 S-CTRLの--control client stdinでchannel/tune/quit。
+- **期待値/終了値:** 照会/control時刻がstreamと対応し各response/exitを保存。機能外操作はN/A。
+- **停止/cleanup:** client/daemonを通常停止し残留確認。
+- **記録:** 照会/control時刻、response class、各exit、streamとの重なり。
 
-USB切断時の期待終了値はREADMEと候補実測を照合する。停止/cleanupの各結果は成功値を仮定せず保存する。頻度別の実施状況・未実施・失敗は版別記録へ置き、物理操作の応答がない工程は未完了とする。
+### T06 CARD物理挿抜/復帰
+
+- **適用対象/頻度:** CARD reader/status対応model。毎release。
+- **準備:** CARD reader/APIがないためCARD用daemonやreaderを準備しない。
+- **実操作/利用者への依頼:** SianoはCARD reader/status/APIを持たないためCARD挿抜試験は理由付きN/Aとし、利用者へカード操作を依頼しない。
+- **期待値/終了値:** CARD非対応のためN/A。reader/APIやCARD由来の終了値は要求しない。
+- **停止/cleanup:** daemon通常停止、FD/IPC/runtimeを確認。
+- **記録:** 依頼時刻、状態/response/exit、復帰、cleanup。
+
+### T07 USB idle/stream切断と再取得
+
+- **適用対象/頻度:** 毎release。USB対応deviceのidle/streamを別run。
+- **準備:** USB pathをlist-jsonで固定。有限captureとそれより短い観測窓を準備。
+- **実操作/利用者への依頼:** sianod --list-jsonでport固定。stream client中に抜去依頼、再接続後新daemon/runtimeから取得。2-deviceはT12。
+- **期待値/終了値:** 切断側のexit 7/診断、新daemon再取得exit 0。time満了exit 0は切断合格でない。
+- **停止/cleanup:** 旧client/daemon stop/wait後に再接続、新daemonも停止。Androidはpermission/FD再取得。
+- **記録:** idle/stream、観測/capture deadline、port/diagnostic/exit、再取得TS/counter。
+
+### T08 通常stop/cleanup
+
+- **適用対象/頻度:** 全test終了時。
+- **準備:** 各owned client/daemon PIDとruntimeを記録してから起動する。
+- **実操作/利用者への依頼:** client signal/EOF後wait、daemon SIGINT/console stop後wait。client/daemon終了値は別々に記録。
+- **期待値/終了値:** 全owned process終了、TS close、FD/IPC/socket/runtime残留なし。timeoutはfail。
+- **停止/cleanup:** 無関係processへsignalしない。test専用runtimeだけ片付け失敗log保持。
+- **記録:** PID/role/exit、process/FD/IPC/socket/runtime、復旧状態。
+
+### T09 TS/counter/exit判定
+
+- **適用対象/頻度:** 全capture/soak。
+- **準備:** TS parser/SPEC条件とdaemon counterを確認できるようにする。
+- **実操作/利用者への依頼:** TSDuck version記録、188-byte remainderとtsanalyze --normalized <file>、sync/TEI/continuity/drop確認。
+- **期待値/終了値:** 全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
+- **停止/cleanup:** 元TS/hash/logを残してT08 cleanup。
+- **記録:** parser/version、TS hash、sync/TEI/continuity/drop/counter、exit。
+
+### T10 native PC/SC/WinSCard
+
+- **適用対象/頻度:** 対応OS/APIのみ。非対応製品は理由付きN/A。
+- **準備:** native OS adapter/consumerとcandidate IFD/DLL pathを用意。
+- **実操作/利用者への依頼:** Siano external PC/SC/WinSCard adapterなし、consumerを起動せずN/A。
+- **期待値/終了値:** Sianoはnative PC/SC/WinSCard adapterを持たないため理由付きN/A。reader/APIやtransaction終了値を要求しない。
+- **停止/cleanup:** consumerは起動しない。別の試験で起動したdaemonだけを通常停止し、system PCSC serviceを変更しない。
+- **記録:** OS/ABI、module/DLL absolute path、consumer、reader/card、operation/exit。
+
+### T11 LNB/非対応拒否
+
+- **適用対象/頻度:** 必要時。給電対応profileだけ実測。
+- **準備:** Sianoは衛星/LNB機能がないためmeter/給電設備を接続しない。
+- **実操作/利用者への依頼:** LNB/衛星機能なし、操作しない。
+- **期待値/終了値:** 衛星/LNB機能がないため理由付きN/A。LNB操作の終了値は要求しない。
+- **停止/cleanup:** LNB操作なし。capture/daemonは通常停止する。
+- **記録:** model/profile、command/exit、meter値/条件、cleanupまたはN/A根拠。
+
+### T12 複数device/daemon/access
+
+- **適用対象/頻度:** 必要時、複数device/selector/access変更時。
+- **準備:** USB port/selectorとinstance/runtimeをdeviceごとに割り当てる。
+- **実操作/利用者への依頼:** PORT_A/B別runtime/instanceのsianodとsiano-ts clientを同時起動し、A抜去時B継続を確認。
+- **期待値/終了値:** device/selector対応一意。別deviceの結果を混同せず、要求時は各sideを独立判定。
+- **停止/cleanup:** 各client/daemon個別wait/stopしFD/IPC/socket確認。
+- **記録:** device/port/PID/runtime、各exit/継続/再取得/access/cleanup。
+
+### T13 soak/頻度
+
+- **適用対象/頻度:** 毎releaseおよび全model初回/major。
+- **準備:** 確定頻度表の対象archive/model/timeをmatrixへ展開する。
+- **実操作/利用者への依頼:** 毎release代表Linux x86_64 glibc 2h/全archive native short; 初回全modelの地上channel 10s、macOS/Windows 30m、他ABI 10m。
+- **期待値/終了値:** 指定連続時間完了かつTS条件合格。追加soakは明示ユーザー決定分のみ。
+- **停止/cleanup:** T08通常stopと全resource cleanup。
+- **記録:** model/OS/ABI/archive、時間、TS/counter、FD/RSS、未実施理由。
+
+### T14 failure/release disposition
+
+- **適用対象/頻度:** 全candidate gate完了後。
+- **準備:** source/archive SHAと全T-IDの結果を版別記録へ用意。
+- **実操作/利用者への依頼:** 各T-IDのstateをversion recordへ記録。過去結果/未実施/失敗を今回passにしない。
+- **期待値/終了値:** failure/unsupported/未実施/環境不能/candidate欠落をpassにしない。
+- **停止/cleanup:** candidateと失敗証拠を保持。tag/releaseは別依頼。
+- **記録:** T-ID、candidate/host/model、state、log、blocker、判定根拠。
+
+N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsupported、candidate欠落、未実施、失敗、環境不能は版別結果で未達とし、passに読み替えない。手順に記した期待値は実測結果ではない。
 
 ## 0. 環境IDと状態語彙
 
