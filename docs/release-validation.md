@@ -102,8 +102,8 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 ### T03 最大同時受信
 
 - **適用対象/頻度:** 毎release、各modelの公開最大能力。
-- **準備:** 各公開receiver/deviceを一意に割り当て、各clientに別TS出力/ログを用意。
-- **実操作/利用者への依頼:** siano-ts --instance "$INSTANCE" --runtime-dir "$RT" --receiver 0 -c "$CHANNEL" -t "$SECONDS" -o "$LOG/one.ts"。receiver 0は1 stream。
+- **準備:** 各公開receiver/deviceを一意に割り当て、各clientに別TS出力/ログを用意する。`CAPTURE_SECONDS=10`のように正の有限秒数を明示設定し、記録する。
+- **実操作/利用者への依頼:** `siano-ts --instance "$INSTANCE" --runtime-dir "$RT" --receiver 0 -c "$CHANNEL" -t "$CAPTURE_SECONDS" -o "$LOG/one.ts"`。receiver 0は1 stream。
 - **期待値/終了値:** 各clientの稼働時間が重なり、各exit 0とTS/counter合格。順次取得を同時試験の代用にしない。
 - **停止/cleanup:** 全client通常終了後daemon通常停止、残留なし。
 - **記録:** model/receiver/system/channel、各start/end/exit、TS/counter、cleanup。
@@ -138,11 +138,11 @@ candidateのsource、package、build inputを回帰・soak完了前に変更し�
 ### T07 USB idle/stream切断と再取得
 
 - **適用対象/頻度:** 毎release。USB対応deviceのidle/streamを別run。
-- **準備:** USB pathをlist-jsonで固定。有限captureとそれより短い観測窓を準備。
-- **実操作/利用者への依頼:** sianod --list-jsonでport固定。stream client中に抜去依頼、再接続後新daemon/runtimeから取得。2-deviceはT12。
-- **期待値/終了値:** 切断側のexit 7/診断、新daemon再取得exit 0。time満了exit 0は切断合格でない。
-- **停止/cleanup:** 旧client/daemon stop/wait後に再接続、新daemonも停止。Androidはpermission/FD再取得。
-- **記録:** idle/stream、観測/capture deadline、port/diagnostic/exit、再取得TS/counter。
+- **準備:** `sianod --list-json`でUSB pathを特定する。USBをdaemon起動時にclaimして保持する実装なので、streamなしのdaemonを起動しstatus/list、daemon PIDとUSB owner状態を記録する。有限capture時間は明示設定する。2-deviceはT12。
+- **実操作/利用者への依頼:** idle daemon保持中に利用者へ抜去を依頼し、応答後にstatus/list、daemon診断と実際の終了値を採取する。daemonを通常停止し、再接続を依頼して再列挙したpathで新runtime/daemonを起動し、status/listと短い`S-CTRL` captureを実行する。別runではstream中に抜去を依頼し、client/daemon診断と各実終了値を採取する。
+- **期待値/終了値:** idle時はdaemon保持中USBの切断が状態/診断に現れ、process終了値は実値を記録する。stream時は切断診断とclient exit 7を確認する。time満了exit 0は切断合格でない。新daemonでの短TSはexit 0とTS/counter合格。
+- **停止/cleanup:** idle/streamそれぞれでowned client/daemonを通常停止してwaitし、再接続後の新daemonも通常停止する。Androidはpermission/FD再取得。
+- **記録:** idle/stream、daemon USB owner状態、依頼/応答時刻、path、status/診断、各実終了値、再取得TS/counter、cleanup。
 
 ### T08 通常stop/cleanup
 
