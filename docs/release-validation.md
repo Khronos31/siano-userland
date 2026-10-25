@@ -1,4 +1,4 @@
-# Stable リリース前検証手順
+# 安定版リリース前検証手順
 
 この文書はSiano Stable releaseで再利用する準備・操作・判定・cleanupの正本です。版ごとの適用matrixと検証記録は [`release-validation/1.0.0.md`](release-validation/1.0.0.md) のように版別文書へ記録します。個別候補の実測値・結果は今回候補の合格を意味しません。
 
@@ -50,21 +50,21 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 | RF試験入力（system / channel） | 実際に受信させる放送systemと現地channel | firmware、機種data、candidate実績 | `system:` と `channel:`。対応波がない場合は `なし（理由）` |
 | 製品CLIからの内蔵CARD操作 | 製品固有CLI/APIの操作範囲 | PC/SC/WinSCard adapter、実機合否 | 操作名とmodel依存条件。機能なしは `なし` |
 | native PC/SC/WinSCard adapter | その行のOS標準APIへ接続する製品adapterの種類・配布形態 | 製品CLI CARD、adapter実機試験結果、他OSのadapter | OS/ABI行に該当する`Linux PC/SC:`、`macOS PC/SC:`、`Android:`または`Windows WinSCard:`だけを記載 |
-| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: [archive別手順](#3-release-archive-procedure)` の順 |
+| 配布artifact / 手順 | 対象archive識別子とこの正本内の該当手順 | artifact hash、host、試験結果 | `artifact: <target>; procedure: [archive別手順](#3-配布アーカイブ別手順)` の順 |
 
 共通IDは E02=Linux/x86_64/musl、E03=Linux/x86_64/glibc、E04=macOS/arm64、E05=Android/aarch64、E06=Android/armv7a、E07=Android/x86_64、E15-G=Linux/aarch64/glibc、E15-M=Linux/aarch64/musl、E17=Windows 11/x86_64を表す。IDはhost名や試験済み状態を表さない。SianoのLinux binaryは各architectureにつき1つの静的musl archiveであり、glibc/musl別artifactではない。
 
 | ID | OS / ABI | 依存 / driver / permission | firmware / 補助data | RF試験入力（system / channel） | 製品CLIからの内蔵CARD操作 | native PC/SC/WinSCard adapter | 配布artifact / 手順 |
 |---|---|---|---|---|---|---|---|
-| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-aarch64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-armv7a`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-x86_64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: [archive別手順](#3-release-archive-procedure) |
-| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: [archive別手順](#3-release-archive-procedure) |
+| E01 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: HAOS/SCS containerからの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E02 | Linux / x86_64 / musl | libusb: 静的1.0.30; USB access: HAOS Supervisor add-on経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E03 | Linux / x86_64 / glibc | libusb: 静的1.0.30; USB access: native OSの許可済みUSB node | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-x86_64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E04 | macOS / arm64 / Apple system runtime | libusb: 静的1.0.30; USB access: macOSの許可済み経路 | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | macOS PC/SC: なし | artifact: `darwin-arm64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E05 | Android (Termux) / aarch64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-aarch64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E06 | Android (Termux) / armv7a / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-armv7a`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E07 | Android (Termux) / x86_64 / Android NDK ABI | libusb: 静的1.0.30; USB access: Termux USB permission; FD handoff: daemonへ1 FD | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Android: なし | artifact: `android-x86_64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E15-G | Linux / aarch64 / glibc | libusb: 静的1.0.30; USB access: platformのnative USB claimとpermission | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Linux PC/SC: なし | artifact: `linux-aarch64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
+| E17 | Windows 11 / x86_64 / Win32 | libusb: 静的1.0.30; USB access: WinUSB driver | firmware: `isdbt_rio.inp`; 補助data: なし | system: ISDB-T; channel: 現地channel planから選択 | なし | Windows WinSCard: なし | artifact: `windows-x64`; procedure: [archive別手順](#3-配布アーカイブ別手順) |
 
 行は正式配布archiveのnative/canonical runtimeと必要なaccess条件を記す。追加のOS/ABI・access path確認は[移植性確認手順](platforms/portability-checks.md)へ分離する。各版のhost名と実施結果は版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
@@ -81,7 +81,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** deviceを開かず、archive/logを保持。
 - **記録:** source SHA、CI run/attempt、artifact ID/target/hash、取得日時、未取得理由。
 
-### T01 環境/permission/input
+### T01 実行環境・アクセス権・入力
 
 - **適用対象/頻度:** 全native archive。初回は全modelごと。
 - **準備:** E-ID/OS/ABI、USB access、firmware/model data、channel planを環境表と照合。
@@ -90,7 +90,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** 権限不足やdriver変更が必要なら操作せず未実施記録。
 - **記録:** E-ID/host/OS/ABI/model、USB topology/permission、firmware/data、channel plan。
 
-### T02 列挙/selector/ready
+### T02 列挙・selector・ready確認
 
 - **適用対象/頻度:** 毎release、対象model/device。
 - **準備:** 候補archiveのlist-json/models入口とdevice selectorを準備しdaemon専用runtimeを作る。
@@ -108,7 +108,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** 全client通常終了後daemon通常停止、残留なし。
 - **記録:** model/receiver/system/channel、各start/end/exit、TS/counter、cleanup。
 
-### T04 不足波/全無料channel
+### T04 不足波・全無料channel
 
 - **適用対象/頻度:** 毎releaseは不足波。初回/majorは全機種の代表機で全無料channel各10秒。
 - **準備:** 現地channel planとmodel能力から対象system/channel一覧を作る。
@@ -117,7 +117,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** client wait/exit保存、daemon通常停止。
 - **記録:** model/system/channel/全channel list、TS解析/counter/exit、未取得理由。
 
-### T05 stream中monitor/control
+### T05 受信中の状態確認・制御
 
 - **適用対象/頻度:** 毎release。CARD/controlは製品能力に従う。
 - **準備:** capture clientを起動し、別terminalでstatus/list/controlを行えるようにする。
@@ -126,7 +126,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** client/daemonを通常停止し残留確認。
 - **記録:** 照会/control時刻、response class、各exit、streamとの重なり。
 
-### T06 CARD物理挿抜/復帰
+### T06 CARD物理挿抜・復帰
 
 - **適用対象/頻度:** CARD reader/status対応model。毎release。
 - **準備:** CARD reader/APIがないためCARD用daemonやreaderを準備しない。
@@ -135,7 +135,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** daemon通常停止、FD/IPC/runtimeを確認。
 - **記録:** 依頼時刻、状態/response/exit、復帰、cleanup。
 
-### T07 USB idle/stream切断と再取得
+### T07 USB待機中・受信中の切断と再取得
 
 - **適用対象/頻度:** 毎release。USB対応deviceのidle/streamを別run。
 - **準備:** `sianod --list-json`でUSB pathを特定する。USBをdaemon起動時にclaimして保持する実装なので、streamなしのdaemonを起動しstatus/list、daemon PIDとUSB owner状態を記録する。有限capture時間は明示設定する。2-deviceはT12。
@@ -144,7 +144,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** idle/streamそれぞれでowned client/daemonを通常停止してwaitし、再接続後の新daemonも通常停止する。Androidはpermission/FD再取得。
 - **記録:** idle/stream、daemon USB owner状態、依頼/応答時刻、path、status/診断、各実終了値、再取得TS/counter、cleanup。
 
-### T08 通常stop/cleanup
+### T08 通常停止・cleanup
 
 - **適用対象/頻度:** 全test終了時。
 - **準備:** 各owned client/daemon PIDとruntimeを記録してから起動する。
@@ -153,7 +153,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** 無関係processへsignalしない。test専用runtimeだけ片付け失敗log保持。
 - **記録:** PID/role/exit、process/FD/IPC/socket/runtime、復旧状態。
 
-### T09 TS/counter/exit判定
+### T09 TS・counter・終了値判定
 
 - **適用対象/頻度:** 全capture/soak。
 - **準備:** TS parser/SPEC条件とdaemon counterを確認できるようにする。
@@ -162,7 +162,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** 元TS/hash/logを残してT08 cleanup。
 - **記録:** parser/version、TS hash、sync/TEI/continuity/drop/counter、exit。
 
-### T10 native PC/SC/WinSCard
+### T10 native PC/SC・WinSCard
 
 - **適用対象/頻度:** 対応OS/APIのみ。非対応製品は理由付きN/A。
 - **準備:** native OS adapter/consumerとcandidate IFD/DLL pathを用意。
@@ -171,7 +171,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** consumerは起動しない。別の試験で起動したdaemonだけを通常停止し、system PCSC serviceを変更しない。
 - **記録:** OS/ABI、module/DLL absolute path、consumer、reader/card、operation/exit。
 
-### T11 LNB/非対応拒否
+### T11 LNB・非対応要求の拒否
 
 - **適用対象/頻度:** 必要時。給電対応profileだけ実測。
 - **準備:** Sianoは衛星/LNB機能がないためmeter/給電設備を接続しない。
@@ -180,7 +180,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** LNB操作なし。capture/daemonは通常停止する。
 - **記録:** model/profile、command/exit、meter値/条件、cleanupまたはN/A根拠。
 
-### T12 複数device/daemon/access
+### T12 複数device・daemon・access
 
 - **適用対象/頻度:** 必要時、複数device/selector/access変更時。
 - **準備:** USB port/selectorとinstance/runtimeをdeviceごとに割り当てる。
@@ -189,7 +189,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** 各client/daemon個別wait/stopしFD/IPC/socket確認。
 - **記録:** device/port/PID/runtime、各exit/継続/再取得/access/cleanup。
 
-### T13 soak/頻度
+### T13 連続受信・頻度
 
 - **適用対象/頻度:** 毎releaseおよび全model初回/major。
 - **準備:** 確定頻度表の対象archive/model/timeをmatrixへ展開する。
@@ -198,7 +198,7 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 - **停止/cleanup:** T08通常stopと全resource cleanup。
 - **記録:** model/OS/ABI/archive、時間、TS/counter、FD/RSS、未実施理由。
 
-### T14 failure/release disposition
+### T14 失敗・リリース判定
 
 - **適用対象/頻度:** 全candidate gate完了後。
 - **準備:** source/archive SHAと全T-IDの結果を版別記録へ用意。
@@ -209,7 +209,25 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 
 N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsupported、candidate欠落、未実施、失敗、環境不能は版別結果で未達とし、passに読み替えない。手順に記した期待値は実測結果ではない。
 
-## 0. 共通artifact matrixと共通手順
+## 対象アーカイブ・環境から全試験への対応
+
+選択したarchive/E-IDごとに、下表のT00–T14を同じrun記録へ実施する。各T見出しは準備・実操作・期待値/終了値・停止/cleanup・記録を含む手順本体であり、表は対象環境からその全項目へ直接辿る索引である。環境表に載る別OS/ABIの結果や過去runで代用しない。
+
+| archive / E-ID / 実行環境 | T00–T14の手順リンク |
+|---|---|
+| `linux-x86_64` / [E01](#72-環境別) / Linux x86_64/glibc container profile | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `linux-x86_64` / [E02](#72-環境別) / Linux x86_64/musl add-on profile | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `linux-x86_64` / [E03](#72-環境別) / Linux x86_64/glibc native profile | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `linux-aarch64` / [E15-G](#72-環境別) / Linux aarch64/glibc | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `darwin-arm64` / [E04](#72-環境別) / macOS arm64 | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `android-aarch64` / [E05](#72-環境別) / Android Termux/aarch64 | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `android-armv7a` / [E06](#72-環境別) / Android Termux/armv7a | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `android-x86_64` / [E07](#72-環境別) / Android Termux/x86_64 | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+| `windows-x64` / [E17](#72-環境別) / Windows 11 x86_64 | [T00](#t00-候補配布物固定) · [T01](#t01-実行環境アクセス権入力) · [T02](#t02-列挙selectorready確認) · [T03](#t03-最大同時受信) · [T04](#t04-不足波全無料channel) · [T05](#t05-受信中の状態確認制御) · [T06](#t06-card物理挿抜復帰) · [T07](#t07-usb待機中受信中の切断と再取得) · [T08](#t08-通常停止cleanup) · [T09](#t09-tscounter終了値判定) · [T10](#t10-native-pcscwinscard) · [T11](#t11-lnb非対応要求の拒否) · [T12](#t12-複数devicedaemonaccess) · [T13](#t13-連続受信頻度) · [T14](#t14-失敗リリース判定) |
+
+OS/ABI固有の起動方法は以下の環境recipeと§3のarchive手順を使う。試験の期待・cleanup・記録項目はリンク先T本文に従う。機能対象外だけを理由付きN/Aとし、候補未入手・unsupported・未実施・環境不足は未達で記録する。
+
+## 0. 共通配布アーカイブと共通手順
 
 各冊の「共通実行環境表」は、Stable release gateで確認する正式配布artifactとnative/canonical runtimeの対応matrixである。環境IDはOS/ABIとUSB access boundaryを識別し、host名や試験状態を表さない。正式な対象archiveはREADME/SPECと各版のmatrixに従う。
 
@@ -230,7 +248,7 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
 | `未認定` | 対象の現行証拠がなく、合格を示せない。 |
 | `対象外` | 製品仕様の対象外に限る。未実施・環境不能・candidate欠落・失敗には使わない。 |
 
-## 1. 候補と baseline を固定する
+## 1. 候補とbaselineを固定する
 
 1. 候補の `VERSION`、source commit、`release.yml` の run を特定する。dirty な作業ツリーや未 push の変更を候補として試験しない。
 2. baseline は完全な記録を持つ直近 Stable とする。現在は v0.1.5（その後 v0.1.6–v0.1.9 の tag はあるが実機記録が v0.1.5 で止まっている）。baseline 以後の累積差分を `git diff --stat <baseline>..<candidate>` で把握する。
@@ -240,7 +258,7 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
 
 影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。選択する短時間実機確認のarchiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は該当版の `docs/release-validation/<version>.md` に従う。
 
-## 2. source / CI / candidate artifact gate（毎回）
+## 2. source / CI / 候補アーカイブ判定（毎回）
 
 1. 候補 commit に対応する `release.yml` を確認する。path filter 等で未実行なら `workflow_dispatch` で候補 ref を指定して実行する。
 2. offline の `make test`、各 target build、`audit-artifact`、source archive 監査、`test-static-relink`、`packaged-runtime-*` smoke がすべて成功していることを確認する。失敗 job を無視して先へ進まない。
@@ -271,7 +289,7 @@ cmp <new-empty-dir>/SHA256SUMS <another-new-empty-dir>/SHA256SUMS
 
 CI が行う build・audit・smoke を成功後にローカル再実行しない。新しい汎用検証スクリプトは作らない。
 
-## 3. Release archive procedure
+## 3. 配布アーカイブ別手順
 
 1. 該当releaseの全配布archiveを対応するnative OS/ABIで確認する。下表はarchiveごとの操作方法とnative環境の対応表である。同じx86_64実行ファイルを複数のaccess pathで重複実行する場合はOS/ABIのnative確認と分けて記録する。
 
@@ -289,7 +307,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 3. 30秒受信のTSは§6で検査する。5分を超える連続負荷は短時間確認に混ぜず、§5のsoakとしてユーザーの決定を待つ。各runの記録にはarchive名/SHA-256、source commit、環境ID/OS version/architecture、USB `port=`、実施時刻（UTC）、コマンド、終了値、TS検査結果、残留の有無を残す。
 4. host/deviceが使えない、archiveが起動しない、または必須物理操作を実施できない場合は該当artifactのgate未完了とする。環境を別のOS/ABIで黙って代替せず、ユーザーに状況と必要な選択肢を提示する。
 
-## 4. 変更class と targeted qualification
+## 4. 変更分類と対象別適格性確認
 
 v0.1.5..v0.1.9 のように差分が大きい場合は、変更したファイル名だけでなく hunk 単位で分類する。`siano-ts.c` の `#ifdef _WIN32` / `#if defined(__APPLE__)` / `SIANO_HAVE_WRAP_SYS_DEVICE` など platform guard 内の hunk はその platform のみに作用する。v0.1.5..v0.1.9 には platform-guarded change（`__APPLE__` の `MAX_URBS`、`_WIN32` の `--fd` 拒否、`control-input.c` の Windows pipe 等）が含まれるため、必ず guard ごとに判定する。
 
@@ -310,13 +328,13 @@ v0.1.5..v0.1.9 のように差分が大きい場合は、変更したファイ�
 
 platform-only の hunk は、そのplatformのmatrix環境で機能確認を行う。classが不明または複数にまたがる場合は影響し得るpathをユーザー提示用に整理する。追加確認のうち5分を超える連続負荷はsoakとして扱う。毎releaseの代表機2時間と初回/majorの時間条件は「共通の検証項目と頻度」に従い、別途の追加soakが指定された場合はその時間・OSを記録する。物理操作の待機は§3と同じく依頼ごとに最大5分とする。
 
-## 5. 連続受信・soak
+## 5. 連続受信
 
 短時間回帰とは分けて連続受信を行う。毎releaseの代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。ユーザーから別途soakが指示された場合は、追加分の実施有無・時間・OSをその指示に従う。
 
 各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、TS品質、process/FD/RSSの観測値、cleanupを記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
 
-### soak の内容
+### 連続受信の内容
 
 - 共通の頻度表またはユーザーの追加指示で指定された時間、OS、topologyを用いる。
 - 10秒以下の間隔で RSS と FD 数を記録し、傾向を示す。**数値の合否基準は設けない**。記録系列が最終観測まで安定化しない持続的な増加を示し、外部要因も特定できない場合、その soak は `判定保留` として pass にせず、release前に原因を調査する。途中で頭打ちになる増加は自動的な失敗ではなく、証拠と理由を記録する。この disposition は soak の受入規則であり、新しい soak trigger でも、trigger のない追加 run を要求するものでもない。
@@ -331,7 +349,7 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 2. `tsanalyze --normalized <file>` で invalid sync 0、TEI 0、PID ごとの continuity discontinuity 0。各 PID の先頭 packet、および `--control` の retune 境界2点は除外する。
 3. `TS queue dropped` が stderr になく、exit code が 8 でないこと。正常は exit 0。
 
-## 7. 正式artifactの環境別手順
+## 7. 正式アーカイブの環境別手順
 
 各項は次の共通部品と追加手順で構成する。物理操作（USB 抜差し、アンテナ、電源、WinUSB 割当、kernel module blacklist 変更）はユーザーが事前確認のうえ実施する。E01/E02 は production host であり、Supervisor 状態変更は承認・退避・復元を伴う。HA Core・アドオン・mirakc・サービスを再起動しない。
 
@@ -447,7 +465,12 @@ $D = (Resolve-Path .\sianod.exe).Path
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
 $FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
-$RT = Join-Path $env:TEMP "siano-rc-runtime-$PID"
+$INSTANCE = 's1ud'
+$LOG = 'C:\siano-e17-<run-id>-logs'
+if (Test-Path $LOG) { throw "refusing to reuse existing log path: $LOG" }
+New-Item -ItemType Directory -Path $LOG | Out-Null
+$RT = 'C:\siano-e17-<run-id>'
+if (Test-Path $RT) { throw "refusing to reuse existing runtime path: $RT" }
 New-Item -ItemType Directory -Path $RT | Out-Null
 $manifest = Get-Content .\manifest.json -Raw | ConvertFrom-Json
 foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
@@ -459,14 +482,17 @@ foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
 $selector = 'usb:BUS-PORT'          # 実際に列挙されたselectorへ置換
 & $D --device $selector --instance s1ud --firmware $FW --runtime-dir $RT
 # daemonがreadyになったら別のPowerShell（同じZIP root）で:
+$RT = 'C:\siano-e17-<run-id>'
+$LOG = 'C:\siano-e17-<run-id>-logs'
+$INSTANCE = 's1ud'
 $C = (Resolve-Path .\sianoctl.exe).Path
 $B = (Resolve-Path .\siano-ts.exe).Path
-& $C --instance s1ud --runtime-dir $RT status
+& $C --instance $INSTANCE --runtime-dir $RT status
 $p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c 22 -o hotplug.ts" -PassThru -NoNewWindow -RedirectStandardError hotplug.err
 Start-Sleep -Seconds 20
 # ここで利用者がUSBを抜く。2分以内に終了し、ExitCode 7であることを確認する
 if ($p.WaitForExit(120000)) { $p.Refresh(); $p.ExitCode }
-else { 'HANG'; Stop-Process -Id $p.Id -Force }
+else { 'HANG: record PID and timeout; return to the owning console and stop with Ctrl+C; do not force-terminate' }
 # daemon consoleでCtrl+C。利用者がUSBを戻してから同consoleで
 # --list-jsonでselectorを確認し、上と同じdaemon起動を行う。
 # daemonがreadyになったらconsumer consoleで:
@@ -475,6 +501,136 @@ else { 'HANG'; Stop-Process -Id $p.Id -Force }
 $LASTEXITCODE                 # 0を期待
 Get-Process siano-ts -ErrorAction SilentlyContinue
 # 終了時はdaemon consoleでCtrl+C。
+```
+
+#### E17 WindowsのT00–T14操作
+
+下表はWindows PowerShellから各T-IDを実行する対応である。終了値・合否・共通cleanup・記録項目は同じ行のT本文を適用する。daemon consoleとclient consoleは分け、両方へ同じ`$RT`/`$INSTANCE`を設定する。`C:\siano-e17-<run-id>`などのrun固有パスは空白なし・未使用であることを確認する。
+
+| T | Windows実操作 | 記録・cleanup |
+|---|---|---|
+| T00 | 上のZIP SHAとmanifest内3 executable SHA照合を実行する。 | source/CI run/target/hashを保存し、deviceを開かない。 |
+| T01 | `$PSVersionTable.PSVersion`、`[Environment]::OSVersion`、`[Environment]::Is64BitProcess`、`Get-PnpDevice -PresentOnly`を保存する。 | E17/Windows build/architecture、USB ID/WinUSB binding、firmware SHA、channel planを保存する。 |
+| T02 | `& $D --list-json`、`& $C --instance s1ud --runtime-dir $RT status`、`list`を実行する。 | `enclosures[].devices[].port`とready/listを保存する。daemonは前景consoleでCtrl+C停止する。 |
+| T03 | `& $B --instance s1ud --runtime-dir $RT -c 22 -t 30 -o "$LOG\t03.ts"`。 | receiver 0の1 stream、exit 0とTS/counterを保存する。 |
+| T04 | 下の`$CHANNEL_PLAN`を現地の全無料ISDB-T channelに設定して10秒ずつ取得する。 | channelごとのexit/TS/counterを保存。初回/major以外は毎releaseの不足波を対象にする。 |
+| T05 | 下のPowerShell `.NET ProcessStartInfo` control sequenceを実行し、別consoleから`status`/`list`を反復する。 | tune応答/終了値とcapture期間の重なりを保存し、client/daemonを通常終了する。 |
+| T06 | CARD APIがないため理由付きN/A。 | reader/cardを作らず、daemonは通常停止する。 |
+| T07 | 下のidle保持runと上の有限受信中のUSB抜去/再接続runを別々に行う。 | client/daemonの実終了値・診断・再列挙/再受信・cleanupを保存する。 |
+| T08 | client終了後にdaemon consoleでCtrl+Cを入力して`$LASTEXITCODE`を保存し、`Get-Process sianod,siano-ts -ErrorAction SilentlyContinue`、`Get-ChildItem $RT -Force`、daemon停止後の`$C status`を実行する。 | client/daemon exit、process/runtime/TS cleanupとendpoint不在応答を保存する。 |
+| T09 | `tsanalyze "$LOG\t03.ts"`を各TSに実行する。 | parser version、TS SHA、sync/TEI/continuity/drop、client exitを保存する。 |
+| T10 | native PC/SC/WinSCard adapterがないため理由付きN/A。 | consumerを起動しない。 |
+| T11 | 衛星/LNB機能がないため理由付きN/A。 | meter/給電操作なし。 |
+| T12 | `$PORT_A/$PORT_B`を分けた2 daemon/instanceで実行し、下のconsole commandを使う。 | A抜去時A exit 7/B継続 exit 0、再接続後A再取得の各状態を別記録する。1台環境は2台試験の代用にしない。 |
+| T13 | `$S`を適用頻度表の時間秒へ設定し、下の同じS-RX commandで連続取得する。 | 開始・定期・終了時のTS/counter/FD/RSS/exitを保存する。全archive native shortは独立run。 |
+| T14 | version recordにT-IDごとのstateとevidence pathを記録する。 | failure/unsupported/未実施/環境不能/候補欠落は未達とし、candidate evidenceを保持する。 |
+
+```powershell
+$D = (Resolve-Path .\sianod.exe).Path
+$C = (Resolve-Path .\sianoctl.exe).Path
+$B = (Resolve-Path .\siano-ts.exe).Path
+$FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$INSTANCE = 's1ud'
+$RT = 'C:\siano-e17-<run-id>'
+$LOG = 'C:\siano-e17-<run-id>-logs'
+$CHANNEL_PLAN = @('<free-channel-1>','<free-channel-2>')
+foreach ($channel in $CHANNEL_PLAN) {
+    $out = Join-Path $LOG ("t04-$channel.ts")
+    $p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c $channel -t 10 -o `"$out`"" -PassThru -NoNewWindow -Wait
+    [pscustomobject]@{ Channel=$channel; ExitCode=$p.ExitCode; File=$out }
+}
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $B
+$psi.Arguments = "--instance s1ud --runtime-dir `"$RT`" --control -o `"$LOG\t05.ts`""
+$psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
+$control = [System.Diagnostics.Process]::Start($psi)
+$stdout = $control.StandardOutput.ReadToEndAsync(); $stderr = $control.StandardError.ReadToEndAsync()
+Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('channel 21')
+Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('channel 22')
+Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('quit'); $control.StandardInput.Close()
+$control.WaitForExit()
+$stdout.Result | Out-File "$LOG\t05.out"; $stderr.Result | Out-File "$LOG\t05.err"; "$($control.ExitCode)" | Out-File "$LOG\t05.rc"
+$S = '<seconds from frequency table>'
+$soak = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c 22 -t $S -o `"$LOG\t13.ts`"" -PassThru -NoNewWindow
+while (-not $soak.HasExited) {
+    Get-Process -Id $soak.Id | Select-Object Id,ProcessName,WorkingSet64,HandleCount,Threads | Export-Csv -NoTypeInformation -Append "$LOG\t13-process.csv"
+    Get-Process sianod -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,WorkingSet64,HandleCount,Threads | Export-Csv -NoTypeInformation -Append "$LOG\t13-process.csv"
+    & $C --instance $INSTANCE --runtime-dir $RT status | Out-File -Append "$LOG\t13-status.txt"
+    Start-Sleep -Seconds 5
+    $soak.Refresh()
+}
+$soak.Refresh(); "$($soak.ExitCode)" | Out-File "$LOG\t13.rc"
+```
+
+```powershell
+# T07 idle run: daemonを維持し、capture clientを起動していない状態を確認する。
+& $C --instance $INSTANCE --runtime-dir $RT status | Tee-Object "$LOG\idle-before.txt"
+Get-Process sianod -ErrorAction SilentlyContinue | Select-Object Id,ProcessName | Out-File "$LOG\idle-owner.txt"
+# 利用者へUSB抜去を依頼し、依頼/応答時刻を記録する。
+& $C --instance $INSTANCE --runtime-dir $RT status 2>&1 | Tee-Object "$LOG\idle-after.txt"
+Get-Process sianod -ErrorAction SilentlyContinue | Select-Object Id,ProcessName | Out-File "$LOG\idle-owner-after.txt"
+# daemon consoleへ戻りCtrl+Cし、直後の`$LASTEXITCODE`とprocess終了を記録してからUSB再接続を依頼する。
+& $D --list-json | Out-File "$LOG\discovery-reconnected.json"
+$selector = 'usb:<port-from-discovery-reconnected.json>'
+$RT = 'C:\siano-e17-<run-id>-reconnected'
+if (Test-Path $RT) { throw "refusing to reuse existing runtime path: $RT" }
+New-Item -ItemType Directory -Path $RT | Out-Null
+# 新しいPowerShell daemon consoleで実行し、ready後にconsumer consoleからstatusと30秒受信を行う。
+& $D --device $selector --instance $INSTANCE --firmware $FW --runtime-dir $RT
+```
+
+T12ではUSB discoveryから`$PORT_A`/`$PORT_B`を異なるportに置換し、各device用runtimeを作ってdaemon consoleを2つ使う。以下を各daemon consoleで別々に前景実行する。clientは同じinstance/runtimeで別consoleから`$B -c 22 -t $S -o ...`を実行する。Aの抜去時はA exit 7とBが継続してexit 0であることを確認し、各consoleをCtrl+Cで通常停止、実終了値を個別保存する。
+
+```powershell
+$D = (Resolve-Path .\sianod.exe).Path
+$FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$PORT_A = '<port-from-list-json-a>'; $PORT_B = '<port-from-list-json-b>'
+$RT_A = 'C:\siano-e17-<run-id>-a'; $RT_B = 'C:\siano-e17-<run-id>-b'
+New-Item -ItemType Directory -Path $RT_A, $RT_B | Out-Null
+```
+
+各PowerShell consoleは独立しているため、以下のdaemon/clientごとに候補rootから実行ファイルを解決し、該当するinstance/runtime/log値を設定する。runtime directoryは起動前に作成する。
+
+```powershell
+$D = (Resolve-Path .\sianod.exe).Path
+$FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$PORT_A = '<port-from-list-json-a>'
+$INSTANCE = 'a'
+$RT_A = 'C:\siano-e17-<run-id>-a'
+New-Item -ItemType Directory -Path $RT_A | Out-Null
+& $D --device "usb:$PORT_A" --instance a --firmware $FW --runtime-dir $RT_A
+```
+
+別PowerShell console Bで2つ目のdaemonを前景起動する。
+
+```powershell
+$D = (Resolve-Path .\sianod.exe).Path
+$FW = (Resolve-Path .\firmware\isdbt_rio.inp).Path
+$PORT_B = '<port-from-list-json-b>'
+$INSTANCE = 'b'
+$RT_B = 'C:\siano-e17-<run-id>-b'
+New-Item -ItemType Directory -Path $RT_B | Out-Null
+& $D --device "usb:$PORT_B" --instance b --firmware $FW --runtime-dir $RT_B
+```
+
+client console AでA側を前景実行し、USB抜去時の終了値を保存する。
+
+```powershell
+$B = (Resolve-Path .\siano-ts.exe).Path
+$LOG = 'C:\siano-e17-<run-id>-logs'
+$RT_A = 'C:\siano-e17-<run-id>-a'
+$S = '<finite-duration-seconds>'
+& $B --instance a --runtime-dir $RT_A -c 22 -t $S -o "$LOG\a.ts"; $LASTEXITCODE
+```
+
+client console BでB側を前景実行し、A切断中もBが継続して正常終了することを確認する。
+
+```powershell
+$B = (Resolve-Path .\siano-ts.exe).Path
+$LOG = 'C:\siano-e17-<run-id>-logs'
+$RT_B = 'C:\siano-e17-<run-id>-b'
+$S = '<finite-duration-seconds>'
+& $B --instance b --runtime-dir $RT_B -c 21 -t $S -o "$LOG\b.ts"; $LASTEXITCODE
 ```
 
 USBを物理的に外しても有限終了しない場合はhangとして失敗を記録する。各物理操作は依頼直前に通知し、依頼から最大5分待つ。
