@@ -38,6 +38,7 @@ extern "C" {
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #ifndef SIANO_RUNTIME_VERSION
 #define SIANO_RUNTIME_VERSION "0.0.0-dev"
@@ -460,7 +461,14 @@ Px4TsArguments control_arguments(const SianoArgs& args, std::uint64_t frequency_
     return arguments;
 }
 
-int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) noexcept
+struct ControlRunSummary {
+    std::uint64_t frequency_hz;
+    std::uint64_t packets_written;
+    bool succeeded;
+};
+
+int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
+                std::vector<ControlRunSummary>& summaries) noexcept
 {
     ControlState state;
     std::thread reader(control_reader, &state);
@@ -525,6 +533,8 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
         const auto result = Px4TsRunner::run_wire(control_arguments(args, frequency_hz),
                                                   output, clock, signal,
                                                   &failure_kind, &diagnostics);
+        summaries.push_back({frequency_hz, diagnostics.packets_written,
+                             static_cast<bool>(result)});
         if (!result) {
             // Preserve the old control mode's ability to accept another tune,
             // but never turn a failed UDTV operation into a silent success.
@@ -555,6 +565,30 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock) n
     state.stop_reader.store(true);
     reader.join();
     return 0;
+}
+
+void report_control_summaries(const std::vector<ControlRunSummary>& summaries,
+                              bool output_finished) noexcept
+{
+    for (std::size_t index = 0U; index < summaries.size(); ++index) {
+        const auto& summary = summaries[index];
+        const bool complete = summary.succeeded && output_finished;
+        if (complete) {
+            std::fprintf(stderr,
+                         "control: selection=%zu frequency_hz=%llu packets=%llu bytes=%llu status=complete\n",
+                         index + 1U,
+                         static_cast<unsigned long long>(summary.frequency_hz),
+                         static_cast<unsigned long long>(summary.packets_written),
+                         static_cast<unsigned long long>(summary.packets_written * 188U));
+        } else {
+            std::fprintf(stderr,
+                         "control: selection=%zu frequency_hz=%llu packets=%llu bytes=unknown status=%s\n",
+                         index + 1U,
+                         static_cast<unsigned long long>(summary.frequency_hz),
+                         static_cast<unsigned long long>(summary.packets_written),
+                         summary.succeeded ? "output-error" : "run-error");
+        }
+    }
 }
 
 }  // namespace
@@ -604,8 +638,10 @@ int main(int argc, char** argv)
             return 70;
         }
         PosixClock control_clock;
-        const int status = run_control(args, *control_output, control_clock);
+        std::vector<ControlRunSummary> summaries;
+        const int status = run_control(args, *control_output, control_clock, summaries);
         const auto finished = finish_output(*control_output);
+        report_control_summaries(summaries, static_cast<bool>(finished));
         return !finished && status == 0 ? 70 : status;
     }
 
