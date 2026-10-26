@@ -311,6 +311,53 @@ def check_workflow(path: Path) -> list[str]:
     return errors
 
 
+def check_release_tag_gate(release: str) -> list[str]:
+    errors: list[str] = []
+    triggers = re.search(r"(?ms)^on:\n(.*?)(?=^permissions:)", release)
+    if triggers is None or "workflow_dispatch:" not in triggers.group(1) or \
+            not re.search(r"(?ms)^  push:\n\s+tags:\n\s+- ['\"]v\*['\"]", triggers.group(1)):
+        errors.append("release.yml: candidate dispatch and v* tag push triggers are required")
+    top_permissions = re.search(r"(?ms)^permissions:\n(.*?)(?=^\S)", release)
+    if top_permissions is None or "contents: read" not in top_permissions.group(1) or \
+            "contents: write" in top_permissions.group(1):
+        errors.append("release.yml: write permission must be limited to the publisher job")
+    try:
+        verify = workflow_job(release, "tag-verify")
+        publish = workflow_job(release, "publish")
+    except ValueError as error:
+        return errors + [f"release.yml: {error}"]
+    if "if: github.event_name == 'push'" not in verify or \
+            "packaged-runtime-x86_64" not in verify or "packaged-runtime-aarch64" not in verify:
+        errors.append("release.yml: tag verification must follow the tag build and packaged-runtime gates")
+    if "actions: read" not in verify or "contents: read" not in verify or \
+            "contents: write" in verify:
+        errors.append("release.yml: tag verification must use read-only repository permissions")
+    if ("scripts/release_runs.py read" not in verify or
+            "scripts/release_runs.py verify" not in verify or
+            "gh run download" not in verify or "--name release-candidate" not in verify or
+            "scripts/release_verify.py" not in verify):
+        errors.append("release.yml: tag gate must validate recorded run IDs and verify all three bundles")
+    if "HEAD^1" in verify or "candidate_sha=$(git rev-parse" in verify or \
+            "candidate_sha" not in verify or "verified_candidate_run_id" not in verify:
+        errors.append("release.yml: candidate SHA must come from the verified recorded runs")
+    if verify.find("scripts/release_runs.py verify") > verify.find("gh run download") or \
+            verify.find("gh run download") > verify.find("scripts/release_verify.py"):
+        errors.append("release.yml: verify run metadata before download, then compare bundles")
+    if "needs: tag-verify" not in publish or \
+            "if: github.event_name == 'push'" not in publish:
+        errors.append("release.yml: only successful tag verification may reach publication")
+    if "contents: write" not in publish or "actions: read" not in publish:
+        errors.append("release.yml: publisher must have only the required write and artifact-read permissions")
+    for text in ("gh release create", "--draft", "gh release download",
+                 "sha256sum -c SHA256SUMS", "cmp \"$path\"", "gh release edit", "--draft=false"):
+        if text not in publish:
+            errors.append(f"release.yml: publisher is missing verification/publication step: {text}")
+    if not (publish.find("gh release create") < publish.find("gh release download") <
+            publish.find("gh release edit")):
+        errors.append("release.yml: publish only after uploaded draft assets are downloaded and checked")
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
     for workflow in EXPECTED_BUILD_CONTAINERS:
@@ -327,6 +374,7 @@ def main() -> int:
     for job_id in CI_RUNTIME_JOB_IDS:
         errors.extend(check_packaged_runtime(ci, ROOT / ".github/workflows/ci.yml", job_id, "packaged-linux"))
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    errors.extend(check_release_tag_gate(release))
     errors.extend(check_release_version_guard(release))
     errors.extend(check_windows(release, ROOT / ".github/workflows/release.yml"))
     errors.extend(check_android_packageable(
