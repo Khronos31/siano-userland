@@ -16,12 +16,15 @@ extern "C" {
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <string>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
@@ -296,6 +299,161 @@ int run_control_ts_failure(const std::string& runtime_dir,
                  WEXITSTATUS(status), errors.c_str());
     return WEXITSTATUS(status) == 0 && errors.find("control: NOT_READY") !=
         std::string::npos ? 0 : 1;
+}
+
+int run_control_ts_write_failure(const std::string& runtime_dir,
+                                 const std::string& instance,
+                                 siano_device& device, SianoFamily& family)
+{
+    const std::string output = runtime_dir + "/control-output-error.fifo";
+    if (mkfifo(output.c_str(), 0600) != 0) return -1;
+    int input_pipe[2];
+    int error_pipe[2];
+    if (pipe(input_pipe) != 0 || pipe(error_pipe) != 0) {
+        unlink(output.c_str());
+        return -1;
+    }
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        const rlimit address_space{512U * 1024U * 1024U, 512U * 1024U * 1024U};
+        const rlimit cpu_time{10U, 10U};
+        const rlimit file_size{1024U * 1024U, 1024U * 1024U};
+        if (setrlimit(RLIMIT_AS, &address_space) != 0 ||
+            setrlimit(RLIMIT_CPU, &cpu_time) != 0 ||
+            setrlimit(RLIMIT_FSIZE, &file_size) != 0) _exit(126);
+        if (dup2(input_pipe[0], STDIN_FILENO) < 0 ||
+            dup2(error_pipe[1], STDERR_FILENO) < 0) _exit(127);
+        close(input_pipe[0]);
+        close(error_pipe[1]);
+        const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--instance", instance.c_str(), "--runtime-dir",
+                              runtime_dir.c_str(), "-o", output.c_str(),
+                              "--tune-timeout-ms", "5000", nullptr};
+        execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
+        _exit(127);
+    }
+    close(input_pipe[0]);
+    close(error_pipe[1]);
+    if (pid < 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        unlink(output.c_str());
+        return -1;
+    }
+    const int error_flags = fcntl(error_pipe[0], F_GETFL, 0);
+    if (error_flags < 0 || fcntl(error_pipe[0], F_SETFL,
+                                  error_flags | O_NONBLOCK) != 0) {
+        close(input_pipe[1]);
+        kill(pid, SIGTERM);
+        waitpid(pid, nullptr, 0);
+        close(error_pipe[0]);
+        unlink(output.c_str());
+        return -1;
+    }
+    const int output_reader = open(output.c_str(), O_RDONLY | O_NONBLOCK);
+    if (output_reader < 0) {
+        close(input_pipe[1]);
+        kill(pid, SIGTERM);
+        waitpid(pid, nullptr, 0);
+        close(error_pipe[0]);
+        unlink(output.c_str());
+        return -1;
+    }
+
+    constexpr std::size_t max_stderr_bytes = 65536U;
+    bool ok = false;
+    const unsigned tunes = test_libusb_tune_requests();
+    for (unsigned i = 0U; i < 5000U; ++i) {
+        if (test_libusb_tune_requests() > tunes && family.stream_attached() &&
+            test_libusb_last_tune_hz() == 473142857U) {
+            ok = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (ok) {
+        for (std::size_t i = 0U; i < MAX_URBS; ++i) {
+            if (!wait_transfer_pending(device.transfers[i]) ||
+                test_libusb_deliver_control_to(device.transfers[i],
+                                               MSG_SMS_SIGNAL_DETECTED_IND) != 0 ||
+                !wait_transfer_pending(device.transfers[i])) ok = false;
+        }
+    }
+    close(output_reader);
+    const std::uint8_t marker = 0x71U;
+    if (ok && !deliver_ts(device, marker, 2U)) ok = false;
+    std::string errors;
+    std::array<char, 1024U> buffer{};
+    if (ok) {
+        for (unsigned i = 0U; i < 5000U; ++i) {
+            const ssize_t count = read(error_pipe[0], buffer.data(), buffer.size());
+            if (count > 0) {
+                const auto bytes = static_cast<std::size_t>(count);
+                if (errors.size() + bytes > max_stderr_bytes) {
+                    ok = false;
+                    break;
+                }
+                errors.append(buffer.data(), bytes);
+            }
+            else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                     errno != EINTR) {
+                ok = false;
+                break;
+            }
+            if (errors.find("control: INTERNAL") != std::string::npos) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (errors.find("control: INTERNAL") == std::string::npos) ok = false;
+    }
+    const char command[] = "quit\n";
+    if (write(input_pipe[1], command, sizeof(command) - 1U) !=
+        static_cast<ssize_t>(sizeof(command) - 1U)) ok = false;
+    close(input_pipe[1]);
+
+    int status = 0;
+    bool exited = false;
+    for (unsigned i = 0U; i < 5000U; ++i) {
+        const pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) { exited = true; break; }
+        if (waited < 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!exited) {
+        kill(pid, SIGTERM);
+        for (unsigned i = 0U; i < 1000U; ++i) {
+            const pid_t waited = waitpid(pid, &status, WNOHANG);
+            if (waited == pid) { exited = true; break; }
+            if (waited < 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!exited) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+        }
+    }
+    for (unsigned i = 0U; i < 64U; ++i) {
+        const ssize_t count = read(error_pipe[0], buffer.data(), buffer.size());
+        if (count <= 0) break;
+        const auto bytes = static_cast<std::size_t>(count);
+        if (errors.size() + bytes > max_stderr_bytes) {
+            ok = false;
+            break;
+        }
+        errors.append(buffer.data(), bytes);
+    }
+    close(error_pipe[0]);
+    unlink(output.c_str());
+    const bool normal_exit = exited && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    const bool failure_summary =
+        errors.find("control: INTERNAL") != std::string::npos &&
+        errors.find("packets=0 bytes=unknown status=run-error") != std::string::npos;
+    std::fprintf(stderr,
+        "PROOF control_ts_write_failure started=%d exited=%d exit=%d stats_match=%d stderr=%s",
+        ok, exited, normal_exit ? WEXITSTATUS(status) : -1, failure_summary,
+        errors.c_str());
+    return ok && normal_exit && failure_summary ? 0 : 1;
 }
 
 bool check_status(std::string_view json, const std::string& instance,
@@ -640,6 +798,56 @@ int main()
         }
         std::fprintf(stderr, "PROOF xdg_root root=%s status=0 list=0 ts=0 bytes=0 quiesced=true error=OK\n",
                      root3.c_str());
+    }
+    {
+        const std::string dir4 = make_private_dir();
+        assert(!dir4.empty());
+        const std::string inst4 = "proofinst0004";
+        auto a4 = assemble_siano_context(config, inst4, dir4.c_str(), epoch.value(),
+                                         SIANO_RUNTIME_VERSION);
+        if (!a4) {
+            std::fprintf(stderr, "PROOF output failure assemble_error=%s\n",
+                         error_string(a4.error()));
+            return 1;
+        }
+        dtv::userland::host_listener_context::EnclosureContext& owned4 =
+            *a4.value().context;
+        SianoFamily* family4 = a4.value().family;
+        if (family4 == nullptr) {
+            std::fprintf(stderr, "PROOF control output failure regression failed\n");
+            (void)owned4.close(Timeout{15000U});
+            return 1;
+        }
+        std::atomic<bool> serving4{true};
+        std::thread server4([&]() {
+            while (serving4.load()) {
+                const auto polled = owned4.poll_once(Timeout{50U});
+                if (!polled) {
+                    std::fprintf(stderr, "PROOF output failure server poll error=%u\n",
+                                 static_cast<unsigned>(polled.error()));
+                    break;
+                }
+            }
+        });
+        const int output_failure_status = run_control_ts_write_failure(
+            dir4, inst4, family4->adapter().device(), *family4);
+        serving4.store(false);
+        server4.join();
+        if (output_failure_status != 0) {
+            std::fprintf(stderr, "PROOF control output failure regression failed\n");
+            (void)owned4.close(Timeout{15000U});
+            return 1;
+        }
+        const auto closed4 = owned4.close(Timeout{15000U});
+        if (!closed4 || closed4.value() !=
+                dtv::userland::host_listener_context::CloseState::quiesced) {
+            std::fprintf(stderr, "PROOF output failure cleanup quiesced=%d error=%s\n",
+                         closed4 && closed4.value() ==
+                             dtv::userland::host_listener_context::CloseState::quiesced,
+                         error_string(closed4 ? Error::OK : closed4.error()));
+            return 1;
+        }
+        std::fprintf(stderr, "PROOF output failure cleanup quiesced=true error=OK\n");
     }
     return 0;
 }

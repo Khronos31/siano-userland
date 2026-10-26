@@ -294,6 +294,13 @@ target_link_libraries(siano_runtime_v1_proof PRIVATE
     siano_runtime siano_libusb Threads::Threads)
 add_dependencies(siano_runtime_v1_proof sianoctl siano_wire_ts)
 
+add_executable(siano_control_output_finish_proof
+    tests/control_output_finish_proof.cpp)
+target_compile_features(siano_control_output_finish_proof PRIVATE cxx_std_17)
+target_include_directories(siano_control_output_finish_proof PRIVATE ${SIANO_PX4_ROOT}/tools)
+target_link_libraries(siano_control_output_finish_proof PRIVATE
+    siano_px4_runtime siano_c_backend dtv::host_ts)
+
 # One focused fixture for the newly connected PID list and wrapped-FD facts.
 add_executable(siano_runtime_features_proof
     tests/runtime_features_proof.cpp

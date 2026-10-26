@@ -597,6 +597,11 @@ void report_control_summaries(const std::vector<ControlRunSummary>& summaries,
     }
 }
 
+int control_exit_status(int status, bool output_finished) noexcept
+{
+    return !output_finished && status == 0 ? 70 : status;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -648,7 +653,7 @@ int main(int argc, char** argv)
         const int status = run_control(args, *control_output, control_clock, summaries);
         const auto finished = finish_output(*control_output);
         report_control_summaries(summaries, static_cast<bool>(finished));
-        return !finished && status == 0 ? 70 : status;
+        return control_exit_status(status, static_cast<bool>(finished));
     }
 
     Px4TsArguments arguments = parse_px4_ts_product_arguments(
