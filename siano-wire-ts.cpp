@@ -49,6 +49,10 @@ namespace {
 using namespace px4::userland;
 using namespace px4::userland::cli;
 
+const TsClientProfile siano_profile{
+    "siano-ts", "siano-userland", dtv::userland::identity::Product::siano,
+    false, false, nullptr, true};
+
 volatile std::sig_atomic_t stop_flag = 0;
 void stop_handler(int) noexcept { stop_flag = 1; }
 bool platform_stop_requested() noexcept
@@ -451,6 +455,8 @@ Px4TsArguments control_arguments(const SianoArgs& args, std::uint64_t frequency_
 {
     Px4TsArguments arguments{};
     arguments.valid = true;
+    arguments.common_profile = true;
+    arguments.product_cli = true;
     arguments.instance = args.instance;
     arguments.runtime_directory = args.runtime_directory;
     arguments.output = args.output;
@@ -531,7 +537,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         Px4TsFailureKind failure_kind = Px4TsFailureKind::ipc;
         Px4TsRunDiagnostics diagnostics;
         const auto result = Px4TsRunner::run_wire(control_arguments(args, frequency_hz),
-                                                  output, clock, signal,
+                                                  siano_profile, output, clock, signal,
                                                   &failure_kind, &diagnostics);
         summaries.push_back({frequency_hz, diagnostics.packets_written,
                              static_cast<bool>(result)});
@@ -645,11 +651,8 @@ int main(int argc, char** argv)
         return !finished && status == 0 ? 70 : status;
     }
 
-    static const TsClientProfile profile{
-        "siano-ts", "siano-userland", dtv::userland::identity::Product::siano,
-        false, false, nullptr, true};
     Px4TsArguments arguments = parse_px4_ts_product_arguments(
-        argc, const_cast<const char* const*>(argv), profile);
+        argc, const_cast<const char* const*>(argv), siano_profile);
     if (!arguments.valid) {
         std::fprintf(stderr, "argument error: %s\n", arguments.error.c_str());
         usage();
@@ -683,7 +686,7 @@ int main(int argc, char** argv)
     PosixSignal signal;
     Px4TsFailureKind failure_kind = Px4TsFailureKind::ipc;
     Px4TsRunDiagnostics diagnostics;
-    const auto result = Px4TsRunner::run_wire(arguments, profile, *output, clock, signal,
+    const auto result = Px4TsRunner::run_wire(arguments, siano_profile, *output, clock, signal,
                                               &failure_kind, &diagnostics);
     const auto finished = finish_output(*output);
     if (!result) {
