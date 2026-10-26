@@ -120,7 +120,9 @@ std::vector<std::uint8_t> read_file(const std::string& path)
 
 int run_client(const std::string& runtime_dir, const std::string& instance,
                const std::string& output, const char* time_or_count,
-               const char* time_value, bool explicit_runtime_dir = true)
+               const char* time_value, bool explicit_runtime_dir = true,
+               const char* receiver = nullptr,
+               const std::string* diagnostic_path = nullptr)
 {
     pid_t pid = fork();
     if (pid == 0) {
@@ -138,6 +140,10 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
             argv[index++] = "--packet-count";
             argv[index++] = time_value;
         }
+        if (receiver != nullptr) {
+            argv[index++] = "--receiver";
+            argv[index++] = receiver;
+        }
         argv[index++] = "--instance";
         argv[index++] = instance.c_str();
         if (explicit_runtime_dir) {
@@ -149,6 +155,8 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
         argv[index++] = "--tune-timeout-ms";
         argv[index++] = "5000";
         argv[index] = nullptr;
+        if (diagnostic_path != nullptr && std::freopen(
+                diagnostic_path->c_str(), "w", stderr) == nullptr) _exit(126);
         execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
         _exit(127);
     }
@@ -718,6 +726,25 @@ int main()
         (void)owned.close(Timeout{15000U});
         return 1;
     }
+    const std::string receiver_diagnostic_path = runtime_dir + "/receiver-error.txt";
+    const std::string receiver_output_path = runtime_dir + "/receiver-error.ts";
+    const int receiver_status = run_client(runtime_dir, instance, receiver_output_path,
+                                           "time", "1", true, "1",
+                                           &receiver_diagnostic_path);
+    const auto receiver_diagnostic_bytes = read_file(receiver_diagnostic_path);
+    const std::string receiver_diagnostic(receiver_diagnostic_bytes.begin(),
+                                           receiver_diagnostic_bytes.end());
+    if (receiver_status != 3 || receiver_diagnostic.find(
+            "--receiver 1 is not present in the selected service") == std::string::npos) {
+        std::fprintf(stderr, "PROOF receiver diagnostic status=%d text=%s\n",
+                     receiver_status, receiver_diagnostic.c_str());
+        serving.store(false);
+        server.join();
+        (void)owned.close(Timeout{15000U});
+        return 1;
+    }
+    std::fprintf(stderr, "PROOF receiver diagnostic status=%d actionable=true\n",
+                 receiver_status);
     if (run_control_ts(runtime_dir, instance, control_output_path, device, *family) != 0) {
         std::fprintf(stderr, "PROOF control ts regression failed\n");
         serving.store(false);

@@ -645,7 +645,11 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         if (!result) {
             // Preserve the old control mode's ability to accept another tune,
             // but never turn a failed UDTV operation into a silent success.
-            std::fprintf(stderr, "control: %s\n", error_string(result.error()));
+            if (diagnostics.stage == Px4TsDiagnosticStage::none) {
+                std::fprintf(stderr, "control: %s\n", error_string(result.error()));
+            } else {
+                print_px4_ts_run_diagnostic(stderr, "control", result.error(), diagnostics);
+            }
             if (platform_stop_requested()) break;
             std::uint32_t retry_value = 0U;
             const ControlKind retry = take_command(state, retry_value);
@@ -798,7 +802,11 @@ int main(int argc, char** argv)
                                               &failure_kind, &diagnostics);
     const auto finished = finish_output(*output);
     if (!result) {
-        std::fprintf(stderr, "siano-ts: %s\n", error_string(result.error()));
+        if (diagnostics.stage == Px4TsDiagnosticStage::none) {
+            std::fprintf(stderr, "siano-ts: %s\n", error_string(result.error()));
+        } else {
+            print_px4_ts_run_diagnostic(stderr, "siano-ts", result.error(), diagnostics);
+        }
         std::fprintf(stderr, "written packets=%llu bytes=%llu\n",
                      static_cast<unsigned long long>(diagnostics.packets_written),
                      static_cast<unsigned long long>(diagnostics.packets_written * 188U));
