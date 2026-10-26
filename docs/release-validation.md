@@ -903,7 +903,7 @@ Get-Process siano-ts -ErrorAction SilentlyContinue
 | T01 | `$PSVersionTable.PSVersion`、`[Environment]::OSVersion`、`[Environment]::Is64BitProcess`、`Get-PnpDevice -PresentOnly`を保存する。 | E17/Windows build/architecture、USB ID/WinUSB binding、firmware SHA、channel planを保存する。 |
 | T02 | `& $D --list-json`、`& $C --instance s1ud --runtime-dir $RT status`、`list`を実行する。 | `enclosures[].devices[].port`とready/listを保存する。daemonは前景consoleでCtrl+C停止する。 |
 | T03 | 下のbounded Windows T03 capture recipeを実行する。 | receiver 0の1 stream、exit 0とTS/counterを保存する。timeout/exit値不明/非zeroは未達。 |
-| T04 | 下の`$CHANNEL_PLAN`を現地の全無料ISDB-T channelに設定して10秒ずつ取得する。 | channelごとのexit/TS/counterを保存。初回/major以外は毎releaseの不足波を対象にする。 |
+| T04 | 下の`$CHANNEL_PLAN`を現地の全無料ISDB-T channelに設定して10秒ずつ取得し、90秒 bounded waitで終了値を確認する。 | channelごとのexit/TS/counterを保存。timeout/cleanup失敗/exit値不明は未達。初回/major以外は毎releaseの不足波を対象にする。 |
 | T05 | 下のPowerShell `.NET ProcessStartInfo` control sequenceを実行し、別consoleから`status`/`list`を反復する。 | tune応答/終了値とcapture期間の重なりを保存し、client/daemonを通常終了する。 |
 | T06 | CARD APIがないため理由付きN/A。 | reader/cardを作らず、daemonは通常停止する。 |
 | T07 | 下のidle保持runと上の有限受信中のUSB抜去/再接続runを別々に行う。 | client/daemonの実終了値・診断・再列挙/再受信・cleanupを保存する。 |
@@ -942,8 +942,16 @@ $LOG = 'C:\siano-e17-<run-id>-logs'
 $CHANNEL_PLAN = @('<free-channel-1>','<free-channel-2>')
 foreach ($channel in $CHANNEL_PLAN) {
     $out = Join-Path $LOG ("t04-$channel.ts")
-    $p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c $channel -t 10 -o `"$out`"" -PassThru -NoNewWindow -Wait
-    [pscustomobject]@{ Channel=$channel; ExitCode=$p.ExitCode; File=$out }
+    $p = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c $channel -t 10 -o `"$out`"" -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $LOG "t04-$channel.out") -RedirectStandardError (Join-Path $LOG "t04-$channel.err")
+    if (-not $p.WaitForExit(90000)) {
+        $p.Id | Set-Content (Join-Path $LOG "t04-$channel-timeout.txt")
+        Stop-Process -Id $p.Id -ErrorAction SilentlyContinue
+        if (-not $p.WaitForExit(5000)) { $p.Id | Set-Content (Join-Path $LOG "t04-$channel-cleanup-timeout.txt") }
+    }
+    $p.Refresh()
+    if ($p.HasExited) { $p.ExitCode | Set-Content (Join-Path $LOG "t04-$channel.rc") } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG "t04-$channel.rc") }
+    if ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path $out) -and -not (Test-Path (Join-Path $LOG "t04-$channel-timeout.txt"))) { 'complete: client exited 0' | Set-Content (Join-Path $LOG "t04-$channel.state") } else { 'incomplete: client timeout/exit/output failure' | Set-Content (Join-Path $LOG "t04-$channel.state") }
+    if (Test-Path $out) { Get-FileHash -Algorithm SHA256 $out } else { "$channel output unavailable" | Out-File (Join-Path $LOG 't04-ts-missing.txt') }
 }
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $B
