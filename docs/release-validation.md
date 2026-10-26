@@ -569,18 +569,19 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
 
    Source archive内のpathはすべてarchive root相対で記す。PX4の既決DOCUMENTS/allowed_documentsの文書pathは、Siano source archiveでは`repository/README.md`、`repository/SPEC.md`、`repository/docs/platforms/validation-results.md`、`repository/docs/release-validation.md`、`repository/docs/releasing.md`、`repository/release-notes/<tag>.md`、`repository/release-notes/<tag>.json`に対応し、candidate inventoryに存在するpathだけを適用する。source package rootの`README.md`はこの明示集合に含め、`repository/README.md`のcopyとして両memberのpayload bytesが一致することを必須とする。`BUILD-RELINK.md`は許可pathに含めず候補とのbyte一致を必須とする。source archiveの`source-manifest.json`と内側`SHA256SUMS`もその比較結果と整合しなければならない。これに承認Cに従い、candidate inventoryに既に存在する当該versionの`repository/docs/release-validation/1.0.0.md`一つだけを加える。不存在のpathをtag時に新規追加して許可差分にしてはならず、必要なpathがcandidate inventoryにない場合は新candidateから必要な確認をやり直す。結果、tagで差分可能なsource pathはこの明示集合内に限り、files記録は許可文書とnoticeの実hash/size以外すべて一致しなければならない。`source-manifest.json`の`source_ref`、`resolved_commit`、`tree`はtag commit/treeと一致する。`DEPENDENCY-NOTICE.txt`では`source.ref`、`source.resolved_commit`、`source.tree`の3行だけをtag identityへ更新可能とする。source archive内側`SHA256SUMS`は許可された文書/noticeの実hashを反映する行だけが変わり得るため、member一覧と全hashの自己整合を確認する。その他のsource manifest metadataおよびpayloadはbyte一致しなければならない。`docs/`全体、他versionの記録、helper/scriptは許可差分にしない。
 
-   現在の`release.yml`は`workflow_dispatch`のみでtag push build/releaseとmember比較の実装はない。別PRで実装されるまで検査7は未実装・未検証のblocking gateとして記録し、dispatch runや候補archiveの公開で代替しない。実装後は版別記録に明示された`candidate_run_id`と`reproduction_run_id`だけを使ってartifactを取得し、同じcommitの最新2 runを自動選択してはならない。IDの未実施/欠落/不正/重複、run失敗、workflow名または`release-candidate` artifactの不一致、head SHA不一致ではfail closedとし、tag比較を始めず公開jobにも到達させない。次のCLIへcandidate 2 run・tag bundleのflat root（8 archiveと`SHA256SUMS`を含む）を渡し、candidate SHAとtag SHAも固定する。artifactの取得・配置形はworkflow実装後に確認し、現在の未実装CLIを成功済みとは扱わない。
+   固定docs tree（PR #45 head `4f4c14e`）の当時の`release.yml`は`workflow_dispatch`のみで、tag build/member comparisonと`release_verify.py` CLIは未実装だった。これは現在のmainを説明しない。現在のmain `2c6579b` には`workflow_dispatch`と`v*` tag pushの両方があり、tag workflowが版別記録に固定されたcandidate run IDsを取得し、`scripts/release_verify.py`でcandidate/reproduction/tag bundleのmemberを比較する。0.1.0の記録とPR #45の固定treeは当時の状態として維持し、ここに示す現在main用CLI例は実artifact合格の証拠ではない。1.0.0正式Core tag/pin後の独立8B pairおよび実artifact比較は未完了として扱う。
 
 ```sh
 set -eu
-gh workflow run release.yml --ref <candidate-ref>          # 未実行のときのみ
-gh run list --workflow release.yml --limit 10
-RUN_A='<candidate-run-id-a>'
-RUN_B='<candidate-run-id-b>'
-DIR_A='<candidate-run-a-empty-dir>'
-DIR_B='<candidate-run-b-empty-dir>'
-VERSION='<version>'
-CANDIDATE_SHA='<fixed-candidate-commit>'
+: "${RUN_A:?set the recorded candidate_run_id}"
+: "${RUN_B:?set the recorded reproduction_run_id}"
+: "${DIR_A:?set a new empty directory for candidate_run_id}"
+: "${DIR_B:?set a new empty directory for reproduction_run_id}"
+: "${VERSION:?set the recorded candidate version}"
+: "${CANDIDATE_SHA:?set the recorded fixed candidate commit}"
+case "$RUN_A:$RUN_B" in *[!0-9:]*|:*|*:) echo 'run IDs must be decimal' >&2; exit 2 ;; esac
+test "$RUN_A" != "$RUN_B"; test ! -e "$DIR_A"; test ! -e "$DIR_B"
+mkdir -m 700 "$DIR_A" "$DIR_B"
 # RUN_A/RUN_B are the exact candidate_run_id/reproduction_run_id recorded for this version.
 HEAD_SHA_A=$(gh run view "$RUN_A" --json headSha --jq '.headSha')
 HEAD_SHA_B=$(gh run view "$RUN_B" --json headSha --jq '.headSha')
@@ -614,22 +615,31 @@ for archive in \
   cmp "$DIR_A/$archive" "$DIR_B/$archive"
 done
 cmp "$DIR_A/SHA256SUMS" "$DIR_B/SHA256SUMS"
-# 工程4の公開後。tag archive checksumの検証は行うが、candidate sumsとcmpしない。
-TAG_DIR='<tag-release-empty-dir>'
-gh release download "v$VERSION" --dir "$TAG_DIR"
+: "${TAG_RUN_ID:?export the successful tag workflow run ID}"
+: "${TAG_DIR:?export a new empty tag-bundle directory}"
+: "${TAG:?export the exact release tag}"
+: "${TAG_SHA:?export the exact tag commit SHA}"
+case "$TAG_RUN_ID" in ''|*[!0-9]*) echo 'tag workflow run ID must be decimal' >&2; exit 2 ;; esac
+python3 - "$TAG_SHA" <<'PY'
+import re,sys
+if not re.fullmatch(r'[0-9a-fA-F]{40}',sys.argv[1]): raise SystemExit('tag commit SHA must be a 40-character hexadecimal commit')
+PY
+test ! -e "$TAG_DIR"; mkdir -m 700 "$TAG_DIR"
+TAG_RUN_JSON=$(gh run view "$TAG_RUN_ID" --json headSha,conclusion,event)
+printf '%s\n' "$TAG_RUN_JSON" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["conclusion"] == "success" and r["event"] == "push" and r["headSha"]'
+TAG_RUN_SHA=$(printf '%s\n' "$TAG_RUN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["headSha"])')
+test "$TAG_SHA" = "$TAG_RUN_SHA"
+gh run download "$TAG_RUN_ID" --name release-candidate --dir "$TAG_DIR"
 if [ "$(uname -s)" = Darwin ]; then
   (cd "$TAG_DIR" && shasum -a 256 -c SHA256SUMS)
 else
   (cd "$TAG_DIR" && sha256sum -c SHA256SUMS)
 fi
-# 各dirはsuccessful run/tag buildのflat bundle rootへ設定する。
-TAG_RUN_DIR='<tag-build-flat-bundle-dir>'
-TAG_SHA='<tag-commit>'
 python3 scripts/release_verify.py \
   --candidate-dir "$DIR_A" \
   --reproduction-dir "$DIR_B" \
-  --tag-dir "$TAG_RUN_DIR" \
-  --tag "v$VERSION" \
+  --tag-dir "$TAG_DIR" \
+  --tag "$TAG" \
   --candidate-sha "$CANDIDATE_SHA" \
   --tag-sha "$TAG_SHA"
 ```
@@ -704,21 +714,46 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 ### 7.1 共通部品
 
 ```sh
+set -eu
 D="$WORK/candidate"; DAEMON="$D/sianod"; C="$D/sianoctl"; B="$D/siano-ts"
-FW="$D/firmware/isdbt_rio.inp"; LOG="$WORK/log"; RT="$WORK/runtime"; INSTANCE=s1ud
-CAPTURE_SECONDS=10; S="$CAPTURE_SECONDS"
-mkdir -m 700 -p "$RT" "$LOG"; test -x "$DAEMON"; test -x "$C"; test -x "$B"
+FW="$D/firmware/isdbt_rio.inp"; LOG="$WORK/log"; RT="$WORK/runtime"; INSTANCE='s1ud'
+CAPTURE_SECONDS='10'; S="$CAPTURE_SECONDS"; PORT='1-2.3'
+require_value() { name=$1 value=$2; case "$value" in ''|*'<'*|*'>'*) echo "invalid or unreplaced $name" >&2; return 1 ;; esac; }
+for name in WORK D FW LOG RT INSTANCE CAPTURE_SECONDS PORT; do eval "value=\$$name"; require_value "$name" "$value"; done
+case "$S" in *[!0-9]*|0) echo 'capture duration must be positive integer seconds' >&2; exit 2 ;; esac
+# 10秒は短いTS確認用。頻度表の連続受信は代表機7200秒、macOS/Windows 1800秒、他OS/ABI 600秒をCAPTURE_SECONDSへ設定し、短時間確認で代用しない。
+mkdir -m 700 -p "$RT" "$LOG"; test -x "$DAEMON"; test -x "$C"; test -x "$B"; test -s "$FW"
 if [ "$(uname -s)" = Darwin ]; then
   printf '%s  %s\n' '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818' "$FW" | shasum -a 256 -c -
 else
   printf '%s  %s\n' '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818' "$FW" | sha256sum -c -
 fi
 "$DAEMON" --list-json > "$LOG/discovery.json"  # enclosures[].devices[].portからPORTを選択
-PORT='<enumerated USB port>'
+python3 - "$LOG/discovery.json" "$PORT" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1],encoding='utf-8'))
+if not any(d.get('port') == sys.argv[2] and d.get('usb') == '3275:0080' for e in x.get('enclosures',[]) for d in e.get('devices',[])):
+ raise SystemExit('selected port is not a discovered PX-S1UD 3275:0080')
+PY
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
-  2> "$LOG/sianod.err" & DAEMON_PID=$!
-"$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/status.txt"
-"$C" --instance "$INSTANCE" --runtime-dir "$RT" list > "$LOG/list.txt"
+  > "$LOG/sianod.out" 2> "$LOG/sianod.err" & DAEMON_PID=$!
+cleanup_sianod() {
+  original=$?; trap - EXIT
+  if kill -0 "$DAEMON_PID" 2>/dev/null; then kill -INT "$DAEMON_PID"; fi
+  if wait "$DAEMON_PID"; then daemon_rc=0; else daemon_rc=$?; fi
+  echo "$daemon_rc" > "$LOG/sianod.rc"
+  if [ "$original" -eq 0 ] && [ "$daemon_rc" -ne 0 ]; then original=$daemon_rc; fi
+  exit "$original"
+}
+trap cleanup_sianod EXIT
+i=0; READY=0
+while [ "$i" -lt 60 ]; do
+  if "$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/status.txt" 2> "$LOG/status.err" && grep -q ready "$LOG/status.txt"; then READY=1; break; fi
+  kill -0 "$DAEMON_PID" || { echo 'sianod exited before ready' >&2; exit 1; }
+  i=$((i + 1)); sleep 1
+done
+test "$READY" -eq 1 || { echo 'sianod did not become ready' >&2; exit 1; }
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" list > "$LOG/list.txt" 2> "$LOG/list.err"
 ```
 
 USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` にPX-S1UD、USB ID、`port`、受信機情報があること。通常の一覧・稼働状態は `sianoctl list/status` でdaemonへ照会し、discoveryとdaemon状態の記録を区別する。
@@ -818,24 +853,53 @@ printf '%s\n' "$CLIENT_RC" > "$LOG/sig-client.rc"
 
 ```sh
 # S-DUAL（2台。deviceごとにdaemon/instanceを分け、runtime rootは共有）
+set -eu
+require_value() { name=$1 value=$2; case "$value" in ''|*'<'*|*'>'*) echo "invalid or unreplaced $name" >&2; return 1 ;; esac; }
+"$DAEMON" --list-json > "$LOG/dual-discovery.json"
+PORT_A='1-2.3'; PORT_B='1-2.4'
+require_value PORT_A "$PORT_A"; require_value PORT_B "$PORT_B"
+test "$PORT_A" != "$PORT_B" || { echo 'PORT_A and PORT_B must identify distinct devices' >&2; exit 1; }
+python3 - "$LOG/dual-discovery.json" "$PORT_A" "$PORT_B" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1],encoding='utf-8')); devices=[d for e in x.get('enclosures',[]) for d in e.get('devices',[])]
+for port in sys.argv[2:]:
+ if not any(d.get('port') == port and d.get('usb') == '3275:0080' for d in devices): raise SystemExit(f'not a discovered PX-S1UD: {port}')
+PY
 "$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" \
-  2> "$LOG/daemon-a.err" & PID_A=$!
+  > "$LOG/daemon-a.out" 2> "$LOG/daemon-a.err" & PID_A=$!
+cleanup_dual() {
+  original=$?; trap - EXIT
+  for entry in "${PID_A:-}:daemon-a" "${PID_B:-}:daemon-b"; do
+    pid=${entry%%:*}; name=${entry#*:}
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    if kill -0 "$pid" 2>/dev/null; then kill -INT "$pid"; fi
+    if wait "$pid"; then daemon_rc=0; else daemon_rc=$?; fi
+    printf '%s\n' "$daemon_rc" > "$LOG/$name.rc"
+    if [ "$original" -eq 0 ] && [ "$daemon_rc" -ne 0 ]; then original=$daemon_rc; fi
+  done
+  exit "$original"
+}
+trap cleanup_dual EXIT
 "$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" \
-  2> "$LOG/daemon-b.err" & PID_B=$!
-"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/a.ts" 2> "$LOG/a.err" & CLIENT_A=$!
-"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/b.ts" 2> "$LOG/b.err" & CLIENT_B=$!
-wait "$CLIENT_A"; RC_A=$?
-wait "$CLIENT_B"; RC_B=$?
+  > "$LOG/daemon-b.out" 2> "$LOG/daemon-b.err" & PID_B=$!
+"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/a.ts" > "$LOG/a.out" 2> "$LOG/a.err" & CLIENT_A=$!
+"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/b.ts" > "$LOG/b.out" 2> "$LOG/b.err" & CLIENT_B=$!
+FAIL=0
+if wait "$CLIENT_A"; then RC_A=0; else RC_A=$?; FAIL=1; fi; printf '%s\n' "$RC_A" > "$LOG/a.rc"
+if wait "$CLIENT_B"; then RC_B=0; else RC_B=$?; FAIL=1; fi; printf '%s\n' "$RC_B" > "$LOG/b.rc"
+test "$FAIL" -eq 0 || { echo 'one or more S-DUAL clients failed; inspect both client logs' >&2; exit 1; }
 # 各processが意図したUSB nodeをdaemon経由で所有していることを /proc/<pid>/fd で確認
 ```
 
 ```sh
 # S-DISC（2台。S-DUALの別run。物理抜去/再接続はユーザーが実施）
+require_value() { name=$1 value=$2; case "$value" in ''|*'<'*|*'>'*) echo "invalid or unreplaced $name" >&2; return 1 ;; esac; }
+for name in DAEMON B C FW RT LOG PORT_A PORT_B; do eval "value=\${$name-}"; require_value "$name" "$value" || exit 2; done
 S=600
-"$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" 2> "$LOG/disc-daemon-a.err" & PID_A=$!
-"$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" 2> "$LOG/disc-daemon-b.err" & PID_B=$!
-"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/disc-a.ts" 2> "$LOG/disc-a.err" & CLIENT_A=$!
-"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/disc-b.ts" 2> "$LOG/disc-b.err" & CLIENT_B=$!
+"$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-a.out" 2> "$LOG/disc-daemon-a.err" & PID_A=$!
+"$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-b.out" 2> "$LOG/disc-daemon-b.err" & PID_B=$!
+"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/disc-a.ts" > "$LOG/disc-a.out" 2> "$LOG/disc-a.err" & CLIENT_A=$!
+"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/disc-b.ts" > "$LOG/disc-b.out" 2> "$LOG/disc-b.err" & CLIENT_B=$!
 sleep 20
 # beep/vibeの直後にユーザーへdevice AのUSB物理抜去を依頼し、依頼時刻と抜去確認時刻を記録する（応答待ちは最大5分）。
 # 抜去確認から120秒以内にAが自然終了すること。timeout時は未達として記録し、Aのowned clientをcleanupする。
@@ -866,7 +930,14 @@ printf '%s\n' "$RC_DAEMON_B" > "$LOG/disc-daemon-b.rc"
 # beep/vibeの直後にユーザーへdevice Aの物理再接続を依頼し、依頼/確認時刻を記録する（応答待ちは最大5分）。
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json"
 # 新しいportを特定してから、旧runtimeを再利用せず新しいinstance/runtimeでAを再取得する。
-PORT_A='<reconnected-port>'
+PORT_A='1-2.5'
+require_value PORT_A "$PORT_A" || exit 2
+python3 - "$LOG/discovery-reconnected.json" "$PORT_A" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1],encoding='utf-8'))
+if not any(d.get('port') == sys.argv[2] and d.get('usb') == '3275:0080' for e in x.get('enclosures',[]) for d in e.get('devices',[])):
+ raise SystemExit('reconnected port is not a discovered PX-S1UD')
+PY
 RT_A_RECOVERY="$RT/a-recovery"
 "$DAEMON" --device "usb:$PORT_A" --instance a-recovery --firmware "$FW" --runtime-dir "$RT_A_RECOVERY" 2> "$LOG/disc-recovery-daemon.err" & PID_A_RECOVERY=$!
 "$C" --instance a-recovery --runtime-dir "$RT_A_RECOVERY" status > "$LOG/disc-recovery-status.txt"
@@ -896,9 +967,9 @@ E01/E02/E03/E04/E15-G/E05/E06/E07/E17の各配布archiveで、各環境固有準
 ```sh
 # 接続中受信。-tを付けず、deviceを開いた状態で維持する
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
-  2> "$LOG/hotplug-daemon.err" & DAEMON_PID=$!
+  > "$LOG/hotplug-daemon.out" 2> "$LOG/hotplug-daemon.err" & DAEMON_PID=$!
 "$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -o "$LOG/hotplug.ts" \
-  2> "$LOG/hotplug.err" & p=$!
+  > "$LOG/hotplug.out" 2> "$LOG/hotplug.err" & p=$!
 sleep 20
 # vibe/beep の直後に利用者へUSBを物理的に抜くよう依頼する（応答待ちは最大5分）。
 # 抜去の観測から120秒以内に終了し、exit 7であることを確認:
@@ -908,16 +979,27 @@ if kill -0 "$p" 2>/dev/null; then hung=1; kill -TERM "$p"; fi
 if wait "$p"; then rc=0; else rc=$?; fi
 echo "hung=$hung exit=$rc" > "$LOG/hotplug.rc"  # 期待: hung=0 exit=7
 # vibe/beep の直後に再接続を依頼し（応答待ちは最大5分）、再接続された後:
-kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
+kill -INT "$DAEMON_PID"
+if wait "$DAEMON_PID"; then DAEMON_RC=0; else DAEMON_RC=$?; fi
+printf '%s\n' "$DAEMON_RC" > "$LOG/hotplug-daemon.rc"
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json" # 新しいportを選ぶ
-PORT='<reconnected USB port>'
+PORT='1-2.5'
+case "$PORT" in ''|*'<'*|*'>'*) echo 'replace PORT with the reconnected port from discovery JSON' >&2; exit 2 ;; esac
+python3 - "$LOG/discovery-reconnected.json" "$PORT" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1],encoding='utf-8'))
+if not any(d.get('port') == sys.argv[2] and d.get('usb') == '3275:0080' for e in x.get('enclosures',[]) for d in e.get('devices',[])):
+ raise SystemExit('reconnected port is not a discovered PX-S1UD')
+PY
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
-  2> "$LOG/reconnected-daemon.err" & DAEMON_PID=$!
-"$C" --instance "$INSTANCE" --runtime-dir "$RT" status
-"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t 30 -o "$LOG/reconnected.ts" 2> "$LOG/reconnected.err"
-echo $? > "$LOG/reconnected.rc"
+  > "$LOG/reconnected-daemon.out" 2> "$LOG/reconnected-daemon.err" & DAEMON_PID=$!
+"$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/reconnected-status.out" 2> "$LOG/reconnected-status.err"
+if "$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t 30 -o "$LOG/reconnected.ts" > "$LOG/reconnected.out" 2> "$LOG/reconnected.err"; then RC=0; else RC=$?; fi
+printf '%s\n' "$RC" > "$LOG/reconnected.rc"
 # 期待: 再列挙ready、30秒受信exit 0、TS §6 pass、終了後process残留なし
-kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
+kill -INT "$DAEMON_PID"
+if wait "$DAEMON_PID"; then DAEMON_RC=0; else DAEMON_RC=$?; fi
+printf '%s\n' "$DAEMON_RC" > "$LOG/reconnected-daemon.rc"
 ```
 
 一連の操作に総時間上限はない。各物理操作の依頼から操作完了までの待機だけを最大5分とする。抜去後に有限時間内に終了しない場合はhangとして失敗を記録し、processを止めて復旧する。WindowsとTermuxでは次の環境別起動法を使い、同じ物理順・待機条件を守る。2台を使う追加topology試験はこの1台必須試験の代用ではない。
