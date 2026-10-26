@@ -718,7 +718,7 @@ CTRL_PID=
 rm "$CTRL_FIFO"
 ```
 
-S-CTRLの切替境界はcommand送信時刻/file offsetやcontinuity errorから逆算しない。`ctrl.err`の完了したper-selection統計を使う。各行は`control: selection=<1-based> frequency_hz=<Hz> packets=<packets_written> bytes=<packets_written*188> status=complete`の形式でselection番号・選局周波数・packet/byte数・完了状態を記録する。run-error/output-error、`bytes=unknown`、欠落/重複/順序違い、0 packet、stats合計とTSファイルbyte数の不一致はfailまたは判定保留とし、境界除外しない。今回の入力はchannel 21、channel 22の2 selectionなので、後続selection開始indexは先行selectionの`packets`合計である。境界後はPIDごとに最初に現れるpacketのCC比較だけを除外し、ほかのCC不良は通常どおりfailする。helperのTEI/sync/framing検査は境界でも除外しない。
+S-CTRLの切替境界はcommand送信時刻/file offsetやcontinuity errorから逆算しない。`ctrl.err`の完了したper-selection統計を使う。各行は`control: selection=<1-based> frequency_hz=<Hz> packets=<packets_written> bytes=<packets_written*188> status=complete`の形式でselection番号・選局周波数・packet/byte数・完了状態を記録する。`control: NOT_READY`、run-error/output-error、`bytes=unknown`、欠落/重複/順序違い、0 packet、stats合計とTSファイルbyte数の不一致はfailまたは判定保留とし、境界除外しない。今回の入力はchannel 21、channel 22の2 selectionなので、後続selection開始indexは先行selectionの`packets`合計である。境界後はPIDごとに最初に現れるpacketのCC比較だけを除外し、ほかのCC不良は通常どおりfailする。helperのTEI/sync/framing検査は境界でも除外しない。
 
 ```sh
 python3 - "$LOG/ctrl.err" "$LOG/ctrl.ts" "$LOG/ctrl-boundaries.txt" <<'PY'
@@ -737,6 +737,8 @@ for line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
         stats.append((selection, frequency, packets, byte_count))
 if [row[0] for row in stats] != [1, 2]:
     raise SystemExit('expected exactly two completed selections in order')
+if [(row[0], row[1]) for row in stats] != [(1, 521142857), (2, 527142857)]:
+    raise SystemExit('selected frequency does not match channel 21 then channel 22')
 ts_bytes = Path(sys.argv[2]).stat().st_size
 if ts_bytes % 188 or sum(row[3] for row in stats) != ts_bytes:
     raise SystemExit('per-selection byte total does not match the TS file')
