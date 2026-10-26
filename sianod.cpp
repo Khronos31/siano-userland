@@ -57,18 +57,26 @@ void usage() noexcept
 #ifdef _WIN32
         "              [--exit-on-stdin-eof]\n"
 #endif
-        "  --device serial:|usb:  adopted selector; usb:BUS-PORT[.PORT...] is\n"
-        "                         required unless --fd is used\n"
+        "  --device usb:BUS-PORT[.PORT...] select by USB topology; required\n"
+        "                         unless --fd is used (example: usb:1-2.3)\n"
+        "                         serial: is accepted only when a usable serial exists\n"
         "  --fd FD                wrap an already-open USB descriptor (Termux/\n"
         "                         Android Host API); a trailing FD is equivalent\n"
         "                         (termux-usb -e). --device is not combined\n"
         "  -p, --pid PID          add a PID filter (repeatable, max 64); 0x2000\n"
         "                         keeps the accepted no-ACK catch-all path\n"
         "  --firmware PATH        firmware file passed to the device mode step\n"
-        "  --runtime-dir DIR      runtime namespace root\n"
+        "  --runtime-dir DIR      runtime namespace root; the completed socket path\n"
+        "                         must fit this OS build's native socket field\n"
         "  --instance TOKEN       explicit connection instance (default auto;\n"
         "                         required with --fd when no port path exists)\n"
+        "                         1..64 ASCII bytes: start alphanumeric, then\n"
+        "                         alphanumeric, '_', '.', or '-'; no trailing dot\n"
+        "                         or reserved Windows device name\n"
         "  --group                publish group-accessible endpoints\n"
+#ifndef _WIN32
+        "                         (requires --runtime-dir on POSIX)\n"
+#endif
 #ifdef _WIN32
         "  --exit-on-stdin-eof    stop when the parent closes stdin\n"
 #endif
@@ -307,22 +315,29 @@ SelectorStatus map_public_selector(const std::string& text,
                                    std::string& error) noexcept
 {
     const auto parsed = identity::parse_device_selector(text);
-    if (!parsed) { error = "invalid device selector"; return SelectorStatus::invalid; }
+    if (!parsed) {
+        error = "--device expects usb:BUS-PORT[.PORT...] (for example usb:1-2.3)";
+        return SelectorStatus::invalid;
+    }
     if (parsed.value().kind == identity::SelectorKind::serial) {
-        error = "no usable serial on this enclosure";
+        error = "--device serial: cannot be resolved because this enclosure has no usable serial; use usb:BUS-PORT[.PORT...]";
         return SelectorStatus::not_found;
     }
     if (parsed.value().topology.count != 1U) {
-        error = "exactly one usb topology path is required";
+        error = "--device requires exactly one USB topology path: usb:BUS-PORT[.PORT...]";
         return SelectorStatus::invalid;
     }
     const auto& path = parsed.value().topology.paths[0];
     const std::string_view value(path.bytes.data(), path.length);
     const std::size_t dash = value.find('-');
-    if (dash == std::string_view::npos) { error = "usb path is malformed"; return SelectorStatus::invalid; }
+    if (dash == std::string_view::npos) {
+        error = "--device USB path must be usb:BUS-PORT[.PORT...]";
+        return SelectorStatus::invalid;
+    }
     std::uint32_t bus = 0U;
     if (!parse_number(value.substr(0U, dash), bus) || bus > 0xffU) {
-        error = "usb bus is invalid"; return SelectorStatus::invalid;
+        error = "--device USB bus must be a decimal value in 0..255";
+        return SelectorStatus::invalid;
     }
     out = siano_device_selector{};
     out.kind = SIANO_DEVICE_SELECTOR_PORT;
@@ -333,13 +348,17 @@ SelectorStatus map_public_selector(const std::string& text,
         const std::string_view part = rest.substr(0U, dot);
         std::uint32_t port = 0U;
         if (!parse_number(part, port) || port > 0xffU || out.port_count >= 8U) {
-            error = "usb port path is invalid"; return SelectorStatus::invalid;
+            error = "--device USB ports must be decimal values in 0..255 with at most 8 levels";
+            return SelectorStatus::invalid;
         }
         out.ports[out.port_count++] = static_cast<std::uint8_t>(port);
         if (dot == std::string_view::npos) break;
         rest = rest.substr(dot + 1U);
     }
-    if (out.port_count == 0U) { error = "usb path has no ports"; return SelectorStatus::invalid; }
+    if (out.port_count == 0U) {
+        error = "--device requires at least one USB port after the bus";
+        return SelectorStatus::invalid;
+    }
     return SelectorStatus::ok;
 }
 
@@ -479,11 +498,18 @@ int main(int argc, char** argv)
         return exit_status(epoch.error());
     }
 
+    siano::runtime::AssemblyDiagnostic assembly_diagnostic{};
     auto assembly = siano::runtime::assemble_siano_context(
         config, instance, runtime_directory.empty() ? nullptr : runtime_directory.c_str(),
-        epoch.value(), SIANO_RUNTIME_VERSION);
+        epoch.value(), SIANO_RUNTIME_VERSION, &assembly_diagnostic);
     if (!assembly) {
-        std::fprintf(stderr, "sianod: %s\n", error_string(assembly.error()));
+        const std::string detail = siano::runtime::describe_assembly_diagnostic(
+            assembly_diagnostic);
+        if (!detail.empty())
+            std::fprintf(stderr, "sianod: %s: %s\n", error_string(assembly.error()),
+                         detail.c_str());
+        else
+            std::fprintf(stderr, "sianod: %s\n", error_string(assembly.error()));
         return exit_status(assembly.error());
     }
     host_context::EnclosureContext& owned = *assembly.value().context;

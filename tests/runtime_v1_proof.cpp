@@ -27,6 +27,7 @@ extern "C" {
 #include <string>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -576,10 +577,90 @@ int main()
     SianoRuntimeConfig group_config = config;
     group_config.access =
         dtv::userland::host_runtime::EndpointAccess::shared_group;
+    AssemblyDiagnostic group_diagnostic{};
     const auto group_without_root = assemble_siano_context(
-        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION);
-    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT) {
-        std::fprintf(stderr, "PROOF groupRoot omitted root was not rejected\n");
+        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION,
+        &group_diagnostic);
+    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT ||
+        describe_assembly_diagnostic(group_diagnostic).find("--runtime-dir") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF groupRoot omitted root diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::size_t socket_capacity = sizeof(sockaddr_un{}.sun_path);
+    const std::string long_runtime = "/" + std::string(socket_capacity + 8U, 'r');
+    AssemblyDiagnostic endpoint_diagnostic{};
+    const auto overlong_endpoint = assemble_siano_context(
+        config, "proofinst0001", long_runtime.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &endpoint_diagnostic);
+    const std::string endpoint_detail = describe_assembly_diagnostic(endpoint_diagnostic);
+    const std::string path_bytes = std::to_string(endpoint_diagnostic.endpoint.path_bytes);
+    const std::string capacity_bytes = std::to_string(socket_capacity);
+    if (overlong_endpoint || overlong_endpoint.error() != Error::INVALID_ARGUMENT ||
+        endpoint_diagnostic.reason != AssemblyDiagnosticReason::endpoint_path ||
+        endpoint_diagnostic.endpoint.reason !=
+            dtv::userland::host_runtime::EndpointDiagnosticReason::path_too_long ||
+        endpoint_diagnostic.endpoint.path_bytes + 1U !=
+            endpoint_diagnostic.endpoint.required_bytes ||
+        endpoint_diagnostic.endpoint.native_capacity != socket_capacity ||
+        endpoint_detail.find(path_bytes) == std::string::npos ||
+        endpoint_detail.find(capacity_bytes) == std::string::npos ||
+        endpoint_detail.find("--runtime-dir") == std::string::npos ||
+        endpoint_detail.find("--instance") == std::string::npos) {
+        std::fprintf(stderr, "PROOF endpointPath diagnostic mismatch: %s\n",
+                     endpoint_detail.c_str());
+        return 1;
+    }
+
+    AssemblyDiagnostic instance_diagnostic{};
+    const auto invalid_instance = assemble_siano_context(
+        config, "bad instance", runtime_dir.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &instance_diagnostic);
+    if (invalid_instance || invalid_instance.error() != Error::INVALID_ARGUMENT ||
+        instance_diagnostic.reason != AssemblyDiagnosticReason::invalid_instance ||
+        describe_assembly_diagnostic(instance_diagnostic).find("--instance") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF instance diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::string missing_root = runtime_dir + "/missing-runtime";
+    AssemblyDiagnostic missing_root_diagnostic{};
+    const auto missing_root_result = assemble_siano_context(
+        config, "proofinst0001", missing_root.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &missing_root_diagnostic);
+    if (missing_root_result || missing_root_result.error() != Error::UNSUPPORTED ||
+        missing_root_diagnostic.reason != AssemblyDiagnosticReason::listener ||
+        missing_root_diagnostic.listener.reason !=
+            dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_missing ||
+        describe_assembly_diagnostic(missing_root_diagnostic).find("--runtime-dir") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF missing runtime diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::string unsafe_root = make_private_dir();
+    assert(!unsafe_root.empty());
+    if (chmod(unsafe_root.c_str(), 0777) != 0) {
+        std::fprintf(stderr, "PROOF could not set isolated unsafe mode fixture\n");
+        (void)rmdir(unsafe_root.c_str());
+        return 1;
+    }
+    AssemblyDiagnostic mode_diagnostic{};
+    const auto unsafe_root_result = assemble_siano_context(
+        config, "proofinst0001", unsafe_root.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &mode_diagnostic);
+    const std::string mode_detail = describe_assembly_diagnostic(mode_diagnostic);
+    (void)chmod(unsafe_root.c_str(), 0700);
+    (void)rmdir(unsafe_root.c_str());
+    if (unsafe_root_result || unsafe_root_result.error() != Error::UNSUPPORTED ||
+        mode_diagnostic.reason != AssemblyDiagnosticReason::listener ||
+        mode_diagnostic.listener.reason !=
+            dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_mode ||
+        mode_detail.find("group- or other-writable") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime mode diagnostic mismatch: %s\n",
+                     mode_detail.c_str());
         return 1;
     }
 
