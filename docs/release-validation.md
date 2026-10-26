@@ -8,10 +8,10 @@ Status: v3 (2026-10-25)
 
 1. 候補source commitを固定してRC candidateをbuildする。
 2. candidateで回帰・soakを完了する。毎releaseの回帰項目と適用頻度は「共通の検証項目と頻度」に従う。
-3. 試験結果をversion別文書へ記録してcommitする。
-4. 候補sourceから製品codeの変更がない文書only commitであることを確認し、そのcommitへのrelease tagから自動build/releaseする。
+3. 試験結果を、candidate inventoryに含まれるversion別文書へ記録してcommitする。
+4. release notesをcommitし、そのcommitにrelease tagを付けて自動build/releaseする。候補commitから結果記録・release notes・tagまでの各commitは文書onlyとし、許可path以外を変更しない。
 
-candidateのsource、package、build inputを回帰・soak完了前に変更した場合は新candidateを作成し、影響する試験を行う。結果記録commit後はcandidateと製品codeが同一であることを確認し、共通release方針のtag/build工程へ進む。ソークは一定時間以上の連続したTS取得を指し、具体的な時間は適用頻度と版別matrixに従う。物理抜差しをユーザーに依頼する場合、各操作の直前に通知し、依頼後最大5分待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
+candidateのsource、package、build inputを回帰・soak完了前に変更した場合は新candidateを作成し、影響する試験を行う。結果記録commit・release notes commit後も、tag対象まで製品codeとbuild inputがcandidateから変わっていないことを確認し、共通release方針のtag/build工程へ進む。結果記録・release notes・tagの文書commitはcandidateの後続commitとして扱い、tag commitがcandidateの直後であることや結果記録commitとtag commitが同一であることを前提にしない。ソークは一定時間以上の連続したTS取得を指し、具体的な時間は適用頻度と版別matrixに従う。物理抜差しをユーザーに依頼する場合、各操作の直前に通知し、依頼後最大5分待つ。検証状態の語彙は `継承` / `今回再検証` / `未認定` / `対象外` に統一する。
 
 ## 共通の検証項目と頻度
 
@@ -562,12 +562,12 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
    - `siano-ts-<version>-source.tar.gz`
 4. 候補 commit が変わったら、その commit の CI と artifact を取り直す。PR run や旧 candidate、手元 build を代用しない。
 5. **同一runのpackage・manifest・checksum整合（必須）:** 同じ成功runのsource jobがsource archiveを2回packageして`cmp`し、binary package stepが7 binary archiveを2回packageしてそれぞれ`cmp`し、Windowsの2回clean buildも成功していることを確認する。同じrunの`release-candidate`から8 archiveを取り出し、binary manifestの`source_ref`とsource manifestの`source_ref`/`resolved_commit`がrunの`headSha`を示し、source manifestの`tree`がそのcommitのtreeであること、各archiveの内側manifest/checksumが全memberの実値と整合すること、外側`SHA256SUMS`が8 archiveを過不足なく列挙して実archive hashと一致することを確認する。これは同一run内の再package確認であり、別runの再現性確認ではない。
-6. **同一candidate commitの独立2 run（必須）:** 成功した別run IDの`release-candidate`を別々の空directoryへ取得する。両runの`headSha`は固定candidate commitと同一、run IDは異なり、clean CI runであることを確認し、IDを版別記録の`candidate_run_id`/`reproduction_run_id`へ記録する。各runの外側checksumを各archiveの実hashと照合してから、8 archiveそれぞれと`SHA256SUMS`全体を`cmp`で比較する。8 archiveと外側checksumのいずれか1 byteでも異なれば失敗とし、timestamp等の正規化比較で合格にしない。実効toolchain/build inputが同じと記録できないpairはinconclusiveであり、合格にしない。
-7. **結果文書commit後のtag build member比較（必須）:** §3の回帰/soak結果を記録した文書only commitとtag commitが一致し、製品code・script・workflow・build input・firmware・VERSIONがcandidateから変わっていないことを確認する。tag CIが生成した8 archiveと検査6を通ったcandidateの8 archiveを別directoryへ取得し、archive member inventory、member type、mode、symlink targetを照合したうえで、以下の欄限定許可差分以外のpayload bytesが完全一致することを確認する。tag bundle自身の`SHA256SUMS`は8 archiveの実hashと照合するが、candidateとtag bundleの外側`SHA256SUMS`同士は`cmp`しない。両者のarchive hashと許可差分一覧を記録する。
+6. **同一candidate commitの独立2 run（必須）:** 成功した別run IDの`release-candidate`を別々の空directoryへ取得する。両runの`headSha`は固定candidate commitと同一、run IDは異なり、clean CI runであることを確認し、IDを版別記録の`candidate_run_id`/`reproduction_run_id`へ記録する。各runの外側checksumを各archiveの実hashと照合してから、8 archiveそれぞれと`SHA256SUMS`全体を`cmp`で比較する。8 archiveと外側checksumのいずれか1 byteでも異なれば失敗とし、timestamp等の正規化比較で合格にしない。実効toolchain/build inputが同じと記録できないpairはinconclusiveであり、合格にしない。その場合はそのpairを不合格扱いで通さず、実効入力を揃えた独立2 run pairを取り直す。同じcandidate commitで入力を揃えられない場合は、入力を固定した新candidateを作成し、影響する試験を再実施してから独立pairを取り直す。
+7. **結果文書・release notes commit後のtag build member比較（必須）:** 検査6で確認したcandidate commitから、§3の回帰/soak結果を記録した文書commit、release notes commit、tag commitへ進む工程とする。各後続commitで製品code・script・workflow・build input・firmware・VERSIONがcandidateから変わっておらず、差分が明示した文書許可pathのみに限られることを確認する。結果文書commitやrelease notes commitを省略せず、tag commitがcandidateの直後commitであることも要件にしない。tag CIが生成した8 archiveと検査6を通ったcandidateの8 archiveを別directoryへ取得し、archive member inventory、member type、mode、symlink targetを照合したうえで、以下の欄限定許可差分以外のpayload bytesが完全一致することを確認する。tag bundle自身の`SHA256SUMS`は8 archiveの実hashと照合するが、candidateとtag bundleの外側`SHA256SUMS`同士は`cmp`しない。両者のarchive hashと許可差分一覧を記録する。
 
    Binary archiveでは、`README.md`、`manifest.json`、内側`SHA256SUMS`を既決の範囲で比較対象とし、`manifest.json.source_ref`がtag commit、READMEのfiles記録が実際のREADME bytesと一致することを確認する。`DEPENDENCY-NOTICE.txt`では`source.ref`行だけ、`evidence/binary-audit.json`、`evidence/sianod-binary-audit.json`、`evidence/sianoctl-binary-audit.json`では`source_ref`値だけをtag commitに更新可能とする。`manifest.json.files`ではREADMEのsize/sha256と、上記4 memberの実bytesから再計算されるsha256記録だけを差分可能とし、上記4 memberのsizeと他memberのrecordは一致必須とする。内側`SHA256SUMS`の変更もこれら許可memberの実hashを反映する行に限り、member一覧と全hashの自己整合を確認する。各evidence JSONのschema、platform、binary nameとbinary SHA-256、manifestの他field、firmwareとそのhash、noticeの他行を含む、列挙外の値やpayloadはcandidateと一致しなければならない。許可member自体も指定identity欄以外のbyte変更を認めない。
 
-   Source archiveでは既存の文書許可pathに加え、candidate inventoryに存在する当該versionの`repository/docs/release-validation/1.0.0.md`だけを許可文書へ加える。`source-manifest.json`の`source_ref`、`resolved_commit`、`tree`はtag commit/treeと一致し、files記録は既存許可文書・このversion記録・noticeの実hash/size以外すべて一致しなければならない。`DEPENDENCY-NOTICE.txt`では`source.ref`、`source.resolved_commit`、`source.tree`の3行だけをtag identityへ更新可能とする。source archive内側`SHA256SUMS`は許可された文書/noticeの実hashを反映する行だけが変わり得るため、member一覧と全hashの自己整合を確認する。その他のsource manifest metadataおよびpayloadはbyte一致しなければならない。`docs/`全体、他versionの記録、helper/scriptは許可差分にしない。
+   Source archiveの文書許可pathは、PX4の既決DOCUMENTS/allowed_documents範囲（`README.md`、`SPEC.md`、`docs/platforms/validation-results.md`、`docs/release-validation.md`、`docs/releasing.md`、tag別の`release-notes/<tag>.md`と`release-notes/<tag>.json`）を基準とし、Siano candidate inventoryに存在するpathだけを適用する。これに承認Cに従い、candidate inventoryに既に存在する当該versionの`repository/docs/release-validation/1.0.0.md`一つだけを加える。不存在のpathをtag時に新規追加して許可差分にしてはならず、必要なpathがcandidate inventoryにない場合は新candidateから必要な確認をやり直す。結果、tagで差分可能なsource pathはこの明示集合内に限り、files記録はその文書とnoticeの実hash/size以外すべて一致しなければならない。`source-manifest.json`の`source_ref`、`resolved_commit`、`tree`はtag commit/treeと一致する。`DEPENDENCY-NOTICE.txt`では`source.ref`、`source.resolved_commit`、`source.tree`の3行だけをtag identityへ更新可能とする。source archive内側`SHA256SUMS`は許可された文書/noticeの実hashを反映する行だけが変わり得るため、member一覧と全hashの自己整合を確認する。その他のsource manifest metadataおよびpayloadはbyte一致しなければならない。`docs/`全体、他versionの記録、helper/scriptは許可差分にしない。
 
    現在の`release.yml`は`workflow_dispatch`のみでtag push build/releaseとmember比較の実装はない。別PRで実装されるまで検査7は未実装・未検証のblocking gateとして記録し、dispatch runや候補archiveの公開で代替しない。実装後は版別記録に明示された`candidate_run_id`と`reproduction_run_id`だけを使ってartifactを取得し、同じcommitの最新2 runを自動選択してはならない。IDの未実施/欠落/不正/重複、run失敗、workflow名または`release-candidate` artifactの不一致、head SHA不一致ではfail closedとし、tag比較を始めず公開jobにも到達させない。次のCLIへcandidate 2 run・tag bundleのflat root（8 archiveと`SHA256SUMS`を含む）を渡し、candidate SHAとtag SHAも固定する。artifactの取得・配置形はworkflow実装後に確認し、現在の未実装CLIを成功済みとは扱わない。
 
@@ -866,7 +866,7 @@ printf '%s\n' "$RC_DAEMON_B" > "$LOG/disc-daemon-b.rc"
 # beep/vibeの直後にユーザーへdevice Aの物理再接続を依頼し、依頼/確認時刻を記録する（応答待ちは最大5分）。
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json"
 # 新しいportを特定してから、旧runtimeを再利用せず新しいinstance/runtimeでAを再取得する。
-PORT_A=<reconnected-port>
+PORT_A='<reconnected-port>'
 RT_A_RECOVERY="$RT/a-recovery"
 "$DAEMON" --device "usb:$PORT_A" --instance a-recovery --firmware "$FW" --runtime-dir "$RT_A_RECOVERY" 2> "$LOG/disc-recovery-daemon.err" & PID_A_RECOVERY=$!
 "$C" --instance a-recovery --runtime-dir "$RT_A_RECOVERY" status > "$LOG/disc-recovery-status.txt"
@@ -910,7 +910,7 @@ echo "hung=$hung exit=$rc" > "$LOG/hotplug.rc"  # 期待: hung=0 exit=7
 # vibe/beep の直後に再接続を依頼し（応答待ちは最大5分）、再接続された後:
 kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json" # 新しいportを選ぶ
-PORT=<reconnected USB port>
+PORT='<reconnected USB port>'
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
   2> "$LOG/reconnected-daemon.err" & DAEMON_PID=$!
 "$C" --instance "$INSTANCE" --runtime-dir "$RT" status
