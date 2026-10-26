@@ -3,27 +3,53 @@ name: Release candidate
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
 
 concurrency:
-  group: siano-userland-release-candidate
+  group: siano-userland-stable-release
   cancel-in-progress: false
 
 jobs:
   preflight:
-    name: Verify main dispatch
+    name: Verify candidate dispatch or stable tag
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Refuse non-main dispatch
+      - name: Verify candidate or tag ref
+        env:
+          GITHUB_EVENT_DELETED: ${{ github.event.deleted }}
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Release candidate must be dispatched from main, not $GITHUB_REF" >&2
+          set -eu
+          version=$(tr -d '\n' < VERSION)
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "Release candidate must be dispatched from main, not $GITHUB_REF" >&2
+              exit 1
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*) ;;
+              *) echo "Release tag ref is invalid: $GITHUB_REF" >&2; exit 1 ;;
+            esac
+            tag=${GITHUB_REF#refs/tags/}
+            if ! printf '%s\n' "$tag" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+              echo "Stable release tag must use vX.Y.Z: $tag" >&2
+              exit 1
+            fi
+            if [ "$tag" != "v$version" ] || [ "$GITHUB_EVENT_DELETED" = true ]; then
+              echo "Release tag, VERSION, or event deletion state mismatch" >&2
+              exit 1
+            fi
+          else
+            echo "Unsupported release event: $GITHUB_EVENT_NAME" >&2
             exit 1
           fi
       - name: Fetch authoritative version tags and reject reused release versions
@@ -440,3 +466,119 @@ jobs:
                 --archive "$(find /candidate -name "*-linux-aarch64.tar.gz" -type f -print -quit)" \
                 --architecture aarch64
             '
+
+  tag-verify:
+    name: Verify tag rebuild against recorded candidate runs
+    if: github.event_name == 'push'
+    needs: [preflight, package, packaged-runtime-x86_64, packaged-runtime-aarch64]
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate
+          path: tag-build
+      - name: Read recorded independent candidate run IDs
+        run: |
+          version=$(tr -d '\n' < VERSION)
+          python3 scripts/release_runs.py read \
+            --document "docs/release-validation/$version.md" > "$RUNNER_TEMP/release-run-ids"
+          read -r candidate_run_id reproduction_run_id < "$RUNNER_TEMP/release-run-ids"
+          printf 'candidate_run_id=%s\nreproduction_run_id=%s\n' \
+            "$candidate_run_id" "$reproduction_run_id" >> "$GITHUB_ENV"
+      - name: Inspect recorded candidate workflow runs
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run view "$candidate_run_id" \
+            --json databaseId,workflowName,event,status,conclusion,headSha \
+            > "$RUNNER_TEMP/candidate-run.json"
+          gh run view "$reproduction_run_id" \
+            --json databaseId,workflowName,event,status,conclusion,headSha \
+            > "$RUNNER_TEMP/reproduction-run.json"
+      - name: Validate run identity and download exact artifacts
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          candidate_sha=$(git rev-parse --verify 'HEAD^1^{commit}')
+          python3 scripts/release_runs.py verify \
+            --document "docs/release-validation/$(tr -d '\n' < VERSION).md" \
+            --candidate-run "$RUNNER_TEMP/candidate-run.json" \
+            --reproduction-run "$RUNNER_TEMP/reproduction-run.json" \
+            --candidate-sha "$candidate_sha"
+          mkdir "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/reproduction"
+          gh run download "$candidate_run_id" --name release-candidate \
+            --dir "$RUNNER_TEMP/candidate"
+          gh run download "$reproduction_run_id" --name release-candidate \
+            --dir "$RUNNER_TEMP/reproduction"
+          python3 scripts/release_verify.py \
+            --candidate-dir "$RUNNER_TEMP/candidate" \
+            --reproduction-dir "$RUNNER_TEMP/reproduction" \
+            --tag-dir tag-build \
+            --tag "$GITHUB_REF_NAME" \
+            --candidate-sha "$candidate_sha" \
+            --tag-sha "$GITHUB_SHA"
+
+  publish:
+    name: Publish verified tag build
+    if: github.event_name == 'push' && github.repository == 'Khronos31/siano-userland' && github.event.deleted == false
+    needs: tag-verify
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate
+          path: tag-build
+      - name: Create draft from the exact tag bundle
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          (cd tag-build && sha256sum -c SHA256SUMS)
+          version=${GITHUB_REF_NAME#v}
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          # siano-ts v$version
+
+          検証済みの配布物を公開します。
+
+          ## 検証
+          - 独立candidate runの再現性とtag再buildのmember比較を確認しました。
+          EOF
+          gh release create "$GITHUB_REF_NAME" tag-build/* \
+            --verify-tag --draft --title "$GITHUB_REF_NAME" --notes-file "$notes"
+      - name: Verify uploaded assets before publication
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir "$RUNNER_TEMP/published"
+          gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/published"
+          test "$(find "$RUNNER_TEMP/published" -maxdepth 1 -type f | wc -l)" -eq 9
+          (cd "$RUNNER_TEMP/published" && sha256sum -c SHA256SUMS)
+          for path in tag-build/*; do
+            cmp "$path" "$RUNNER_TEMP/published/$(basename "$path")"
+          done
+      - name: Publish the verified draft
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
