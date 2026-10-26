@@ -39,6 +39,10 @@ EVIDENCE = (
     "evidence/binary-audit.json", "evidence/sianod-binary-audit.json",
     "evidence/sianoctl-binary-audit.json",
 )
+PX4_DOCUMENTS = (
+    "README.md", "SPEC.md", "docs/platforms/validation-results.md",
+    "docs/release-validation.md", "docs/releasing.md",
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -247,6 +251,28 @@ def git_value(root: Path, *args: str) -> str:
     return result.stdout.decode("ascii", "strict").strip()
 
 
+def candidate_document_paths(root: Path, version: str, tag: str,
+                             candidate_sha: str) -> set[str]:
+    paths = set(PX4_DOCUMENTS)
+    paths.update({f"release-notes/{tag}.md", f"release-notes/{tag}.json",
+                  f"docs/release-validation/{version}.md"})
+    existing = set()
+    for path in paths:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root), "cat-file", "-t", f"{candidate_sha}:{path}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise VerificationError(f"candidate document check failed: {error}") from error
+        if result.returncode == 0 and result.stdout.strip() == b"blob":
+            existing.add(path)
+    result_doc = f"docs/release-validation/{version}.md"
+    notes_doc = f"release-notes/{tag}.md"
+    require(result_doc in existing and notes_doc in existing,
+            "candidate must already contain the version record and release notes")
+    return existing
+
+
 def verify_git_identity(root: Path, version: str, candidate_sha: str,
                         tag_sha: str) -> tuple[str, str]:
     require(HEX40.fullmatch(candidate_sha) and HEX40.fullmatch(tag_sha),
@@ -257,22 +283,38 @@ def verify_git_identity(root: Path, version: str, candidate_sha: str,
             "tag commit is not present in source checkout")
     require(git_value(root, "rev-parse", "--verify", "HEAD^{commit}") == tag_sha,
             "source checkout is not at the release tag commit")
+    try:
+        subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                        candidate_sha, tag_sha], check=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise VerificationError("candidate commit is not an ancestor of tag commit") from error
     candidate_tree = git_value(root, "rev-parse", "--verify", f"{candidate_sha}^{{tree}}")
     tag_tree = git_value(root, "rev-parse", "--verify", f"{tag_sha}^{{tree}}")
-    parents = git_value(root, "show", "-s", "--format=%P", tag_sha).split()
-    require(parents == [candidate_sha], "tag commit must be one result-document commit after candidate")
-    changed = git_value(root, "diff", "--name-only", "-z", candidate_sha, tag_sha).split("\x00")
-    allowed = f"docs/release-validation/{version}.md"
-    require(set(filter(None, changed)) == {allowed},
-            "tag commit must change only the existing version result document")
-    try:
-        candidate_has_doc = subprocess.run(
-            ["git", "-C", str(root), "cat-file", "-e", f"{candidate_sha}:{allowed}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=5).returncode == 0
-    except (OSError, subprocess.SubprocessError) as error:
-        raise VerificationError(f"candidate document check failed: {error}") from error
-    require(candidate_has_doc, "version result document must already exist at candidate commit")
+    allowed = candidate_document_paths(root, version, f"v{version}", candidate_sha)
+    changed_notes_at = None
+    changed_record_at = None
+    commits = git_value(root, "rev-list", "--first-parent", "--reverse",
+                        f"{candidate_sha}..{tag_sha}").splitlines()
+    require(bool(commits), "tag commit must follow the candidate commit")
+    previous = candidate_sha
+    notes_doc = f"release-notes/v{version}.md"
+    result_doc = f"docs/release-validation/{version}.md"
+    for index, commit in enumerate(commits):
+        parents = git_value(root, "show", "-s", "--format=%P", commit).split()
+        require(parents == [previous], "candidate-to-tag document commits must be a linear chain")
+        changed = set(filter(None, git_value(
+            root, "diff", "--name-only", "-z", previous, commit).split("\x00")))
+        require(bool(changed) and changed.issubset(allowed),
+                "candidate-to-tag commits may change only approved existing documents")
+        if result_doc in changed and changed_record_at is None:
+            changed_record_at = index
+        if notes_doc in changed and changed_notes_at is None:
+            changed_notes_at = index
+        previous = commit
+    require(previous == tag_sha and changed_record_at is not None and
+            changed_notes_at is not None and changed_record_at < changed_notes_at,
+            "tag history must update the version result before release notes")
     return candidate_tree, tag_tree
 
 
@@ -335,7 +377,9 @@ def parse_binary_manifest(members: dict[str, Member], archive_name: str,
             f"noncanonical manifest.json: {archive_name}")
     platform = next((value for value in PLATFORMS if f"-{value}." in archive_name), None)
     require(platform is not None, f"unknown binary archive: {archive_name}")
-    require(manifest.get("schema") == 1 and manifest.get("version") in archive_name and
+    version = re.match(r"siano-ts-(\d+\.\d+\.\d+)-", archive_name)
+    require(version is not None and manifest.get("schema") == 1 and
+            manifest.get("version") == version.group(1) and
             manifest.get("platform") == platform and manifest.get("source_ref") == source_sha,
             f"binary manifest identity mismatch: {archive_name}")
     require(manifest.get("programs") == (["sianod.exe", "sianoctl.exe", "siano-ts.exe"]
@@ -441,13 +485,28 @@ def verify_binary_pair(before: dict[str, Member], after: dict[str, Member],
     require(changed.issubset(allowed), f"binary changed outside allowlist: {archive_name}")
 
 
+def source_document_members(members: dict[str, Member], version: str,
+                            tag: str) -> set[str]:
+    paths = {"README.md"}
+    paths.update(f"repository/{path}" for path in PX4_DOCUMENTS)
+    paths.update({f"repository/release-notes/{tag}.md",
+                  f"repository/release-notes/{tag}.json",
+                  f"repository/docs/release-validation/{version}.md"})
+    result_doc = f"repository/docs/release-validation/{version}.md"
+    notes_doc = f"repository/release-notes/{tag}.md"
+    require(result_doc in members and notes_doc in members,
+            "candidate source archive must contain the version record and release notes")
+    return paths & set(members)
+
+
 def verify_source_pair(before: dict[str, Member], after: dict[str, Member],
                        archive_name: str, version: str, candidate_sha: str,
-                       tag_sha: str, candidate_tree: str, tag_tree: str) -> None:
+                       tag_sha: str, candidate_tree: str, tag_tree: str,
+                       tag: str) -> None:
     doc = f"repository/docs/release-validation/{version}.md"
-    require(doc in before and doc in after,
-            "version result document must already be in candidate source inventory")
-    allowed = {"source-manifest.json", "DEPENDENCY-NOTICE.txt", "SHA256SUMS", doc}
+    documents = source_document_members(before, version, tag)
+    require(doc in after, "version result document is missing from tag source inventory")
+    allowed = {"source-manifest.json", "DEPENDENCY-NOTICE.txt", "SHA256SUMS"} | documents
     compare_member_sets(before, after, allowed, archive_name)
     old = parse_source_manifest(before, archive_name, version, candidate_sha, candidate_tree)
     new = parse_source_manifest(after, archive_name, version, tag_sha, tag_tree)
@@ -457,10 +516,11 @@ def verify_source_pair(before: dict[str, Member], after: dict[str, Member],
     expected["source_ref"] = tag_sha
     expected["resolved_commit"] = tag_sha
     expected["tree"] = tag_tree
-    for name in ("DEPENDENCY-NOTICE.txt", doc):
-        if name == "DEPENDENCY-NOTICE.txt":
-            require(old["files"][name]["size"] == new["files"][name]["size"],
-                    "source notice identity member size changed")
+    require(old["files"]["DEPENDENCY-NOTICE.txt"]["size"] ==
+            new["files"]["DEPENDENCY-NOTICE.txt"]["size"],
+            "source notice identity member size changed")
+    expected["files"]["DEPENDENCY-NOTICE.txt"] = new["files"]["DEPENDENCY-NOTICE.txt"]
+    for name in documents:
         expected["files"][name] = new["files"][name]
     require(expected == new, "source manifest changed outside approved identity/document")
     require(before["DEPENDENCY-NOTICE.txt"].data is not None and
@@ -512,7 +572,7 @@ def verify_release(candidate_dir: Path, reproduction_dir: Path, tag_dir: Path,
     for name in expected_assets(version):
         if name == source_name:
             verify_source_pair(candidate[name], tagged[name], name, version,
-                               candidate_sha, tag_sha, candidate_tree, tag_tree)
+                               candidate_sha, tag_sha, candidate_tree, tag_tree, tag)
         else:
             verify_binary_pair(candidate[name], tagged[name], name, candidate_sha, tag_sha)
     return {"tag": tag, "candidate_sha": candidate_sha, "tag_sha": tag_sha,

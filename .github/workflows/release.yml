@@ -509,12 +509,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          candidate_sha=$(git rev-parse --verify 'HEAD^1^{commit}')
           python3 scripts/release_runs.py verify \
             --document "docs/release-validation/$(tr -d '\n' < VERSION).md" \
             --candidate-run "$RUNNER_TEMP/candidate-run.json" \
             --reproduction-run "$RUNNER_TEMP/reproduction-run.json" \
-            --candidate-sha "$candidate_sha"
+            > "$RUNNER_TEMP/verified-candidate-runs"
+          read -r verified_candidate_run_id verified_reproduction_run_id candidate_sha \
+            < "$RUNNER_TEMP/verified-candidate-runs"
+          test "$candidate_run_id" = "$verified_candidate_run_id"
+          test "$reproduction_run_id" = "$verified_reproduction_run_id"
+          printf 'candidate_sha=%s\n' "$candidate_sha" >> "$GITHUB_ENV"
           mkdir "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/reproduction"
           gh run download "$candidate_run_id" --name release-candidate \
             --dir "$RUNNER_TEMP/candidate"

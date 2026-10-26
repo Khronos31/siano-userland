@@ -1,8 +1,11 @@
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -36,8 +39,10 @@ class ReleaseRunTests(unittest.TestCase):
     def test_two_recorded_distinct_successful_runs_pass(self):
         candidate_id, reproduction_id = release_runs.read_run_ids(self.document)
         self.assertEqual((candidate_id, reproduction_id), (12345, 67890))
-        release_runs.verify_run(self.run_metadata(candidate_id), candidate_id, SHA)
-        release_runs.verify_run(self.run_metadata(reproduction_id), reproduction_id, SHA)
+        candidate_sha = release_runs.verify_pair(
+            self.run_metadata(candidate_id), self.run_metadata(reproduction_id),
+            candidate_id, reproduction_id)
+        self.assertEqual(candidate_sha, SHA)
 
     def test_unset_missing_duplicate_or_invalid_ids_fail(self):
         for content in (
@@ -67,6 +72,27 @@ class ReleaseRunTests(unittest.TestCase):
             metadata[key] = value
             with self.subTest(key=key), self.assertRaises(release_runs.RunError):
                 release_runs.verify_run(metadata, 12345, SHA)
+
+    def test_independent_runs_must_name_same_candidate_sha(self):
+        reproduction = self.run_metadata(67890)
+        reproduction["headSha"] = "b" * 40
+        with self.assertRaises(release_runs.RunError):
+            release_runs.verify_pair(self.run_metadata(12345), reproduction, 12345, 67890)
+
+    def test_pair_returns_sha_from_verified_run_metadata(self):
+        self.assertEqual(release_runs.verify_pair(
+            self.run_metadata(12345), self.run_metadata(67890), 12345, 67890), SHA)
+
+    def test_verify_cli_outputs_recorded_ids_and_derived_candidate_sha(self):
+        candidate = self.write_metadata("candidate.json", self.run_metadata(12345))
+        reproduction = self.write_metadata("reproduction.json", self.run_metadata(67890))
+        output = io.StringIO()
+        with patch("sys.argv", ["release_runs.py", "verify", "--document", str(self.document),
+                                "--candidate-run", str(candidate),
+                                "--reproduction-run", str(reproduction)]), \
+                redirect_stdout(output):
+            self.assertEqual(release_runs.main(), 0)
+        self.assertEqual(output.getvalue(), f"12345 67890 {SHA}\n")
 
     def test_cli_requires_exact_metadata_fields(self):
         metadata = self.run_metadata(12345)

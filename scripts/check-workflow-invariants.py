@@ -337,6 +337,9 @@ def check_release_tag_gate(release: str) -> list[str]:
             "gh run download" not in verify or "--name release-candidate" not in verify or
             "scripts/release_verify.py" not in verify):
         errors.append("release.yml: tag gate must validate recorded run IDs and verify all three bundles")
+    if "HEAD^1" in verify or "candidate_sha=$(git rev-parse" in verify or \
+            "candidate_sha" not in verify or "verified_candidate_run_id" not in verify:
+        errors.append("release.yml: candidate SHA must come from the verified recorded runs")
     if verify.find("scripts/release_runs.py verify") > verify.find("gh run download") or \
             verify.find("gh run download") > verify.find("scripts/release_verify.py"):
         errors.append("release.yml: verify run metadata before download, then compare bundles")

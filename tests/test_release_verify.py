@@ -15,11 +15,23 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import release_verify
+import release_runs
 
 
 VERSION = "1.0.0"
 TAG = "v1.0.0"
 DOC = "repository/docs/release-validation/1.0.0.md"
+NOTES = "repository/release-notes/v1.0.0.md"
+SOURCE_GIT_DOCS = {
+    "README.md": b"candidate project readme\n",
+    "docs/platforms/validation-results.md": b"candidate validation history\n",
+    "docs/release-validation.md": b"candidate validation procedure\n",
+    "docs/release-validation/1.0.0.md": (
+        "candidate record\ncandidate_run_id: 未実施\nreproduction_run_id: 未実施\n"
+    ).encode("utf-8"),
+    "release-notes/v1.0.0.md": b"# siano-ts v1.0.0\n\nDraft placeholder.\n",
+    "release-notes/v1.0.0.json": b"{}\n",
+}
 
 
 def git(root, *args):
@@ -42,7 +54,7 @@ def checksums(payloads):
 
 
 def binary_archive(version, platform, source_sha, *, firmware=b"fixed firmware", modes=None,
-                   extra=None, evidence_extra=None):
+                   extra=None, evidence_extra=None, manifest_version=None):
     windows = platform == "windows-x64"
     programs = ["sianod.exe", "sianoctl.exe", "siano-ts.exe"] if windows else [
         "sianod", "sianoctl", "siano-ts"]
@@ -61,7 +73,7 @@ def binary_archive(version, platform, source_sha, *, firmware=b"fixed firmware",
         payloads[path] = write_json(data, newline=True)
     if extra:
         payloads.update(extra)
-    manifest = {"schema": 1, "version": version, "platform": platform,
+    manifest = {"schema": 1, "version": manifest_version or version, "platform": platform,
                 "source_ref": source_sha, "programs": programs, "files": {}}
     for name, data in payloads.items():
         manifest["files"][name] = {"size": len(data), "sha256": digest(data)}
@@ -88,7 +100,8 @@ def binary_archive(version, platform, source_sha, *, firmware=b"fixed firmware",
     return output.getvalue()
 
 
-def source_archive(version, source_sha, tree, doc_data, *, extra=None, modes=None):
+def source_archive(version, source_sha, tree, doc_data, *, extra=None, modes=None,
+                   source_docs=None):
     payloads = {
         "repository/VERSION": (version + "\n").encode(),
         DOC: doc_data,
@@ -100,6 +113,12 @@ def source_archive(version, source_sha, tree, doc_data, *, extra=None, modes=Non
             f"source.tree={tree}\ncorresponding-source=third_party/libusb-1.0.30.tar.bz2\n"
         ).encode(),
     }
+    for path, data in SOURCE_GIT_DOCS.items():
+        payloads[f"repository/{path}"] = data
+    payloads["README.md"] = SOURCE_GIT_DOCS["README.md"]
+    if source_docs:
+        payloads.update(source_docs)
+    payloads[DOC] = doc_data
     if extra:
         payloads.update(extra)
     manifest = {"schema": 1, "version": version, "source_ref": source_sha,
@@ -122,7 +141,8 @@ def source_archive(version, source_sha, tree, doc_data, *, extra=None, modes=Non
 
 
 def make_bundle(directory, version, source_sha, tree, doc_data, *, firmware=b"fixed firmware",
-                extra=None, evidence_extra=False, modes=None):
+                extra=None, evidence_extra=False, modes=None, source_docs=None,
+                manifest_version=None):
     directory.mkdir()
     assets = {}
     for platform in release_verify.PLATFORMS:
@@ -130,9 +150,11 @@ def make_bundle(directory, version, source_sha, tree, doc_data, *, firmware=b"fi
         assets[name] = binary_archive(version, platform, source_sha, firmware=firmware,
                                       extra=extra if platform == "linux-x86_64" else None,
                                       evidence_extra=evidence_extra and platform == "linux-x86_64",
-                                      modes=modes if platform == "linux-x86_64" else None)
+                                      modes=modes if platform == "linux-x86_64" else None,
+                                      manifest_version=manifest_version)
     source_name = f"siano-ts-{version}-source.tar.gz"
-    assets[source_name] = source_archive(version, source_sha, tree, doc_data)
+    assets[source_name] = source_archive(version, source_sha, tree, doc_data,
+                                         source_docs=source_docs)
     for name, data in assets.items():
         (directory / name).write_bytes(data)
     (directory / "SHA256SUMS").write_bytes(checksums(assets))
@@ -148,27 +170,62 @@ class ReleaseVerifyTests(unittest.TestCase):
         git(self.repo, "config", "user.name", "Fixture")
         git(self.repo, "config", "user.email", "fixture@example.invalid")
         (self.repo / "VERSION").write_text(VERSION + "\n", encoding="ascii")
-        result_doc = self.repo / "docs/release-validation/1.0.0.md"
-        result_doc.parent.mkdir(parents=True)
-        result_doc.write_text("candidate record\n", encoding="utf-8")
-        git(self.repo, "add", "VERSION", "docs/release-validation/1.0.0.md")
+        for path, data in SOURCE_GIT_DOCS.items():
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        git(self.repo, "add", "VERSION", *SOURCE_GIT_DOCS)
         git(self.repo, "commit", "-qm", "candidate")
         self.candidate_sha = git(self.repo, "rev-parse", "HEAD")
         self.candidate_tree = git(self.repo, "rev-parse", "HEAD^{tree}")
-        self.candidate_doc = result_doc.read_bytes()
-        result_doc.write_text("completed test record\n", encoding="utf-8")
-        git(self.repo, "add", "docs/release-validation/1.0.0.md")
+        self.candidate_doc = (self.repo / "docs/release-validation/1.0.0.md").read_bytes()
+        self.candidate_docs = self.source_docs()
+        (self.repo / "docs/release-validation/1.0.0.md").write_text(
+            "completed test record\ncandidate_run_id: 12345\n"
+            "reproduction_run_id: 67890\n", encoding="utf-8")
+        (self.repo / "docs/platforms/validation-results.md").write_text(
+            "result summary added\n", encoding="utf-8")
+        git(self.repo, "add", "docs/release-validation/1.0.0.md",
+            "docs/platforms/validation-results.md")
         git(self.repo, "commit", "-qm", "record result")
+        (self.repo / "release-notes/v1.0.0.md").write_text(
+            "# siano-ts v1.0.0\n\nRelease notes after verification.\n", encoding="utf-8")
+        (self.repo / "release-notes/v1.0.0.json").write_text(
+            '{"verified":true}\n', encoding="utf-8")
+        git(self.repo, "add", "release-notes/v1.0.0.md", "release-notes/v1.0.0.json")
+        git(self.repo, "commit", "-qm", "release notes")
         self.tag_sha = git(self.repo, "rev-parse", "HEAD")
         self.tag_tree = git(self.repo, "rev-parse", "HEAD^{tree}")
-        self.tag_doc = result_doc.read_bytes()
+        self.tag_doc = (self.repo / "docs/release-validation/1.0.0.md").read_bytes()
+        self.tag_docs = self.source_docs()
+        run_record = self.repo / "docs/release-validation/1.0.0.md"
+        candidate_run_id, reproduction_run_id = release_runs.read_run_ids(run_record)
+        run_sha = self.candidate_sha
+        self.candidate_run_metadata = {
+            "databaseId": candidate_run_id, "workflowName": "Release candidate",
+            "event": "workflow_dispatch", "status": "completed",
+            "conclusion": "success", "headSha": run_sha,
+        }
+        self.reproduction_run_metadata = {
+            **self.candidate_run_metadata, "databaseId": reproduction_run_id,
+        }
+        self.recorded_candidate_sha = release_runs.verify_pair(
+            self.candidate_run_metadata, self.reproduction_run_metadata,
+            candidate_run_id, reproduction_run_id)
         self.candidate = self.root / "candidate"
         self.reproduction = self.root / "reproduction"
         self.tag = self.root / "tag"
         make_bundle(self.candidate, VERSION, self.candidate_sha, self.candidate_tree,
-                    self.candidate_doc)
+                    self.candidate_doc, source_docs=self.candidate_docs)
         shutil.copytree(self.candidate, self.reproduction)
-        make_bundle(self.tag, VERSION, self.tag_sha, self.tag_tree, self.tag_doc)
+        make_bundle(self.tag, VERSION, self.tag_sha, self.tag_tree, self.tag_doc,
+                    source_docs=self.tag_docs)
+
+    def source_docs(self):
+        result = {"README.md": (self.repo / "README.md").read_bytes()}
+        for path in SOURCE_GIT_DOCS:
+            result[f"repository/{path}"] = (self.repo / path).read_bytes()
+        return result
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -176,7 +233,7 @@ class ReleaseVerifyTests(unittest.TestCase):
     def verify(self, candidate=None, reproduction=None, tag=None, **kwargs):
         return release_verify.verify_release(
             candidate or self.candidate, reproduction or self.reproduction,
-            tag or self.tag, tag=TAG, candidate_sha=self.candidate_sha,
+            tag or self.tag, tag=TAG, candidate_sha=self.recorded_candidate_sha,
             tag_sha=self.tag_sha, source_root=self.repo, **kwargs)
 
     def copy_bundles(self):
@@ -286,6 +343,14 @@ class ReleaseVerifyTests(unittest.TestCase):
         with self.assertRaises(release_verify.VerificationError):
             self.verify(candidate, reproduction, tag)
 
+    def test_binary_manifest_rejects_short_version(self):
+        wrong = self.root / "wrong-version"
+        make_bundle(wrong, VERSION, self.candidate_sha, self.candidate_tree,
+                    self.candidate_doc, source_docs=self.candidate_docs,
+                    manifest_version="1.0")
+        with self.assertRaises(release_verify.VerificationError):
+            self.verify(candidate=wrong)
+
     def test_bundle_checksum_mismatch_fails(self):
         candidate, reproduction, tag = self.copy_bundles()
         sums = bytearray((tag / "SHA256SUMS").read_bytes())
@@ -314,9 +379,27 @@ class ReleaseVerifyTests(unittest.TestCase):
             self.verify(candidate, reproduction, tag)
 
     def test_tag_commit_with_unapproved_path_fails(self):
-        (self.repo / "README.md").write_text("changed\n", encoding="utf-8")
-        git(self.repo, "add", "README.md")
-        git(self.repo, "commit", "-qm", "unapproved")
+        target = self.repo / "scripts/unapproved.py"
+        target.parent.mkdir()
+        target.write_text("code changed\n", encoding="utf-8")
+        git(self.repo, "add", "scripts/unapproved.py")
+        git(self.repo, "commit", "-qm", "unapproved code")
+        self.tag_sha = git(self.repo, "rev-parse", "HEAD")
+        self.tag_tree = git(self.repo, "rev-parse", "HEAD^{tree}")
+        with self.assertRaises(release_verify.VerificationError):
+            self.verify()
+
+    def test_unapproved_intermediate_code_commit_fails_even_if_reverted(self):
+        target = self.repo / "scripts/unapproved.py"
+        target.parent.mkdir()
+        target.write_text("temporary code change\n", encoding="utf-8")
+        git(self.repo, "add", "scripts/unapproved.py")
+        git(self.repo, "commit", "-qm", "temporary code change")
+        target.unlink()
+        git(self.repo, "add", "-u", "scripts/unapproved.py")
+        git(self.repo, "commit", "-qm", "revert temporary code change")
+        self.tag_sha = git(self.repo, "rev-parse", "HEAD")
+        self.tag_tree = git(self.repo, "rev-parse", "HEAD^{tree}")
         with self.assertRaises(release_verify.VerificationError):
             self.verify()
 

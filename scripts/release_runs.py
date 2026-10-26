@@ -68,6 +68,16 @@ def verify_run(value: dict, expected_id: int, candidate_sha: str) -> None:
             "workflow/artifact run is not a successful candidate for the fixed source SHA")
 
 
+def verify_pair(candidate: dict, reproduction: dict,
+                candidate_id: int, reproduction_id: int) -> str:
+    candidate_sha = candidate.get("headSha")
+    require(isinstance(candidate_sha, str) and SHA.fullmatch(candidate_sha) is not None,
+            "candidate run head SHA must be canonical lowercase 40-character hex")
+    verify_run(candidate, candidate_id, candidate_sha)
+    verify_run(reproduction, reproduction_id, candidate_sha)
+    return candidate_sha
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -77,14 +87,16 @@ def main() -> int:
     verify.add_argument("--document", type=Path, required=True)
     verify.add_argument("--candidate-run", type=Path, required=True)
     verify.add_argument("--reproduction-run", type=Path, required=True)
-    verify.add_argument("--candidate-sha", required=True)
     args = parser.parse_args()
     try:
         candidate_id, reproduction_id = read_run_ids(args.document)
         if args.command == "verify":
-            verify_run(parse_run(args.candidate_run), candidate_id, args.candidate_sha)
-            verify_run(parse_run(args.reproduction_run), reproduction_id, args.candidate_sha)
-        print(f"{candidate_id} {reproduction_id}")
+            candidate_sha = verify_pair(parse_run(args.candidate_run),
+                                        parse_run(args.reproduction_run),
+                                        candidate_id, reproduction_id)
+            print(f"{candidate_id} {reproduction_id} {candidate_sha}")
+        else:
+            print(f"{candidate_id} {reproduction_id}")
     except RunError as error:
         print(f"release candidate runs: {error}", file=sys.stderr)
         return 1
