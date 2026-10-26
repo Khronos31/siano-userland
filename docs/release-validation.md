@@ -68,6 +68,140 @@ Sianoの通常の無指定時検証機種はPX-S1UDだが、機種初回の対�
 
 行は正式配布archiveのnative/canonical runtimeと必要なaccess条件を記す。追加のOS/ABI・access path確認は[移植性確認手順](platforms/portability-checks.md)へ分離する。各版のhost名と実施結果は版別記録に残す。SianoにはCARD、PC/SC、WinSCardのbackendはない。
 
+## 端末nodeと環境状態の退避・復元（T01前）
+
+Termuxの`termux-usb -l`はUSB node path文字列のJSON配列を返す（例: `["/dev/bus/usb/001/004"]`）。配列要素をVID/PID辞書として扱わない。次をbootstrap時と再接続後に毎回実行し、選択結果・一覧をLOGに残す。製品/機種ごとに`TARGET_USB`と`EXPECTED_NODES`を表のUSB IDと当該stage（loader/runtime、単機能/primary+sibling）から設定する。ASICENはstage遷移ごとに期待ID/数を切り替える。0件、JSON型不正、対象一致数の不一致、sysfsで対象pathを対応付けできない場合はpermissionを要求せず停止する。無関係nodeは一覧に記録して対象選択から除外する。
+
+```sh
+: "${TARGET_USB:?set model/stage VID:PID, e.g. 3275:0080}"
+: "${EXPECTED_NODES:?set exact node count from model/stage}"
+case "$TARGET_USB" in [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) ;; *) echo "invalid VID:PID" >&2; exit 2;; esac
+case "$EXPECTED_NODES" in ''|*[!0-9]*|0) echo "invalid expected node count" >&2; exit 2;; esac
+termux-usb -l > "$LOG/termux-usb-paths.json"
+SYSFS_ROOT=${SYSFS_ROOT:-/sys/bus/usb/devices}
+python - "$LOG/termux-usb-paths.json" "$TARGET_USB" "$EXPECTED_NODES" "$LOG/termux-usb-map.json" "$SYSFS_ROOT" <<'PY'
+import glob, json, os, re, sys
+src, target, expected, out, sysroot = sys.argv[1:]
+paths = json.load(open(src, encoding="utf-8"))
+if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+    raise SystemExit("termux-usb -l must be a JSON array of USB path strings")
+matches, rows = [], []
+for path in paths:
+    m = re.fullmatch(r"/dev/bus/usb/(\d{3})/(\d{3})", path)
+    row = {"path": path, "vid_pid": None, "product": None}
+    if m:
+        bus, dev = (str(int(v)) for v in m.groups())
+        for node in glob.glob(sysroot + "/*"):
+            try:
+                if open(node + "/busnum").read().strip() == bus and open(node + "/devnum").read().strip() == dev:
+                    vid = open(node + "/idVendor").read().strip().lower()
+                    pid = open(node + "/idProduct").read().strip().lower()
+                    row["vid_pid"] = vid + ":" + pid
+                    product = node + "/product"
+                    row["product"] = open(product).read().strip() if os.path.exists(product) else ""
+                    break
+            except OSError:
+                continue
+    rows.append(row)
+    if row["vid_pid"] == target.lower():
+        matches.append(path)
+json.dump({"api_paths": paths, "mapped": rows, "target": target.lower(), "selected": matches}, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+if len(matches) != int(expected):
+    raise SystemExit(f"expected {expected} {target} node(s), found {len(matches)}; see {out}")
+PY
+cat "$LOG/termux-usb-map.json"
+python3 -c 'import json,sys; [print(p) for p in json.load(open(sys.argv[1]))["selected"]]' "$LOG/termux-usb-map.json" > "$LOG/termux-usb-selected-paths.txt"
+```
+
+Sianoは`TARGET_USB=3275:0080`、`EXPECTED_NODES=1`とする。
+
+結果が期待数と完全一致した場合だけ、JSONの`selected`に記録された各pathへ`termux-usb -r <path>`（または製品固有の`-r -e`）を実行する。USB permission後にdaemonを開始する。再接続時は古いpath/FDを使わず、同じ列挙・sysfs照合を再実行する。sysfs未読・node未対応・無許可候補複数は合格ではなく未達として記録する。
+
+環境依存状態を変える前に、承認済みの試験用account/add-on、保護されたrun専用LOG、復元可能な退避を用意する。次は手順を記載したものであり、今回の作業では実行しない。
+
+- **E02 HAOS/Supervisor options:** 対象addon自身のcontainer内にある認可済み`SUPERVISOR_TOKEN`で`/addons/self`だけを使う。SCS host等でtokenが得られない場合は停止する。APIのvalidated optionsはdefaultsとsecret解決値を含むためmode 600のprivate LOGだけに保存し、共有recordへコピーしない。options変更は次回addon startで有効になる。
+  ```sh
+  umask 077
+  mkdir -m 700 -p "$LOG/private"
+  : "${SUPERVISOR_TOKEN:?run inside the target add-on with its token}"
+  API=http://supervisor/addons/self
+  curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" "$API/options/config" -o "$LOG/private/options-get.before.json"
+  python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); json.dump(x.get("data",x),open(sys.argv[2],"w"),sort_keys=True)' "$LOG/private/options-get.before.json" "$LOG/private/addon-options.before.json"
+  chmod 600 "$LOG/private/"*.json
+  cp "$LOG/private/addon-options.before.json" "$LOG/private/addon-options.restore.json"
+  cp "$LOG/private/addon-options.before.json" "$LOG/private/addon-options.trial.json"
+  # 承認済みoptionsだけ編集し、schema validationを通す:
+  ${EDITOR:-vi} "$LOG/private/addon-options.trial.json"
+  python3 -m json.tool "$LOG/private/addon-options.trial.json" > /dev/null
+  python3 -c 'import json,sys; json.dump({"options":json.load(open(sys.argv[1]))},open(sys.argv[2],"w"))' "$LOG/private/addon-options.trial.json" "$LOG/private/options-trial.request.json"
+  curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/addon-options.trial.json" "$API/options/validate" -o "$LOG/private/options-trial.validate.json"
+  python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x=x.get("data",x); assert x.get("valid") is True' "$LOG/private/options-trial.validate.json"
+  curl -sS -o "$LOG/private/options-trial.post.json" -w '%{http_code}\n' -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/options-trial.request.json" "$API/options" > "$LOG/private/options-trial.status"
+  grep -Eq '^2[0-9][0-9]$' "$LOG/private/options-trial.status"
+  # run終了後、承認済み停止手順で元optionsを復元:
+  python3 -c 'import json,sys; json.dump({"options":json.load(open(sys.argv[1]))},open(sys.argv[2],"w"))' "$LOG/private/addon-options.restore.json" "$LOG/private/options-restore.request.json"
+  curl -sS -o "$LOG/private/options-restore.post.json" -w '%{http_code}\n' -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/options-restore.request.json" "$API/options" > "$LOG/private/options-restore.status"
+  grep -Eq '^2[0-9][0-9]$' "$LOG/private/options-restore.status"
+  curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" "$API/options/config" -o "$LOG/private/options-get.after.json"
+  python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); json.dump(x.get("data",x),open(sys.argv[2],"w"),sort_keys=True)' "$LOG/private/options-get.after.json" "$LOG/private/addon-options.after.json"
+  python3 -c 'import json,sys; assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2]))' "$LOG/private/addon-options.restore.json" "$LOG/private/addon-options.after.json"
+  ```
+
+
+
+optionsを適用した後と元値へ戻した後に、それぞれ別の認可済みHAOS CLI sessionから対象add-onだけを再起動する。HA Core/mirakcは再起動しない。
+
+```sh
+ADDON_SLUG='<target-addon-slug>'
+ha addons restart "$ADDON_SLUG"
+```
+
+- **E03 Linux module/udev/group:** 対象fileを決め、存在状態、内容、権限、所有者、video group membershipをLOGへ保存する。適用・udev reload・rebootは個別に承認された場合だけ行う。restoreは各ファイルの元内容または「元は不在」を復元し、対象userの元supplementary groupsを戻す。module再bind等が必要なら承認なしに行わず未達にする。
+  ```sh
+  set -eu
+  TEST_USER='<non-root-test-user>'; LOG='<private-run-log>'
+  for f in /etc/modprobe.d/smsusb-blacklist.conf /etc/udev/rules.d/99-usb-access.rules; do
+    n=$(basename "$f")
+    if [ -e "$f" ]; then cp -a "$f" "$LOG/$n.before"; printf 'present\n' > "$LOG/$n.state"; else printf 'absent\n' > "$LOG/$n.state"; fi
+  done
+  id "$TEST_USER" > "$LOG/test-user.before.txt"; PRIMARY_GROUP=$(id -gn "$TEST_USER")
+  id -nG "$TEST_USER" | python3 -c 'import sys; p=sys.argv[1]; print(",".join(g for g in sys.stdin.read().split() if g != p))' "$PRIMARY_GROUP" > "$LOG/groups.before.txt"
+  # 承認済みrunでのみ適用する。対象driver ruleとgroupを確定してから実行:
+  : "${BLACKLIST_MODULES:?set only the modules required by the selected product/model}"
+  : "${TARGET_USB:?set selected VID:PID}"
+  : > /etc/modprobe.d/smsusb-blacklist.conf
+  for module in $BLACKLIST_MODULES; do printf 'blacklist %s\n' "$module" >> /etc/modprobe.d/smsusb-blacklist.conf; done
+  VID=${TARGET_USB%:*}; PID=${TARGET_USB#*:}
+  printf 'SUBSYSTEM=="usb", ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", MODE="0660", GROUP="video"\n' "$VID" "$PID" > /etc/udev/rules.d/99-usb-access.rules
+  udevadm control --reload-rules; udevadm trigger --subsystem-match=usb; usermod -aG video "$TEST_USER"
+  # 承認済み復元後にudev ruleを再読込する。既存driverのlive unbindはしない:
+  for f in /etc/modprobe.d/smsusb-blacklist.conf /etc/udev/rules.d/99-usb-access.rules; do
+    n=$(basename "$f")
+    if [ "$(cat "$LOG/$n.state")" = present ]; then cp -a "$LOG/$n.before" "$f"; cmp "$LOG/$n.before" "$f"; else rm -f "$f"; test ! -e "$f"; fi
+  done
+  # restore exact supplementary-group list using an authorized admin shell:
+  udevadm control --reload-rules
+  GROUPS_BEFORE=$(cat "$LOG/groups.before.txt")
+  if [ -n "$GROUPS_BEFORE" ]; then usermod -G "$GROUPS_BEFORE" "$TEST_USER"; else usermod -G '' "$TEST_USER"; fi
+  id "$TEST_USER" > "$LOG/test-user.after.txt"
+  PRIMARY_AFTER=$(id -gn "$TEST_USER")
+  id -nG "$TEST_USER" | python3 -c 'import sys; p=sys.argv[1]; print(",".join(g for g in sys.stdin.read().split() if g != p))' "$PRIMARY_AFTER" > "$LOG/groups.after.txt"
+  cmp "$LOG/groups.before.txt" "$LOG/groups.after.txt"
+  ```
+
+- **E07 Android stay-awake:** ADB shellの認可済みcontextで元値（nullを含む）を退避してから、明示された試験値だけを適用する。完了後、元値がnullならkeyを削除し、それ以外は元値を書戻して読戻す。権限不足なら変更せず停止する。
+  ```sh
+  adb shell settings get global stay_on_while_plugged_in > "$LOG/stay-awake.before.txt"
+  BEFORE=$(cat "$LOG/stay-awake.before.txt")
+  # 承認済み試験値を使う場合のみ。
+  TRIAL_VALUE='<approved-trial-value>'
+  adb shell settings put global stay_on_while_plugged_in "$TRIAL_VALUE"
+  # cleanup: Android settings getのnullを未設定として復元
+  if [ "$BEFORE" = null ]; then adb shell settings delete global stay_on_while_plugged_in; else adb shell settings put global stay_on_while_plugged_in "$BEFORE"; fi
+  adb shell settings get global stay_on_while_plugged_in > "$LOG/stay-awake.after.txt"
+  test "$(cat "$LOG/stay-awake.after.txt")" = "$BEFORE"
+  ```
+
 ## 共通試験シナリオ T00–T14
 
 ### run別candidateの取得と作業directory
@@ -203,11 +337,37 @@ $LOG = Join-Path $Work 'log'; $RT = Join-Path $Work 'runtime'; Set-Location $D
 - **停止/cleanup:** 無関係processへsignalしない。test専用runtimeだけ片付け失敗log保持。
 - **記録:** PID/role/exit、process/FD/IPC/socket/runtime、復旧状態。
 
+### T09 helperの固定取得
+
+候補sourceとは独立した共通runbook helperを、Siano runbookのimmutable commit `a61e185ac3ae8a9c03b1efcd261bcef7d1a2043e`から取得する。candidate checkout/archive内のhelper有無に依存しない。POSIX/Termuxでは次を一度実行し、以後の全captureで`$TOOL/ts-check.py`を使う。
+
+```sh
+RUNBOOK_REF='a61e185ac3ae8a9c03b1efcd261bcef7d1a2043e'; HELPER_SHA256='fabe54eeb1188db4faf5ba6cbf81d8552b3386f73f58b3dd7a42641e23ac076d'
+TOOL="$WORK/tooling"; mkdir -m 700 -p "$TOOL"
+gh api -H 'Accept: application/vnd.github.raw' "repos/Khronos31/siano-userland/contents/docs/release-validation/ts-check.py?ref=$RUNBOOK_REF" > "$TOOL/ts-check.py"
+if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | sha256sum -c -; else printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | shasum -a 256 -c -; fi
+printf '%s\n' "$RUNBOOK_REF $HELPER_SHA256" > "$LOG/ts-helper-version.txt"
+```
+
+Windows PowerShell 5.1でも同じ固定版を新しいtooling directoryへ取得し、hash一致後にのみ使う。
+
+```powershell
+$RunbookRef = 'a61e185ac3ae8a9c03b1efcd261bcef7d1a2043e'; $HelperSha256 = 'fabe54eeb1188db4faf5ba6cbf81d8552b3386f73f58b3dd7a42641e23ac076d'
+$Tool = Join-Path $Work 'tooling'; New-Item -ItemType Directory -Path $Tool | Out-Null
+$Helper = Join-Path $Tool 'ts-check.py'
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/Khronos31/siano-userland/$RunbookRef/docs/release-validation/ts-check.py" -OutFile $Helper
+$Actual = (Get-FileHash -LiteralPath $Helper -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $HelperSha256) { throw 'runbook TS helper hash mismatch' }
+"$RunbookRef $Actual" | Set-Content (Join-Path $LOG 'ts-helper-version.txt')
+```
+
+helperのversionはrunbook Git commitとSHA-256の組で固定する。candidate source SHA、artifact digest、helper ref/hashを別々に記録する。
+
 ### T09 TS・counter・終了値判定
 
 - **適用対象/頻度:** 全capture/soak。
-- **準備:** Python 3.11以上を`python3 --version`で確認し、手順書checkoutの[`ts-check.py`](release-validation/ts-check.py)を使う。TSDuck 3.45-4798は§6の追加確認にも使う。
-- **実操作/利用者への依頼:** 各TSで`python3 <runbook-checkout>/docs/release-validation/ts-check.py "$LOG/<capture>.ts" > "$LOG/<capture>.ts-check.json"`を実行する。§6のTSDuck `tsanalyze --normalized`も実行し、同じTSの結果を併記する。Android TermuxからのcaptureはTermux内でhelperを実行し、TSDuck追加確認用の転送では送受信前後のSHA-256一致を確認する。
+- **準備:** Python 3.11以上を`python3 --version`で確認し、固定取得した`$TOOL/ts-check.py`（Windowsは`$Helper`）を使う。TSDuck 3.45-4798は§6の追加確認にも使う。
+- **実操作/利用者への依頼:** 各TSで`python3 $TOOL/ts-check.py "$LOG/<capture>.ts" > "$LOG/<capture>.ts-check.json"`を実行する。§6のTSDuck `tsanalyze --normalized`も実行し、同じTSの結果を併記する。Android TermuxからのcaptureはTermux内でhelperを実行し、TSDuck追加確認用の転送では送受信前後のSHA-256一致を確認する。
 - **期待値/終了値:** 全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
 - **停止/cleanup:** 元TS/hash/logを残してT08 cleanup。
 - **記録:** Python version、helperのGit SHA、TSDuck version、TS hash、両parserの結果/終了値、sync/TEI/continuity/drop/counter、client exit。
@@ -215,7 +375,7 @@ $LOG = Join-Path $Work 'log'; $RT = Join-Path $Work 'runtime'; Set-Location $D
 Windowsでの固定helper呼出し。TSDuckの追加確認は§6の同一archive hostまたは転送先で別途実行する。
 
 ```powershell
-$helper = '<runbook-checkout>\docs\release-validation\ts-check.py'; $ts = Join-Path $LOG '<capture>.ts'
+$helper = Join-Path $Tool 'ts-check.py'; $ts = Join-Path $LOG '<capture>.ts'
 $json = Join-Path $LOG '<capture>.ts-check.json'; $err = Join-Path $LOG '<capture>.ts-check.err'
 & python $helper $ts 1> $json 2> $err; $parserRc = $LASTEXITCODE
 $parserRc | Set-Content (Join-Path $LOG '<capture>.ts-check.rc')
@@ -457,6 +617,27 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
     2> "$LOG/ctrl.err"; echo $?
 ```
 
+S-CTRLのTSは、既存§6が除外する2つのretune境界だけをhelper入力から除外する。まず除外なしでhelperを実行し、JSONの`continuity_error_indices`とTSDuck `tsanalyze --normalized`出力を保存する。control入力記録とTS解析で境界packetのzero-based indexを2点だけ確定し、`$LOG/ctrl-boundaries.txt`へ記録する。境界外のindexが1つでもある場合は失敗として停止する。境界indexが特定できない場合も除外せず判定保留にする。
+
+```sh
+if python3 "$TOOL/ts-check.py" "$LOG/ctrl.ts" > "$LOG/ctrl-ts-initial.json"; then INITIAL_RC=0; else INITIAL_RC=$?; fi
+printf '%s\n' "$INITIAL_RC" > "$LOG/ctrl-ts-initial.rc"
+tsanalyze --normalized "$LOG/ctrl.ts" > "$LOG/ctrl-tsanalyze.txt" 2>&1
+# ctrl-boundaries.txtには、根拠を確認した2つのpacket indexを1行に1つ記録する。
+set -- $(cat "$LOG/ctrl-boundaries.txt")
+test "$#" -eq 2
+python3 - "$LOG/ctrl-ts-initial.json" "$LOG/ctrl-boundaries.txt" <<'PY'
+import json, sys
+errors=json.load(open(sys.argv[1]))['continuity_error_indices']
+boundaries=[int(x) for x in open(sys.argv[2])]
+if len(set(boundaries)) != 2 or not set(errors).issubset(set(boundaries)):
+    raise SystemExit('continuity mismatch is outside the two recorded retune boundaries')
+PY
+python3 "$TOOL/ts-check.py" "$LOG/ctrl.ts" --exclude-cc-at "$1" --exclude-cc-at "$2" > "$LOG/ctrl-ts-check.json"
+```
+
+helperは指定されたpacketのCC比較だけを除外し、その箇所の不一致を`excluded_cc_mismatches`へ残す。sync/remainder/TEIは除外されず、境界外CC不良はexit 1のまま拒否する。2点を根拠付きで特定できない場合や初回JSONの不一致位置が2点と一致しない場合は除外なしの結果を不合格/保留として記録する。
+
 ```sh
 # S-SIG（clientを止め、daemonは維持）
 "$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -o "$LOG/sig.ts" \
@@ -531,20 +712,12 @@ kill -INT "$DAEMON_PID"; wait "$DAEMON_PID"
 - **E02 HAOS x86_64 Alpine/musl add-on**: add-on options を現行値で退避し、ユーザー承認のうえ試験用 options で起動、終了後に復元・停止する。restart loop がないことを確認。base は §7.1。`linux-x86_64` と同じ static binary を使う。
 - **E03 AnduinOS x86_64**: `smsusb`/`smsdvb`/`smsmdtv` を blacklist し `lsusb -t` で未bind を確認。udev rule と `video` グループで非root 実行。base は §7.1。C9 は bound 状態で `--detach-kernel-driver` なしの拒否（exit 4）だけを確認し、live unbind はしない。blacklist の変更はユーザー確認のうえ reboot で復元する。`linux-x86_64` archiveのnative確認環境例。
 - **E04 macOS arm64**: `otool -L ./siano-ts` が system library のみであること、`sw_vers` を記録。base は §7.1。`darwin-arm64` archiveのnative確認環境例。
-- **E05–E07 Android Termux**: `termux-usb -l`は次のPythonでSiano VID/PID `3275:0080`に一致するUSB pathを一意に取り出し、一覧と選択値を記録する。0件/複数件ならUSB permissionを求めず未実施で止める。
+- **E05–E07 Android Termux**: 共通のnode照合手順で`TARGET_USB=3275:0080`、`EXPECTED_NODES=1`を指定し、JSON path文字列配列をsysfsへ対応付ける。bootstrap/reconnectごとに必ず再実行する。0件・複数一致・無関係nodeのみ・sysfs未対応ではpermissionを求めず停止する。
 
 ```sh
-termux-usb -l > "$LOG/termux-usb.json"
-USB_NODE=$(python - "$LOG/termux-usb.json" <<'PY'
-import json, sys
-devices = json.load(open(sys.argv[1]))
-matches = [d for d in devices if int(str(d.get('vendor_id', -1)), 0) == 0x3275 and int(str(d.get('product_id', -1)), 0) == 0x0080]
-assert len(matches) == 1, f'expected one PX-S1UD 3275:0080 node, got {len(matches)}'
-path = matches[0].get('device_path')
-assert path and path.startswith('/dev/bus/usb/'), 'matching USB path missing'
-print(path)
-PY
-)
+TARGET_USB=3275:0080; EXPECTED_NODES=1
+# 上の共通node照合を実行してから、JSONのselected pathを使う。
+USB_NODE=$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1]))["selected"]; assert len(x)==1; print(x[0])' "$LOG/termux-usb-map.json")
 printf '%s\n' "$USB_NODE" > "$LOG/termux-usb-selected.txt"
 termux-usb -r "$USB_NODE"
 ```
@@ -569,6 +742,7 @@ New-Item -ItemType Directory -Path $LOG | Out-Null
 $RT = 'C:\siano-e17-<run-id>'
 if (Test-Path $RT) { throw "refusing to reuse existing runtime path: $RT" }
 New-Item -ItemType Directory -Path $RT | Out-Null
+$CandidateDir | Set-Content (Join-Path $LOG 'candidate-dir.txt')
 $manifest = Get-Content .\manifest.json -Raw | ConvertFrom-Json
 foreach ($name in 'sianod.exe','sianoctl.exe','siano-ts.exe') {
     $actual = (Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -581,9 +755,11 @@ $selector = 'usb:BUS-PORT'          # 実際に列挙されたselectorへ置換
 # daemonがreadyになったら別のPowerShell（同じZIP root）で:
 $RT = 'C:\siano-e17-<run-id>'
 $LOG = 'C:\siano-e17-<run-id>-logs'
+$CandidateDir = (Get-Content (Join-Path $LOG 'candidate-dir.txt') -Raw).Trim()
+if (-not (Test-Path -LiteralPath (Join-Path $CandidateDir 'siano-ts.exe'))) { throw 'saved candidate root is invalid' }
 $INSTANCE = 's1ud'
-$C = (Resolve-Path .\sianoctl.exe).Path
-$B = (Resolve-Path .\siano-ts.exe).Path
+$C = Join-Path $CandidateDir 'sianoctl.exe'
+$B = Join-Path $CandidateDir 'siano-ts.exe'
 & $C --instance $INSTANCE --runtime-dir $RT status
 $hotplugTs = Join-Path $LOG 'hotplug.ts'; $hotplugErr = Join-Path $LOG 'hotplug.err'
 $p = Start-Process -FilePath $B -ArgumentList @('--instance',$INSTANCE,'--runtime-dir',$RT,'-c','22','-o',$hotplugTs) -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardError $hotplugErr
