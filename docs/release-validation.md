@@ -716,7 +716,9 @@ CTRL_PID=
 rm "$CTRL_FIFO"
 ```
 
-S-CTRLの切替境界はcommand送信時刻/file offsetやcontinuity errorから逆算しない。`ctrl.err`の完了したper-selection統計を使う。各行は`control: selection=<1-based> frequency_hz=<Hz> packets=<packets_written> bytes=<packets_written*188> status=complete`の形式でselection番号・選局周波数・packet/byte数・完了状態を記録する。`control: NOT_READY`、run-error/output-error、`bytes=unknown`、欠落/重複/順序違い、0 packet、stats合計とTSファイルbyte数の不一致はfailまたは判定保留とし、境界除外しない。今回の入力はchannel 21、channel 22の2 selectionなので、後続selection開始indexは先行selectionの`packets`合計である。境界後はPIDごとに最初に現れるpacketのCC比較だけを除外し、ほかのCC不良は通常どおりfailする。helperのTEI/sync/framing検査は境界でも除外しない。
+S-CTRLの切替境界はcommand送信時刻/file offsetやcontinuity errorから逆算しない。`ctrl.err`の完了したper-selection統計を使う。各行は`control: selection=<1-based> frequency_hz=<Hz> packets=<packets_written> bytes=<packets_written*188> status=complete`の形式でselection番号・選局周波数・packet/byte数・完了状態を記録する。`control: NOT_READY`、run-error/output-error、`bytes=unknown`、欠落/重複/順序違い、0 packet、stats合計とTSファイルbyte数の不一致はfailまたは判定保留とし、境界除外しない。今回のrelease入力はchannel 21、channel 22の2 selectionなので、後続selection開始indexは先行selectionの`packets`合計であり、周波数は521142857 Hz、527142857 Hzで照合する。境界後はPIDごとに最初に現れるpacketのCC比較だけを除外し、ほかのCC不良は通常どおりfailする。helperのTEI/sync/framing検査は境界でも除外しない。
+
+このper-selection出力はSiano product sourceの修正が必要である。stats-only PR #47単独head `f069205e95868d8d3f6fca8f55fc5e9933573604`の通常`--control`では`NOT_READY`/`bytes=unknown status=run-error`となり、release gateを満たさない。approved minimal profile修復PR #48 head `82d7c5b7db9f15b6f635da0594c0c73d8f8bb74d`はCI/reviewが完了するまでmain/candidateへ採用済みと扱わない。作者のdevice-free CMake runtime fixtureでは2 selectionと合計752 stdout bytes、exit 0を確認した。PR47固定sourceへprofile差分を一時適用した診断fixtureでは`473142857 Hz`と`479142857 Hz`の各2 packet/376 bytes、stdout 752 bytes、exit 0を確認したが、これはrelease channel 21/22の周波数照合でも通常candidate実測でもない。runbookの実機/候補合否は上記channel 21/22条件の実際のcandidate出力にのみ基づく。
 
 ```sh
 python3 - "$LOG/ctrl.err" "$LOG/ctrl.ts" "$LOG/ctrl-boundaries.txt" <<'PY'
@@ -887,8 +889,18 @@ else { $usbRc = 'timeout'; 'HANG: record PID and timeout; return to the owning c
 # daemonがreadyになったらconsumer consoleで:
 & $C --instance s1ud --runtime-dir $RT status
 $reconnectedTs = Join-Path $LOG 'reconnected.ts'; $reconnectedErr = Join-Path $LOG 'reconnected.err'
-& $B --instance $INSTANCE --runtime-dir $RT -c 22 -t 30 -o $reconnectedTs 2> $reconnectedErr
-$LASTEXITCODE | Set-Content (Join-Path $LOG 'reconnected.rc') # 0を期待
+$reconnected = Start-Process -FilePath $B -ArgumentList "--instance $INSTANCE --runtime-dir `"$RT`" -c 22 -t 30 -o `"$reconnectedTs`"" -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardOutput (Join-Path $LOG 'reconnected.out') -RedirectStandardError $reconnectedErr
+if (-not $reconnected.WaitForExit(90000)) {
+  $reconnected.Id | Set-Content (Join-Path $LOG 'reconnected-timeout.txt')
+  Stop-Process -Id $reconnected.Id -ErrorAction SilentlyContinue
+  if (-not $reconnected.WaitForExit(5000)) { $reconnected.Id | Set-Content (Join-Path $LOG 'reconnected-cleanup-timeout.txt') }
+}
+$reconnected.Refresh()
+if ($reconnected.HasExited) { $reconnected.ExitCode | Set-Content (Join-Path $LOG 'reconnected.rc') } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG 'reconnected.rc') }
+if ($reconnected.HasExited -and $reconnected.ExitCode -eq 0 -and (Test-Path $reconnectedTs) -and -not (Test-Path (Join-Path $LOG 'reconnected-timeout.txt'))) { 'complete: recovery client exited 0' | Set-Content (Join-Path $LOG 'reconnected.state') } else { 'incomplete: recovery client timeout/exit/output failure' | Set-Content (Join-Path $LOG 'reconnected.state') }
+if (Test-Path $reconnectedTs) { Get-FileHash -Algorithm SHA256 $reconnectedTs } else { 'reconnected TS unavailable' | Set-Content (Join-Path $LOG 'reconnected-ts-missing.txt') }
+if (Test-Path (Join-Path $LOG 'reconnected-timeout.txt')) { throw 'reconnected capture timeout; stop the owned daemon normally, verify cleanup, and record T07 incomplete.' }
+if (-not $reconnected.HasExited -or $reconnected.ExitCode -ne 0) { throw 'reconnected capture exit unavailable or nonzero; stop the owned daemon normally and record T07 incomplete.' }
 Get-Process siano-ts -ErrorAction SilentlyContinue
 # 終了時はdaemon consoleでCtrl+C。
 ```
@@ -929,6 +941,7 @@ $p.Refresh()
 if ($p.HasExited -and $p.ExitCode -eq 0 -and -not (Test-Path (Join-Path $LOG 't03-client-timeout.txt'))) { 'complete: client exited 0' | Set-Content (Join-Path $LOG 't03-state.txt') } else { 'incomplete: client timeout/exit failure' | Set-Content (Join-Path $LOG 't03-state.txt') }
 if ($p.HasExited) { $p.ExitCode | Set-Content (Join-Path $LOG 't03-client.rc') } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG 't03-client.rc') }
 if (Test-Path $ts) { Get-FileHash -Algorithm SHA256 $ts } else { 't03.ts unavailable' | Set-Content (Join-Path $LOG 't03-ts-missing.txt') }
+if (Test-Path (Join-Path $LOG 't03-client-timeout.txt')) { throw 'T03 client timeout; stop the owned daemon normally, verify cleanup, and record T03 incomplete; do not start T04 captures.' }
 ```
 
 ```powershell
@@ -952,6 +965,7 @@ foreach ($channel in $CHANNEL_PLAN) {
     if ($p.HasExited) { $p.ExitCode | Set-Content (Join-Path $LOG "t04-$channel.rc") } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG "t04-$channel.rc") }
     if ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path $out) -and -not (Test-Path (Join-Path $LOG "t04-$channel-timeout.txt"))) { 'complete: client exited 0' | Set-Content (Join-Path $LOG "t04-$channel.state") } else { 'incomplete: client timeout/exit/output failure' | Set-Content (Join-Path $LOG "t04-$channel.state") }
     if (Test-Path $out) { Get-FileHash -Algorithm SHA256 $out } else { "$channel output unavailable" | Out-File (Join-Path $LOG 't04-ts-missing.txt') }
+    if (Test-Path (Join-Path $LOG "t04-$channel-timeout.txt")) { throw "T04 client timeout for $channel; stop the owned daemon normally, verify cleanup, record T04 incomplete, and do not start the next channel." }
 }
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $B
@@ -969,8 +983,14 @@ $C = (Resolve-Path .\sianoctl.exe).Path
     $control.StandardInput.WriteLine($(if ($_ -eq 1) { 'channel 21' } else { 'channel 22' }))
 }
 Start-Sleep -Seconds 20; $control.StandardInput.WriteLine('quit'); $control.StandardInput.Close()
-$control.WaitForExit()
-$stdout.Result | Out-File "$LOG\t05.out"; $stderr.Result | Out-File "$LOG\t05.err"; "$($control.ExitCode)" | Out-File "$LOG\t05.rc"
+if (-not $control.WaitForExit(90000)) {
+    $control.Id | Out-File "$LOG\t05-client-timeout.txt"
+    Stop-Process -Id $control.Id -ErrorAction SilentlyContinue
+    if (-not $control.WaitForExit(5000)) { $control.Id | Out-File "$LOG\t05-client-cleanup-timeout.txt" }
+}
+$control.Refresh()
+if ($control.HasExited) { $stdout.Result | Out-File "$LOG\t05.out"; $stderr.Result | Out-File "$LOG\t05.err"; "$($control.ExitCode)" | Out-File "$LOG\t05.rc" } else { 'unavailable: owned client did not exit' | Out-File "$LOG\t05.rc" }
+if (-not $control.HasExited -or (Test-Path "$LOG\t05-client-timeout.txt")) { 'incomplete: control client timeout/exit failure' | Set-Content "$LOG\t05-state.txt"; throw 'T05 control client timeout; stop the owned daemon normally, verify cleanup, and record T05 incomplete.' } else { 'complete: control client exited' | Set-Content "$LOG\t05-state.txt" }
 $S = '<seconds from frequency table>'
 $soak = Start-Process -FilePath $B -ArgumentList "--instance s1ud --runtime-dir `"$RT`" -c 22 -t $S -o `"$LOG\t13.ts`"" -PassThru -NoNewWindow
 while (-not $soak.HasExited) {
@@ -1041,7 +1061,10 @@ $B = (Resolve-Path .\siano-ts.exe).Path
 $LOG = 'C:\siano-e17-<run-id>-logs'
 $RT_A = 'C:\siano-e17-<run-id>-a'
 $S = '<finite-duration-seconds>'
-& $B --instance a --runtime-dir $RT_A -c 22 -t $S -o "$LOG\a.ts"; $LASTEXITCODE
+$client = Start-Process -FilePath $B -ArgumentList "--instance a --runtime-dir `"$RT_A`" -c 22 -t $S -o `"$LOG\a.ts`"" -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardOutput (Join-Path $LOG 'a.out') -RedirectStandardError (Join-Path $LOG 'a.err')
+if (-not $client.WaitForExit(([int]$S + 90) * 1000)) { $client.Id | Set-Content (Join-Path $LOG 'a-timeout.txt'); Stop-Process -Id $client.Id -ErrorAction SilentlyContinue; if (-not $client.WaitForExit(5000)) { $client.Id | Set-Content (Join-Path $LOG 'a-cleanup-timeout.txt') } }
+$client.Refresh(); if ($client.HasExited) { $client.ExitCode | Set-Content (Join-Path $LOG 'a.rc') } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG 'a.rc') }
+if (-not $client.HasExited -or $client.ExitCode -ne 7 -or (Test-Path (Join-Path $LOG 'a-timeout.txt'))) { 'incomplete: A client timeout/exit failure' | Set-Content (Join-Path $LOG 't12-state.txt'); throw 'T12 A client timeout/exit failure; stop both owned daemons normally, verify cleanup, record T12 incomplete, and do not start the B client.' } else { 'A exited with expected USB-cut exit 7' | Set-Content (Join-Path $LOG 'a.state') }
 ```
 
 client console BでB側を前景実行し、A切断中もBが継続して正常終了することを確認する。
@@ -1051,7 +1074,10 @@ $B = (Resolve-Path .\siano-ts.exe).Path
 $LOG = 'C:\siano-e17-<run-id>-logs'
 $RT_B = 'C:\siano-e17-<run-id>-b'
 $S = '<finite-duration-seconds>'
-& $B --instance b --runtime-dir $RT_B -c 21 -t $S -o "$LOG\b.ts"; $LASTEXITCODE
+$client = Start-Process -FilePath $B -ArgumentList "--instance b --runtime-dir `"$RT_B`" -c 21 -t $S -o `"$LOG\b.ts`"" -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardOutput (Join-Path $LOG 'b.out') -RedirectStandardError (Join-Path $LOG 'b.err')
+if (-not $client.WaitForExit(([int]$S + 90) * 1000)) { $client.Id | Set-Content (Join-Path $LOG 'b-timeout.txt'); Stop-Process -Id $client.Id -ErrorAction SilentlyContinue; if (-not $client.WaitForExit(5000)) { $client.Id | Set-Content (Join-Path $LOG 'b-cleanup-timeout.txt') } }
+$client.Refresh(); if ($client.HasExited) { $client.ExitCode | Set-Content (Join-Path $LOG 'b.rc') } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG 'b.rc') }
+if (-not $client.HasExited -or $client.ExitCode -ne 0 -or (Test-Path (Join-Path $LOG 'b-timeout.txt'))) { 'incomplete: B client timeout/exit failure' | Set-Content (Join-Path $LOG 't12-state.txt'); throw 'T12 B client timeout/exit failure; stop both owned daemons normally and record T12 incomplete.' } else { 'complete: B continued and exited 0' | Set-Content (Join-Path $LOG 't12-state.txt') }
 ```
 
 USBを物理的に外しても有限終了しない場合はhangとして失敗を記録する。各物理操作は依頼直前に通知し、依頼から最大5分待つ。
