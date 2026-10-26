@@ -152,9 +152,11 @@ Sianoは`TARGET_USB=3275:0080`、`EXPECTED_NODES=1`とする。
   import json, sys
   json.dump({"options":json.load(open(sys.argv[1], encoding="utf-8"))}, open(sys.argv[2], "w", encoding="utf-8"))
   PY
+  # /options/validate accepts the raw options object; only /options uses the {"options": ...} request schema.
+  cp "$LOG/private/options.trial.json" "$LOG/private/options-trial.validate.json"
   chmod 600 "$LOG/private/"*.json
-  curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/options-trial.request.json" "$API/options/validate" -o "$LOG/private/options-trial.validate.json"
-  if ! python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x=x.get("data",x); sys.exit(0 if x.get("valid") is True else 1)' "$LOG/private/options-trial.validate.json"; then echo 'options validation rejected; no trial POST was sent' >&2; exit 1; fi
+  curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/options-trial.validate.json" "$API/options/validate" -o "$LOG/private/options-trial.validation-response.json"
+  if ! python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x=x.get("data",x); sys.exit(0 if x.get("valid") is True else 1)' "$LOG/private/options-trial.validation-response.json"; then echo 'options validation rejected; no trial POST was sent' >&2; exit 1; fi
   curl -fsS -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H 'Content-Type: application/json' --data-binary @"$LOG/private/options-trial.request.json" "$API/options" -o "$LOG/private/options-trial.post.json"
   ```
   run終了後、保存したraw optionsを同じ`/options` endpointへ戻し、`/info`のraw `options`とprivate backupの完全一致を確認する。`/options/config`のvalidated値との比較で復元を判定しない。
@@ -201,34 +203,51 @@ ha addons restart "$ADDON_SLUG"
   test "$(printf '%s' "$ACTUAL_USB" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$TARGET_USB" | tr '[:upper:]' '[:lower:]')"
   stat -c '%a %u %g' "$DEVICE_NODE" > "$LOG/usb-node.before.txt"
   printf '%s\n' "$SYSFS_PATH" > "$LOG/usb-sysfs-path.before.txt"
-  # 承認済みrunでのみ適用する。対象driver ruleとgroupを確定してから実行:
-  : "${BLACKLIST_MODULES:?set only the modules required by the selected product/model}"
-  : > /etc/modprobe.d/smsusb-blacklist.conf
-  for module in $BLACKLIST_MODULES; do printf 'blacklist %s\n' "$module" >> /etc/modprobe.d/smsusb-blacklist.conf; done
-  VID=${TARGET_USB%:*}; PID=${TARGET_USB#*:}
-  printf 'SUBSYSTEM=="usb", ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", MODE="0660", GROUP="video"\n' "$VID" "$PID" > /etc/udev/rules.d/99-usb-access.rules
-  udevadm control --reload-rules; udevadm trigger --action=change "$SYSFS_DEVICE"; udevadm settle
-  usermod -aG video "$TEST_USER"
-  # 承認済み復元後、同じUSB nodeだけへ元ruleを再適用してnode mode/ownerも復元:
+  # 承認済みrunでのみ適用する。適用は隔離subshell内で行い、途中失敗でも親shellの復元へ戻る:
+  apply_trial_access() (
+    set -eu
+    : "${BLACKLIST_MODULES:?set only the modules required by the selected product/model}"
+    : > /etc/modprobe.d/smsusb-blacklist.conf || exit $?
+    for module in $BLACKLIST_MODULES; do printf 'blacklist %s\n' "$module" >> /etc/modprobe.d/smsusb-blacklist.conf || exit $?; done
+    VID=${TARGET_USB%:*}; PID=${TARGET_USB#*:}
+    printf 'SUBSYSTEM=="usb", ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", MODE="0660", GROUP="video"\n' "$VID" "$PID" > /etc/udev/rules.d/99-usb-access.rules || exit $?
+    udevadm control --reload-rules || exit $?
+    udevadm trigger --action=change "$SYSFS_DEVICE" || exit $?
+    udevadm settle || exit $?
+    usermod -aG video "$TEST_USER" || exit $?
+  )
+  if apply_trial_access; then APPLY_RC=0; else APPLY_RC=$?; fi
+  printf '%s\n' "$APPLY_RC" > "$LOG/access-apply.rc"
+  RESTORE_RC=0
+  set +e
   for f in /etc/modprobe.d/smsusb-blacklist.conf /etc/udev/rules.d/99-usb-access.rules; do
     n=$(basename "$f")
-    if [ "$(cat "$LOG/$n.state")" = present ]; then cp -a "$LOG/$n.before" "$f"; cmp "$LOG/$n.before" "$f"; else rm -f "$f"; test ! -e "$f"; fi
+    if [ "$(cat "$LOG/$n.state")" = present ]; then
+      cp -a "$LOG/$n.before" "$f" || RESTORE_RC=1
+      cmp "$LOG/$n.before" "$f" || RESTORE_RC=1
+    else
+      rm -f "$f" || RESTORE_RC=1
+      test ! -e "$f" || RESTORE_RC=1
+    fi
   done
-  udevadm control --reload-rules
-  test -c "$DEVICE_NODE"
-  test "$(udevadm info --query=path --name="$DEVICE_NODE")" = "$SYSFS_PATH"
-  test "$(cat "$SYSFS_DEVICE/idVendor"):$(cat "$SYSFS_DEVICE/idProduct")" = "$ACTUAL_USB"
-  udevadm trigger --action=change "$SYSFS_DEVICE"; udevadm settle
-  set -- $(cat "$LOG/usb-node.before.txt"); test "$#" -eq 3
-  chown "$2:$3" "$DEVICE_NODE"; chmod "$1" "$DEVICE_NODE"
-  stat -c '%a %u %g' "$DEVICE_NODE" > "$LOG/usb-node.after.txt"
-  cmp "$LOG/usb-node.before.txt" "$LOG/usb-node.after.txt"
-  GROUPS_BEFORE=$(cat "$LOG/groups.before.txt")
-  if [ -n "$GROUPS_BEFORE" ]; then usermod -G "$GROUPS_BEFORE" "$TEST_USER"; else usermod -G '' "$TEST_USER"; fi
-  id "$TEST_USER" > "$LOG/test-user.after.txt"
-  PRIMARY_AFTER=$(id -gn "$TEST_USER")
-  id -nG "$TEST_USER" | python3 -c 'import sys; p=sys.argv[1]; print(",".join(g for g in sys.stdin.read().split() if g != p))' "$PRIMARY_AFTER" > "$LOG/groups.after.txt"
-  cmp "$LOG/groups.before.txt" "$LOG/groups.after.txt"
+  udevadm control --reload-rules || RESTORE_RC=1
+  if test -c "$DEVICE_NODE" && test "$(udevadm info --query=path --name="$DEVICE_NODE")" = "$SYSFS_PATH" && test "$(cat "$SYSFS_DEVICE/idVendor"):$(cat "$SYSFS_DEVICE/idProduct")" = "$ACTUAL_USB"; then :; else RESTORE_RC=1; fi
+  udevadm trigger --action=change "$SYSFS_DEVICE" || RESTORE_RC=1
+  udevadm settle || RESTORE_RC=1
+  if set -- $(cat "$LOG/usb-node.before.txt") && test "$#" -eq 3; then
+    chown "$2:$3" "$DEVICE_NODE" || RESTORE_RC=1
+    chmod "$1" "$DEVICE_NODE" || RESTORE_RC=1
+  else RESTORE_RC=1; fi
+  if stat -c '%a %u %g' "$DEVICE_NODE" > "$LOG/usb-node.after.txt"; then cmp "$LOG/usb-node.before.txt" "$LOG/usb-node.after.txt" || RESTORE_RC=1; else RESTORE_RC=1; fi
+  if GROUPS_BEFORE=$(cat "$LOG/groups.before.txt"); then
+    if [ -n "$GROUPS_BEFORE" ]; then usermod -G "$GROUPS_BEFORE" "$TEST_USER" || RESTORE_RC=1; else usermod -G '' "$TEST_USER" || RESTORE_RC=1; fi
+    id "$TEST_USER" > "$LOG/test-user.after.txt" || RESTORE_RC=1
+    if PRIMARY_AFTER=$(id -gn "$TEST_USER") && id -nG "$TEST_USER" | python3 -c 'import sys; p=sys.argv[1]; print(",".join(g for g in sys.stdin.read().split() if g != p))' "$PRIMARY_AFTER" > "$LOG/groups.after.txt"; then cmp "$LOG/groups.before.txt" "$LOG/groups.after.txt" || RESTORE_RC=1; else RESTORE_RC=1; fi
+  else RESTORE_RC=1; fi
+  printf '%s\n' "$RESTORE_RC" > "$LOG/access-restore.rc"
+  set -e
+  if [ "$APPLY_RC" -ne 0 ]; then exit "$APPLY_RC"; fi
+  if [ "$RESTORE_RC" -ne 0 ]; then echo 'access state restoration incomplete; retain evidence and stop' >&2; exit "$RESTORE_RC"; fi
   ```
 
 - **E07 Android stay-awake:**初回ADB readが非0/空/不正値なら書込み前に停止する。`null`は未設定、十進整数は保存値として区別する。権限・readback失敗を無視しない。次は端末設定に触れないsynthetic確認用の状態遷移であり、実Androidへは実行しない。
@@ -378,6 +397,8 @@ $LOG = Join-Path $Work 'log'; $RT = Join-Path $Work 'runtime'; Set-Location $D
 - **停止/cleanup:** idle/streamそれぞれでowned client/daemonを通常停止してwaitし、再接続後の新daemonも通常停止する。Androidはpermission/FD再取得。
 - **記録:** idle/stream、daemon USB owner状態、依頼/応答時刻、path、status/診断、各実終了値、再取得TS/counter、cleanup。
 
+OS/ABI別の具体操作は [正式アーカイブの環境別手順](#siano-os-t07-recipes) を参照する。
+
 ### T08 通常停止・cleanup
 
 - **適用対象/頻度:** 全test終了時。
@@ -387,12 +408,12 @@ $LOG = Join-Path $Work 'log'; $RT = Join-Path $Work 'runtime'; Set-Location $D
 - **停止/cleanup:** 無関係processへsignalしない。test専用runtimeだけ片付け失敗log保持。
 - **記録:** PID/role/exit、process/FD/IPC/socket/runtime、復旧状態。
 
-### T09 helperの固定取得
+### 共通helperの固定取得（T09前提）
 
-候補sourceとは独立した共通runbook helperを、Siano runbookのimmutable commit `4fa86d0a51253bc0da99178f63a46e5dfbd927d0`から取得する。candidate checkout/archive内のhelper有無に依存しない。POSIX/Termuxでは次を一度実行し、以後の全captureで`$TOOL/ts-check.py`を使う。
+T09を実行する前に、候補sourceとは独立した共通runbook helperをSiano runbookのimmutable commit `c2378ea3c52b3e415ec6c7acfea4b8f758b46eda`から取得する。candidate checkout/archive内のhelper有無に依存しない。POSIX/Termuxでは次を一度実行し、以後の全captureで`$TOOL/ts-check.py`を使う。
 
 ```sh
-RUNBOOK_REF='4fa86d0a51253bc0da99178f63a46e5dfbd927d0'; HELPER_SHA256='3224747ccf74d752fd70e0fd5599418cfa20d6d4bfafc8e8220a002c1dcbcffd'
+RUNBOOK_REF='c2378ea3c52b3e415ec6c7acfea4b8f758b46eda'; HELPER_SHA256='dbb4826e3eb4f0cb13850b59864c7219b8929822976c9e213d3948edbe450f05'
 TOOL="$WORK/tooling"; mkdir -m 700 -p "$TOOL"
 gh api -H 'Accept: application/vnd.github.raw' "repos/Khronos31/siano-userland/contents/docs/release-validation/ts-check.py?ref=$RUNBOOK_REF" > "$TOOL/ts-check.py"
 if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | sha256sum -c -; else printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | shasum -a 256 -c -; fi
@@ -402,7 +423,7 @@ printf '%s\n' "$RUNBOOK_REF $HELPER_SHA256" > "$LOG/ts-helper-version.txt"
 Windows PowerShell 5.1でも同じ固定版を新しいtooling directoryへ取得し、hash一致後にのみ使う。
 
 ```powershell
-$RunbookRef = '4fa86d0a51253bc0da99178f63a46e5dfbd927d0'; $HelperSha256 = '3224747ccf74d752fd70e0fd5599418cfa20d6d4bfafc8e8220a002c1dcbcffd'
+$RunbookRef = 'c2378ea3c52b3e415ec6c7acfea4b8f758b46eda'; $HelperSha256 = 'dbb4826e3eb4f0cb13850b59864c7219b8929822976c9e213d3948edbe450f05'
 $Tool = Join-Path $Work 'tooling'; New-Item -ItemType Directory -Path $Tool | Out-Null
 $Helper = Join-Path $Tool 'ts-check.py'
 Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/Khronos31/siano-userland/$RunbookRef/docs/release-validation/ts-check.py" -OutFile $Helper
@@ -418,7 +439,7 @@ helperのversionはrunbook Git commitとSHA-256の組で固定する。candidate
 - **適用対象/頻度:** 全capture/soak。
 - **準備:** Python 3.11以上を`python3 --version`で確認し、固定取得した`$TOOL/ts-check.py`（Windowsは`$Helper`）を使う。TSDuck 3.45-4798は§6の追加確認にも使う。
 - **実操作/利用者への依頼:** 各TSで`python3 $TOOL/ts-check.py "$LOG/<capture>.ts" > "$LOG/<capture>.ts-check.json"`を実行する。§6のTSDuck `tsanalyze --normalized`も実行し、同じTSの結果を併記する。Android TermuxからのcaptureはTermux内でhelperを実行し、TSDuck追加確認用の転送では送受信前後のSHA-256一致を確認する。
-- **期待値/終了値:** null PIDはcontinuity判定から除外する。同一PIDの隣接payload duplicate pairはPCR timestamp以外の全byte一致時だけ1組を許容し、duplicate indexをJSONへ記録する。3個目、内容差、非連続再送はcontinuity error。PCR reserved bits/extension違反とinvalid adaptationはfail。全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
+- **期待値/終了値:** null PIDはcontinuity判定から除外する。同一PIDの隣接payload duplicate pairはPCR timestamp以外の全byte一致時だけ1組を許容し、duplicate indexをJSONへ記録する。3個目、内容差、非連続再送はcontinuity error。retune境界を確認できるrunはzero-basedの最初の出力packet indexを`--retune-boundary-at`へ渡し、境界後の各PID初回packetだけCC比較を除外する。TEI、sync、framing、invalid adaptationは除外しない。PCR reserved bits/extension違反とinvalid adaptationはfail。全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
 - **停止/cleanup:** 元TS/hash/logを残してT08 cleanup。
 - **記録:** Python version、helperのGit SHA/hash、TSDuck version、TS hash、両parserの結果/終了値、duplicate/null/invalid packet index、sync/TEI/continuity/drop/counter、client exit。
 
@@ -624,9 +645,10 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 `siano-ts` は in-band の TS 整合性 counter を持たない。出力ファイルを解析 host へコピーし、両 host で SHA-256 が一致することを確認してから検査する。TS 検査に使う TSDuck の version を固定して記録し、`tsanalyze` の field 名を採用時に1回確認する。
 
 1. `stat`（Linux）/ `stat -f`（macOS/BSD）で `size % 188 == 0`（188-byte remainder なし）。
-2. `tsanalyze --normalized <file>` で invalid sync 0、TEI 0、PID ごとの continuity discontinuity 0。各 PID の先頭 packet、および `--control` の retune 境界2点は除外する。
+2. 固定helperでinvalid sync 0、TEI 0、PIDごとのcontinuity discontinuity 0。各PIDの先頭packetはcontinuity比較から除外する。`--control` runではper-selectionの実出力packet countからretune境界を算出し、各境界後のPID初回packetだけ`--retune-boundary-at`でCC比較を除外する。TSDuckの未補正continuity表示は診断として保存する。
 3. `TS queue dropped` が stderr になく、exit code が 8 でないこと。正常は exit 0。
 
+<a id="siano-os-t07-recipes"></a>
 ## 7. 正式アーカイブの環境別手順
 
 各項は次の共通部品と追加手順で構成する。物理操作（USB 抜差し、アンテナ、電源、WinUSB 割当、kernel module blacklist 変更）はユーザーが事前確認のうえ実施する。E01/E02 は production host であり、Supervisor 状態変更は承認・退避・復元を伴う。HA Core・アドオン・mirakc・サービスを再起動しない。
@@ -661,27 +683,14 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 ```
 
 ```sh
-# S-CTRL（daemonは維持し、control送信直前のTS byte offsetを記録）
+# S-CTRL（daemonは維持し、後からper-selection実出力量でretune境界を確定）
 set -eu
 CTRL_FIFO="$LOG/ctrl.stdin"
-test ! -e "$CTRL_FIFO"; test ! -e "$LOG/ctrl.ts"; test ! -e "$LOG/ctrl-events.tsv"
+test ! -e "$CTRL_FIFO"; test ! -e "$LOG/ctrl.ts"; test ! -e "$LOG/ctrl-boundaries.txt"
 mkfifo "$CTRL_FIFO"
 "$B" --instance "$INSTANCE" --runtime-dir "$RT" --control -o "$LOG/ctrl.ts" \
   < "$CTRL_FIFO" 2> "$LOG/ctrl.err" & CTRL_PID=$!
 exec 3>"$CTRL_FIFO"
-record_control_boundary() {
-  label=$1; command=$2
-  boundary_deadline=$((SECONDS + 300))
-  while :; do
-    if [ "$SECONDS" -ge "$boundary_deadline" ]; then echo 'capture packet boundary unavailable within 300 seconds' >&2; return 1; fi
-    [ -f "$LOG/ctrl.ts" ] || { sleep 0.01; continue; }
-    bytes=$(wc -c < "$LOG/ctrl.ts")
-    if [ "$((bytes % 188))" -eq 0 ]; then break; fi
-    sleep 0.01
-  done
-  printf '%s\t%s\t%s\n' "$label" "$command" "$((bytes / 188))" >> "$LOG/ctrl-events.tsv"
-  printf '%s\n' "$command" >&3
-}
 cleanup_control_client() {
   cleanup_rc=$?
   trap - EXIT
@@ -697,9 +706,9 @@ cleanup_control_client() {
 }
 trap cleanup_control_client EXIT
 sleep 20
-record_control_boundary channel-21 'channel 21'
+printf '%s\n' 'channel 21' >&3
 sleep 20
-record_control_boundary channel-22 'channel 22'
+printf '%s\n' 'channel 22' >&3
 sleep 20
 printf '%s\n' quit >&3
 exec 3>&-
@@ -709,28 +718,39 @@ CTRL_PID=
 rm "$CTRL_FIFO"
 ```
 
-S-CTRLのTSは、既存§6が除外する2つのretune境界だけをhelper入力から除外する。上のdriverは各control commandをFIFOへ書く直前、TS fileが188-byte packet境界に揃った時点のbyte offsetとcommandを`ctrl-events.tsv`へ記録する。packet indexはそのoffsetを188で割ったzero-based値であり、CC errorから境界を逆算しない。まず除外なしでhelperを実行し、JSONの`continuity_error_indices`とTSDuck `tsanalyze --normalized`出力を保存する。境界一覧は記録済みcontrol eventから機械的に生成する。境界外のindexが1つでもある場合は失敗として停止する。境界indexが特定できない場合も除外せず判定保留にする。
+S-CTRLの切替境界はcommand送信時刻/file offsetやcontinuity errorから逆算しない。`ctrl.err`の完了したper-selection統計を使う。各行は`control: selection=<1-based> frequency_hz=<Hz> packets=<packets_written> bytes=<packets_written*188> status=complete`の形式でselection番号・選局周波数・packet/byte数・完了状態を記録する。run-error/output-error、`bytes=unknown`、欠落/重複/順序違い、0 packet、stats合計とTSファイルbyte数の不一致はfailまたは判定保留とし、境界除外しない。今回の入力はchannel 21、channel 22の2 selectionなので、後続selection開始indexは先行selectionの`packets`合計である。境界後はPIDごとに最初に現れるpacketのCC比較だけを除外し、ほかのCC不良は通常どおりfailする。helperのTEI/sync/framing検査は境界でも除外しない。
 
 ```sh
-if python3 "$TOOL/ts-check.py" "$LOG/ctrl.ts" > "$LOG/ctrl-ts-initial.json"; then INITIAL_RC=0; else INITIAL_RC=$?; fi
-printf '%s\n' "$INITIAL_RC" > "$LOG/ctrl-ts-initial.rc"
-tsanalyze --normalized "$LOG/ctrl.ts" > "$LOG/ctrl-tsanalyze.txt" 2>&1
-awk -F '\t' '($1 == "channel-21" || $1 == "channel-22") { print $3 }' \
-  "$LOG/ctrl-events.tsv" > "$LOG/ctrl-boundaries.txt"
-set -- $(cat "$LOG/ctrl-boundaries.txt")
-test "$#" -eq 2
-test "$(wc -l < "$LOG/ctrl-events.tsv")" -ge 2
-python3 - "$LOG/ctrl-ts-initial.json" "$LOG/ctrl-boundaries.txt" <<'PY'
-import json, sys
-errors=json.load(open(sys.argv[1]))['continuity_error_indices']
-boundaries=[int(x) for x in open(sys.argv[2])]
-if len(set(boundaries)) != 2 or not set(errors).issubset(set(boundaries)):
-    raise SystemExit('continuity mismatch is outside the two recorded retune boundaries')
+python3 - "$LOG/ctrl.err" "$LOG/ctrl.ts" "$LOG/ctrl-boundaries.txt" <<'PY'
+import re, sys
+from pathlib import Path
+pattern = re.compile(r'^control: selection=(\d+) frequency_hz=(\d+) packets=(\d+) bytes=(\d+) status=complete$')
+stats = []
+for line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
+    if line.startswith('control: selection='):
+        match = pattern.fullmatch(line)
+        if match is None:
+            raise SystemExit('incomplete or failed per-selection statistics')
+        selection, frequency, packets, byte_count = map(int, match.groups())
+        if byte_count != packets * 188 or packets <= 0:
+            raise SystemExit('per-selection packet/byte count is invalid')
+        stats.append((selection, frequency, packets, byte_count))
+if [row[0] for row in stats] != [1, 2]:
+    raise SystemExit('expected exactly two completed selections in order')
+ts_bytes = Path(sys.argv[2]).stat().st_size
+if ts_bytes % 188 or sum(row[3] for row in stats) != ts_bytes:
+    raise SystemExit('per-selection byte total does not match the TS file')
+boundary = stats[0][2]
+if not 0 < boundary < ts_bytes // 188:
+    raise SystemExit('retune boundary is outside the TS packet range')
+Path(sys.argv[3]).write_text(f'{boundary}\n', encoding='ascii')
 PY
-python3 "$TOOL/ts-check.py" "$LOG/ctrl.ts" --exclude-cc-at "$1" --exclude-cc-at "$2" > "$LOG/ctrl-ts-check.json"
+CTRL_BOUNDARY=$(cat "$LOG/ctrl-boundaries.txt")
+python3 "$TOOL/ts-check.py" "$LOG/ctrl.ts" --retune-boundary-at "$CTRL_BOUNDARY" > "$LOG/ctrl-ts-check.json"
+tsanalyze --normalized "$LOG/ctrl.ts" > "$LOG/ctrl-tsanalyze.txt" 2>&1
 ```
 
-helperは指定されたpacketのCC比較だけを除外し、その箇所の不一致を`excluded_cc_mismatches`へ残す。sync/remainder/TEIは除外されず、境界外CC不良はexit 1のまま拒否する。2点を根拠付きで特定できない場合や初回JSONの不一致位置が2点と一致しない場合は除外なしの結果を不合格/保留として記録する。
+helperの`excluded_cc_mismatches`にはretune境界後、PIDごとの最初のpacketで実際にCC差があったindexだけが残る。境界外CC不良、sync/remainder/TEI/invalid packetはexit 1で拒否される。raw TSDuck continuity値も保存し、helperが記録したPID別境界indexと区別する。
 
 ```sh
 # S-SIG（clientを止め、daemonは維持）
