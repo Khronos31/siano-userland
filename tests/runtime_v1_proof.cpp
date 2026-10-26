@@ -673,6 +673,33 @@ int main()
         return 1;
     }
 
+    AssemblyDiagnostic product_diagnostic{};
+    product_diagnostic.reason = AssemblyDiagnosticReason::listener;
+    product_diagnostic.listener.reason =
+        dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_missing;
+    product_diagnostic.listener.directory_layer =
+        dtv::userland::host_listener_context::RuntimeDirectoryLayer::product;
+    const std::string product_detail = describe_assembly_diagnostic(product_diagnostic);
+    if (product_detail.find("product directory") == std::string::npos ||
+        product_detail.find("--runtime-dir") == std::string::npos ||
+        product_detail.find("--instance") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime product directory diagnostic mismatch: %s\n",
+                     product_detail.c_str());
+        return 1;
+    }
+
+    AssemblyDiagnostic encoding_diagnostic{};
+    encoding_diagnostic.reason = AssemblyDiagnosticReason::listener;
+    encoding_diagnostic.listener.reason =
+        dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_encoding;
+    const std::string encoding_detail = describe_assembly_diagnostic(encoding_diagnostic);
+    if (encoding_detail.find("valid UTF-8") == std::string::npos ||
+        encoding_detail.find("--runtime-dir") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime encoding diagnostic mismatch: %s\n",
+                     encoding_detail.c_str());
+        return 1;
+    }
+
     auto assembly = assemble_siano_context(config, instance, runtime_dir.c_str(),
                                            epoch.value(), SIANO_RUNTIME_VERSION);
     if (!assembly) {

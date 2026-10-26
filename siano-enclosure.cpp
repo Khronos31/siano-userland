@@ -393,6 +393,7 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
 std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic)
 {
     using dtv::userland::host_listener_context::ListenerDiagnosticReason;
+    using dtv::userland::host_listener_context::RuntimeDirectoryLayer;
     using dtv::userland::host_runtime::EndpointDiagnosticReason;
     if (diagnostic.reason == AssemblyDiagnosticReason::group_requires_runtime_directory)
         return "--group on POSIX requires --runtime-dir; set a protected runtime namespace root";
@@ -416,6 +417,11 @@ std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic)
     }
     if (diagnostic.reason == AssemblyDiagnosticReason::listener) {
         const auto reason = diagnostic.listener.reason;
+        const auto layer = diagnostic.listener.directory_layer;
+        const char* layer_name = layer == RuntimeDirectoryLayer::product ? "product" :
+            layer == RuntimeDirectoryLayer::version ? "version" :
+            layer == RuntimeDirectoryLayer::instance ? "instance" : "runtime root";
+        const bool root_layer = layer == RuntimeDirectoryLayer::runtime_root;
         if (reason == ListenerDiagnosticReason::endpoint_path &&
             diagnostic.listener.endpoint.reason == EndpointDiagnosticReason::path_too_long) {
             const auto& endpoint = diagnostic.listener.endpoint;
@@ -425,18 +431,38 @@ std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic)
                 std::to_string(endpoint.native_capacity) + " bytes including NUL (requires " +
                 std::to_string(endpoint.required_bytes) + " bytes); shorten --runtime-dir or --instance";
         }
+        if (reason == ListenerDiagnosticReason::runtime_directory_encoding)
+            return "invalid --runtime-dir: path must be valid UTF-8 for the Windows runtime namespace";
         if (reason == ListenerDiagnosticReason::runtime_directory_missing)
-            return "--runtime-dir does not exist; create the runtime namespace directory with the daemon user's ownership";
+            return root_layer
+                ? "--runtime-dir does not exist; create the runtime namespace directory with the daemon user's ownership"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory is missing; check --runtime-dir, --instance, and daemon-user ownership";
         if (reason == ListenerDiagnosticReason::runtime_directory_lookup)
-            return "cannot inspect --runtime-dir; check the path and directory access permissions";
+            return root_layer
+                ? "cannot inspect --runtime-dir; check the path and directory access permissions"
+                : std::string("cannot inspect the runtime namespace ") + layer_name +
+                    " directory; check --runtime-dir, --instance, and directory access permissions";
         if (reason == ListenerDiagnosticReason::runtime_directory_type)
-            return "--runtime-dir is not a directory; provide an existing runtime namespace directory";
+            return root_layer
+                ? "--runtime-dir is not a directory; provide an existing runtime namespace directory"
+                : std::string("runtime namespace ") + layer_name +
+                    " path is not a directory; check --runtime-dir and --instance";
         if (reason == ListenerDiagnosticReason::runtime_directory_owner)
-            return "--runtime-dir is not owned by the daemon user; use a directory owned by the current user";
+            return root_layer
+                ? "--runtime-dir is not owned by the daemon user; use a directory owned by the current user"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory is not owned by the daemon user; check --runtime-dir and --instance ownership";
         if (reason == ListenerDiagnosticReason::runtime_directory_mode)
-            return "--runtime-dir is group- or other-writable; remove those write permissions without weakening ownership checks";
+            return root_layer
+                ? "--runtime-dir is group- or other-writable; remove those write permissions without weakening ownership checks"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory has unsafe permissions; remove disallowed write permissions without weakening ownership checks";
         if (reason == ListenerDiagnosticReason::runtime_directory_security)
-            return "--runtime-dir failed the platform's combined security check; use a local directory owned and protected for the current user";
+            return root_layer
+                ? "--runtime-dir failed the platform's combined security check; use a local directory owned and protected for the current user"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory failed the platform's security check; check --runtime-dir, --instance, ownership, and permissions";
     }
     return {};
 }
