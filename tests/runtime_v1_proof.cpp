@@ -307,8 +307,9 @@ int run_control_ts_failure(const std::string& runtime_dir,
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
     std::fprintf(stderr, "PROOF control_ts_failure exit=%d stderr=%s",
                  WEXITSTATUS(status), errors.c_str());
-    return WEXITSTATUS(status) == 0 && errors.find("control: NOT_READY") !=
-        std::string::npos ? 0 : 1;
+    return WEXITSTATUS(status) == 0 &&
+        errors.find("control: runtime namespace is missing") != std::string::npos &&
+        errors.find("--runtime-dir and --instance") != std::string::npos ? 0 : 1;
 }
 
 bool terminate_child_bounded(pid_t pid, int& status)
