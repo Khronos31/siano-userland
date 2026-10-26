@@ -188,6 +188,8 @@ packaging-test:
 	python3 scripts/check-release-version.py --self-test
 	python3 scripts/audit-artifact.py --self-test
 	python3 scripts/package-source.py --self-test
+	python3 -m unittest discover -s tests -p 'test_release_verify.py'
+	python3 -m unittest discover -s tests -p 'test_release_runs.py'
 	python3 scripts/check-workflow-invariants.py
 
 linux-static:
