@@ -18,6 +18,7 @@ extern "C" {
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -301,6 +302,53 @@ int run_control_ts_failure(const std::string& runtime_dir,
         std::string::npos ? 0 : 1;
 }
 
+bool terminate_child_bounded(pid_t pid, int& status)
+{
+    kill(pid, SIGTERM);
+    for (unsigned i = 0U; i < 1000U; ++i) {
+        const pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) return true;
+        if (waited < 0 && errno != EINTR) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    kill(pid, SIGKILL);
+    for (unsigned i = 0U; i < 1000U; ++i) {
+        const pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) return true;
+        if (waited < 0 && errno != EINTR) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+bool prove_bounded_child_cleanup()
+{
+    struct sigaction ignored{};
+    struct sigaction original{};
+    ignored.sa_handler = SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    if (sigaction(SIGTERM, &ignored, &original) != 0) return false;
+    const pid_t pid = fork();
+    if (pid != 0) sigaction(SIGTERM, &original, nullptr);
+    if (pid == 0) {
+        const rlimit address_space{512U * 1024U * 1024U, 512U * 1024U * 1024U};
+        const rlimit cpu_time{10U, 10U};
+        const rlimit file_size{1024U * 1024U, 1024U * 1024U};
+        if (setrlimit(RLIMIT_AS, &address_space) != 0 ||
+            setrlimit(RLIMIT_CPU, &cpu_time) != 0 ||
+            setrlimit(RLIMIT_FSIZE, &file_size) != 0) _exit(126);
+        for (;;) pause();
+    }
+    if (pid < 0) return false;
+    int status = 0;
+    const bool reaped = terminate_child_bounded(pid, status);
+    const bool killed = reaped && WIFSIGNALED(status) &&
+                        WTERMSIG(status) == SIGKILL;
+    std::fprintf(stderr, "PROOF bounded_setup_cleanup reaped=%d sigkill=%d\n",
+                 reaped, killed);
+    return killed;
+}
+
 int run_control_ts_write_failure(const std::string& runtime_dir,
                                  const std::string& instance,
                                  siano_device& device, SianoFamily& family)
@@ -346,20 +394,20 @@ int run_control_ts_write_failure(const std::string& runtime_dir,
     if (error_flags < 0 || fcntl(error_pipe[0], F_SETFL,
                                   error_flags | O_NONBLOCK) != 0) {
         close(input_pipe[1]);
-        kill(pid, SIGTERM);
-        waitpid(pid, nullptr, 0);
+        int status = 0;
+        const bool reaped = terminate_child_bounded(pid, status);
         close(error_pipe[0]);
         unlink(output.c_str());
-        return -1;
+        return reaped ? -1 : -2;
     }
     const int output_reader = open(output.c_str(), O_RDONLY | O_NONBLOCK);
     if (output_reader < 0) {
         close(input_pipe[1]);
-        kill(pid, SIGTERM);
-        waitpid(pid, nullptr, 0);
+        int status = 0;
+        const bool reaped = terminate_child_bounded(pid, status);
         close(error_pipe[0]);
         unlink(output.c_str());
-        return -1;
+        return reaped ? -1 : -2;
     }
 
     constexpr std::size_t max_stderr_bytes = 65536U;
@@ -510,6 +558,10 @@ SianoRuntimeConfig base_config()
 
 int main()
 {
+    if (!prove_bounded_child_cleanup()) {
+        std::fprintf(stderr, "PROOF bounded setup cleanup failed\n");
+        return 1;
+    }
     // 1. The published LIST is the adopted shape: one terrestrial receiver 0
     //    and an empty reader set (no external CARD).
     const std::string runtime_dir = make_private_dir();
