@@ -882,6 +882,7 @@ x=json.load(open(sys.argv[1],encoding='utf-8')); devices=[d for e in x.get('encl
 for port in sys.argv[2:]:
  if not any(d.get('port') == port and d.get('usb') == '3275:0080' for d in devices): raise SystemExit(f'not a discovered PX-S1UD: {port}')
 PY
+if [ "$?" -ne 0 ]; then exit 1; fi
 "$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" \
   > "$LOG/daemon-a.out" 2> "$LOG/daemon-a.err" & PID_A=$!
 cleanup_dual() {
@@ -923,6 +924,7 @@ if sys.argv[2] == sys.argv[3]: raise SystemExit('PORT_A and PORT_B must be disti
 for port in sys.argv[2:]:
  if not any(d.get('port') == port and d.get('usb') == '3275:0080' for d in devices): raise SystemExit(f'not a discovered PX-S1UD: {port}')
 PY
+if [ "$?" -ne 0 ]; then exit 1; fi
 "$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-a.out" 2> "$LOG/disc-daemon-a.err" & PID_A=$!
 "$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-b.out" 2> "$LOG/disc-daemon-b.err" & PID_B=$!
 "$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/disc-a.ts" > "$LOG/disc-a.out" 2> "$LOG/disc-a.err" & CLIENT_A=$!
@@ -971,6 +973,7 @@ x=json.load(open(sys.argv[1],encoding='utf-8'))
 if not any(d.get('port') == sys.argv[2] and d.get('usb') == '3275:0080' for e in x.get('enclosures',[]) for d in e.get('devices',[])):
  raise SystemExit('reconnected port is not a discovered PX-S1UD')
 PY
+if [ "$?" -ne 0 ]; then FAIL=1; exit 1; fi
 RT_A_RECOVERY="$RT/a-recovery"
 "$DAEMON" --device "usb:$PORT_A" --instance a-recovery --firmware "$FW" --runtime-dir "$RT_A_RECOVERY" 2> "$LOG/disc-recovery-daemon.err" & PID_A_RECOVERY=$!
 "$C" --instance a-recovery --runtime-dir "$RT_A_RECOVERY" status > "$LOG/disc-recovery-status.txt"
@@ -1028,6 +1031,7 @@ x=json.load(open(sys.argv[1],encoding='utf-8'))
 if not any(d.get('port') == sys.argv[2] and d.get('usb') == '3275:0080' for e in x.get('enclosures',[]) for d in e.get('devices',[])):
  raise SystemExit('reconnected port is not a discovered PX-S1UD')
 PY
+if [ "$?" -ne 0 ]; then FAIL=1; exit 1; fi
 "$DAEMON" --device "usb:$PORT" --instance "$INSTANCE" --firmware "$FW" --runtime-dir "$RT" \
   > "$LOG/reconnected-daemon.out" 2> "$LOG/reconnected-daemon.err" & DAEMON_PID=$!
 "$C" --instance "$INSTANCE" --runtime-dir "$RT" status > "$LOG/reconnected-status.out" 2> "$LOG/reconnected-status.err"
