@@ -117,9 +117,9 @@ Sianoは`TARGET_USB=3275:0080`、`EXPECTED_NODES=1`とする。
 
 結果が期待数と完全一致した場合だけ、JSONの`selected`に記録された各pathへ`termux-usb -r <path>`（または製品固有の`-r -e`）を実行する。USB permission後にdaemonを開始する。再接続時は古いpath/FDを使わず、同じ列挙・sysfs照合を再実行する。sysfs未読・node未対応・無許可候補複数は合格ではなく未達として記録する。
 
-環境依存状態を変える前に、承認済みの試験用account/add-on、保護されたrun専用LOG、復元可能な退避を用意する。次は手順を記載したものであり、今回の作業では実行しない。
+正式検証でE02/E03/E07等により環境状態を変更する場合は、ユーザー承認済みの対象・値・影響範囲を確定し、保護されたrun専用LOGと復元可能な状態保存を準備してから実行する。適用後に必要な試験を行い、終了時に保存値へ戻してreadback/比較する。承認範囲を超える変更やHA Core/mirakcの再起動は行わない。
 
-- **E02 HAOS/Supervisor options:** `/addons/self/info`の`options`は対象addon自身のapp recordに保存されたraw optionsで、`/options/config`のdefaults・secret解決後の値とは異なる。Supervisor APIの実装は[apps.py](https://github.com/home-assistant/supervisor/blob/main/supervisor/api/apps.py#L1620-L1700)および[options endpoints](https://github.com/home-assistant/supervisor/blob/main/supervisor/api/apps.py#L1832-L2015)を参照。対象addon内で認可済みtokenを使い、raw表現はmode 600のprivate backupにだけ保存する。値を画面・共有log・evidenceへ出さない。validateの`valid`がtrue以外、または読み出し/HTTP/JSON処理が失敗した場合はoptions POST前に終了する。Supervisorは本試験で操作しない。
+- **E02 HAOS/Supervisor options:** `/addons/self/info`の`options`は対象addon自身のapp recordに保存されたraw optionsで、`/options/config`のdefaults・secret解決後の値とは異なる。Supervisor APIの実装は[apps.py](https://github.com/home-assistant/supervisor/blob/main/supervisor/api/apps.py#L1620-L1700)および[options endpoints](https://github.com/home-assistant/supervisor/blob/main/supervisor/api/apps.py#L1832-L2015)を参照。対象addon内で認可済みtokenを使い、raw表現はmode 600のprivate backupにだけ保存する。値を画面・共有log・evidenceへ出さない。validateの`valid`がtrue以外、または読み出し/HTTP/JSON処理が失敗した場合はoptions POST前に終了する。承認済み範囲内で対象addonの起動・停止とoptions復元/比較を行い、HA Core/mirakcは再起動しない。
   ```sh
   set -eu
   umask 077
@@ -250,7 +250,7 @@ ha addons restart "$ADDON_SLUG"
   if [ "$RESTORE_RC" -ne 0 ]; then echo 'access state restoration incomplete; retain evidence and stop' >&2; exit "$RESTORE_RC"; fi
   ```
 
-- **E07 Android stay-awake:**初回ADB readが非0/空/不正値なら書込み前に停止する。`null`は未設定、十進整数は保存値として区別する。権限・readback失敗を無視しない。次は端末設定に触れないsynthetic確認用の状態遷移であり、実Androidへは実行しない。
+- **E07 Android stay-awake:**初回ADB readが非0/空/不正値なら書込み前に停止する。`null`は未設定、十進整数は保存値として区別する。権限・readback失敗を無視しない。正式検証では承認済み端末で設定を適用し、試験後に保存値へ戻してreadback/比較する。synthetic fixtureは局所確認に限り、実端末での検証を代替しない。
   ```sh
   set -eu
   LOG='<private-run-log>'
@@ -545,7 +545,7 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
 4. 対象 claim ごとに `継承` / `今回再検証` / `未認定` / `対象外` を根拠付きで記録する。時間経過・release 回数だけを理由にした再検証はしない。
 5. 前回の長時間試験の日付やrelease数は事実情報として記録できるが、エージェントがsoak有無・時間・OSを決める規則として使わない。
 
-影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。選択する短時間実機確認のarchiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は該当版の `docs/release-validation/<version>.md` に従う。
+影響分類が複数にまたがる、依存範囲が不明、または非影響を証明できない場合は `unknown/ambiguous` として、影響し得るpath集合をユーザーへの説明に含める。適用対象の各archiveは影響判定に関係なくcandidateそのものを使い、適用するarchive/OS頻度は該当版の `docs/release-validation/<version>.md` に従う。
 
 ## 2. source / CI / 候補アーカイブ判定（毎回）
 
@@ -588,9 +588,9 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 
 ## 3. 配布アーカイブ別手順
 
-1. 該当releaseの全配布archiveを対応するnative OS/ABIで確認する。下表はarchiveごとの操作方法とnative環境の対応表である。同じx86_64実行ファイルを複数のaccess pathで重複実行する場合はOS/ABIのnative確認と分けて記録する。
+1. 毎release、全配布archiveを対応するnative OS/ABIで確認する。下表はarchiveごとの操作方法とnative環境の対応表であり、版別matrixは具体candidateと環境を割り当てる。archiveの対象集合は部分選択にしない。同じx86_64実行ファイルを複数のaccess pathで重複実行する場合はOS/ABIのnative確認と分けて記録する。
 
-| 配布artifact | 環境例 | 使用機器 | 選択時の短時間確認 |
+| 配布artifact | 環境例 | 使用機器 | 毎release必須の短時間確認 |
 |---|---|---|---|
 | `linux-x86_64` | E03 AnduinOS x86_64（glibc系host上で配布static binaryを実行） | PX-S1UD 1台 | §7.1aの列挙→接続中受信→USB切断で有限終了→再接続後の再列挙と30秒受信→残留確認 |
 | `linux-aarch64` | E15-G Fedora aarch64 / L4T | PX-S1UD 1台 | 同上。現候補archiveをnative実行 |
@@ -601,7 +601,7 @@ CI が行う build・audit・smoke を成功後にローカル再実行しない
 | `windows-x64` | E17 Windows 11 x86_64 / WinUSB | PX-S1UD 1台 | 同上。Windows固有手順で列挙、30秒受信、停止、切断/再接続、再受信 |
 
 2. 必須確認の一連の操作に総時間上限は設けない。候補archiveのhash確認・展開、firmware hash確認、アンテナ/電源、host準備、ログ先作成は検証開始前に済ませる。`sianod --list-json`でUSB discoveryを確認し、daemon起動後は`sianoctl status/list`、単体receiverの短時間受信、通常client停止、USB切断終了と再接続後の再列挙/受信、process残留なしを確認する。USB抜差しはユーザーが実施する。各物理操作を依頼する直前にHAOS/SCS側でCodexは`beep`、Claude Codeは`vibe`を実行し、依頼した時点から最大5分待つ。5分以内に操作が行われなければ、その操作を未完了として記録し、物理deviceを使う工程を中断する。各archiveで別々のrunを記録し、別artifactや過去candidateの結果を今回の結果に代用しない。
-3. 30秒受信のTSは§6で検査する。5分を超える連続負荷は短時間確認に混ぜず、§5のsoakとしてユーザーの決定を待つ。各runの記録にはarchive名/SHA-256、source commit、環境ID/OS version/architecture、USB `port=`、実施時刻（UTC）、コマンド、終了値、TS検査結果、残留の有無を残す。
+3. 30秒受信のTSは§6で検査する。毎release必須の代表Linux x86_64 2時間soakと初回/major時間条件は共通頻度表に従う。これらとは別の5分を超える追加連続負荷は短時間確認に混ぜず、§5のsoakとしてユーザーの決定を待つ。各runの記録にはarchive名/SHA-256、source commit、環境ID/OS version/architecture、USB `port=`、実施時刻（UTC）、コマンド、終了値、TS検査結果、残留の有無を残す。
 4. host/deviceが使えない、archiveが起動しない、または必須物理操作を実施できない場合は該当artifactのgate未完了とする。環境を別のOS/ABIで黙って代替せず、ユーザーに状況と必要な選択肢を提示する。
 
 ## 4. 変更分類と対象別適格性確認
@@ -627,7 +627,7 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 
 ## 5. 連続受信
 
-短時間回帰とは分けて連続受信を行う。毎releaseの代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。ユーザーから別途soakが指示された場合は、追加分の実施有無・時間・OSをその指示に従う。
+短時間回帰とは分けて連続受信を行う。毎release必須の代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。これらとは別の追加soakはユーザーから指示された場合に実施有無・時間・OSを記録する。
 
 各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、TS品質、process/FD/RSSの観測値、cleanupを記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
 
@@ -780,16 +780,66 @@ wait "$CLIENT_B"; RC_B=$?
 ```
 
 ```sh
-# S-DISC（物理。ユーザーが実施）
-# S-DUAL中にdevice Aを抜く。Aのclient終了値とBの継続を個別記録する。
-# 切断後は該当daemonを通常停止し、USB再接続後に--list-jsonでportを確認して同じinstance/runtimeで再取得する。
-# 1台/1 USB portしかない環境ではそのdeviceの挙動のみを確認し、2台試験と混同しない。
-kill -INT "$PID_A"; wait "$PID_A"
+# S-DISC（2台。S-DUALの別run。物理抜去/再接続はユーザーが実施）
+S=600
+"$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" 2> "$LOG/disc-daemon-a.err" & PID_A=$!
+"$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" 2> "$LOG/disc-daemon-b.err" & PID_B=$!
+"$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/disc-a.ts" 2> "$LOG/disc-a.err" & CLIENT_A=$!
+"$B" --instance b --runtime-dir "$RT" -c 21 -t "$S" -o "$LOG/disc-b.ts" 2> "$LOG/disc-b.err" & CLIENT_B=$!
+sleep 20
+# beep/vibeの直後にユーザーへdevice AのUSB物理抜去を依頼し、依頼時刻と抜去確認時刻を記録する（応答待ちは最大5分）。
+# 抜去確認から120秒以内にAが自然終了すること。timeout時は未達として記録し、Aのowned clientをcleanupする。
+A_HUNG=1
+for i in $(seq 1 120); do
+  A_STATE=$(ps -o stat= -p "$CLIENT_A" | tr -d ' ')
+  case "$A_STATE" in ''|Z*) A_HUNG=0; break ;; esac
+  sleep 1
+done
+if [ "$A_HUNG" -eq 1 ]; then kill -TERM "$CLIENT_A"; fi
+if wait "$CLIENT_A"; then RC_A=0; else RC_A=$?; fi
+printf 'hung=%s exit=%s\n' "$A_HUNG" "$RC_A" > "$LOG/disc-a.rc"
+# 期待: hung=0 exit=7。device Bのclientが生存し、A抜去後も継続していることを記録する。
+B_STATE=$(ps -o stat= -p "$CLIENT_B" | tr -d ' ')
+case "$B_STATE" in Z*|'') B_CONTINUED=0 ;; *) B_CONTINUED=1 ;; esac
+printf '%s\n' "$B_CONTINUED" > "$LOG/disc-b-continued-after-a.txt"
+# A daemonを通常停止してwaitし、B client/daemonは停止せずS=600秒完了まで動作させる。
+if kill -0 "$PID_A" 2>/dev/null; then kill -INT "$PID_A"; fi
+if wait "$PID_A"; then RC_DAEMON_A=0; else RC_DAEMON_A=$?; fi
+printf '%s\n' "$RC_DAEMON_A" > "$LOG/disc-daemon-a.rc"
+if wait "$CLIENT_B"; then RC_B=0; else RC_B=$?; fi
+printf '%s\n' "$RC_B" > "$LOG/disc-b.rc"
+# 期待: B_CONTINUED=1、B client exit 0。BのTSを§6で検査する。
+python3 "$TOOL/ts-check.py" "$LOG/disc-b.ts" > "$LOG/disc-b.ts-check.json"
+if kill -0 "$PID_B" 2>/dev/null; then kill -INT "$PID_B"; fi
+if wait "$PID_B"; then RC_DAEMON_B=0; else RC_DAEMON_B=$?; fi
+printf '%s\n' "$RC_DAEMON_B" > "$LOG/disc-daemon-b.rc"
+# beep/vibeの直後にユーザーへdevice Aの物理再接続を依頼し、依頼/確認時刻を記録する（応答待ちは最大5分）。
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json"
-# portを再確認した後、上記S-DUALと同じdaemon起動・S-RXを実行
+# 新しいportを特定してから、旧runtimeを再利用せず新しいinstance/runtimeでAを再取得する。
+PORT_A=<reconnected-port>
+RT_A_RECOVERY="$RT/a-recovery"
+"$DAEMON" --device "usb:$PORT_A" --instance a-recovery --firmware "$FW" --runtime-dir "$RT_A_RECOVERY" 2> "$LOG/disc-recovery-daemon.err" & PID_A_RECOVERY=$!
+"$C" --instance a-recovery --runtime-dir "$RT_A_RECOVERY" status > "$LOG/disc-recovery-status.txt"
+"$B" --instance a-recovery --runtime-dir "$RT_A_RECOVERY" -c 22 -t 60 -o "$LOG/disc-reconnected-a.ts" 2> "$LOG/disc-reconnected-a.err" & CLIENT_A_RECOVERY=$!
+if wait "$CLIENT_A_RECOVERY"; then RC_A_RECOVERY=0; else RC_A_RECOVERY=$?; fi
+printf '%s\n' "$RC_A_RECOVERY" > "$LOG/disc-reconnected-a.rc"
+# 期待: 新runtimeで60秒受信exit 0、TS §6 pass。その後daemonを通常停止し全process/runtime残留なし。
+if kill -0 "$PID_A_RECOVERY" 2>/dev/null; then kill -INT "$PID_A_RECOVERY"; fi
+if wait "$PID_A_RECOVERY"; then RC_DAEMON_A_RECOVERY=0; else RC_DAEMON_A_RECOVERY=$?; fi
+printf '%s\n' "$RC_DAEMON_A_RECOVERY" > "$LOG/disc-recovery-daemon.rc"
+python3 "$TOOL/ts-check.py" "$LOG/disc-reconnected-a.ts" > "$LOG/disc-reconnected-a.ts-check.json"
+find "$RT" "$RT_A_RECOVERY" \( -type s -o -type p \) -print > "$LOG/disc-ipc-remnants.txt"
+ps -p "$PID_A" -o pid=,stat=,command= > "$LOG/disc-process-a-after.txt" 2>&1 || :
+ps -p "$PID_B" -o pid=,stat=,command= > "$LOG/disc-process-b-after.txt" 2>&1 || :
+ps -p "$PID_A_RECOVERY" -o pid=,stat=,command= > "$LOG/disc-process-recovery-after.txt" 2>&1 || :
+test ! -s "$LOG/disc-ipc-remnants.txt"
+test ! -s "$LOG/disc-process-a-after.txt"
+test ! -s "$LOG/disc-process-b-after.txt"
+test ! -s "$LOG/disc-process-recovery-after.txt"
+# 1台/1 USB portの7.1a hotplug試験はこの2台試験の代用にならず、本手順もその代用にならない。
 ```
 
-### 7.1a 選択された短時間実機確認（1台）
+### 7.1a 配布archiveごとの必須短時間実機確認（1台）
 
 E01/E02/E03/E04/E15-G/E05/E06/E07/E17の各配布archiveで、各環境固有準備を済ませてから個別に行う。PX-S1UDを接続し、`$DAEMON --list-json`の`enclosures[].devices[]`から`model=PX-S1UD`, `usb=3275:0080`, `port=`を記録する。`sianoctl list/status`のdaemon inventoryがreadyであることも確認する。候補archiveの同じdaemon/clientと同梱firmwareを使う。
 
@@ -1093,10 +1143,10 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 次をすべて満たすまで Stable 公開へ進まない。
 
 - CI・artifact audit・source/license・checksum gate が成功。
-- final candidateについて、該当版の `docs/release-validation/<version>.md` で当該releaseに適用される短時間matrixが成功し、ユーザーが選択した場合はSoakの指定試験も完了している。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
+- final candidateについて、毎release必須の代表Linux x86_64 2時間soakと全配布archiveの短時間matrixが成功している。初回/majorの追加時間条件は共通頻度表に従い、これらとは別の追加soakはユーザーが指定した場合に完了する。soakのFD数・RSSが最終観測まで安定化しない持続増加を示し、外部要因を特定できない場合は`判定保留`とし、公開しない。
 - README の各 claim が実証または適格な baseline 継承に対応し、未試験の組合せを認定表示していない。
 - crash、hang、stale state、再接続不能、重大な未解決 issue がない。
-- 短時間matrixに未完了の配布artifactがある場合はStable gate未完了とし、support表示だけで完了扱いしない。
+- 全配布archiveに適用される短時間matrixに未完了のartifactがある場合はStable gate未完了とし、support表示だけで完了扱いしない。
 - §2.5の同一run内byte一致確認が成功している。
 - README、COPYING、LICENCE.siano、checksum、support表示、release archiveの内容が一致し、公開前レビュー済み。
 
