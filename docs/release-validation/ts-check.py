@@ -12,6 +12,7 @@ def inspect(path, excluded_cc):
     remainder = len(data) % 188
     tei = 0
     continuity_errors = 0
+    continuity_error_indices = []
     excluded_seen = []
     previous = {}
     packets = len(data) // 188
@@ -34,6 +35,7 @@ def inspect(path, excluded_cc):
                     excluded_seen.append(index)
                 else:
                     continuity_errors += 1
+                    continuity_error_indices.append(index)
             previous[pid] = counter
 
     return {
@@ -44,6 +46,7 @@ def inspect(path, excluded_cc):
         "sync_errors": sync_errors,
         "tei": tei,
         "continuity_errors": continuity_errors,
+        "continuity_error_indices": continuity_error_indices,
         "excluded_cc_indices": sorted(excluded_cc),
         "excluded_cc_mismatches": excluded_seen,
     }
