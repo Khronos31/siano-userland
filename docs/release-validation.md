@@ -561,27 +561,77 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
    - `siano-ts-<version>-windows-x64.zip`
    - `siano-ts-<version>-source.tar.gz`
 4. 候補 commit が変わったら、その commit の CI と artifact を取り直す。PR run や旧 candidate、手元 build を代用しない。
-5. `release.yml` の `Package, audit, and compare deterministic archives` step が、同一run内で全archiveを2回packageしてbyte一致を確認していること、Windows jobの`reproducible-windows-build.ps1`が成功していることを確認する。正規化（timestamp等のマスク）による一致は認めない。
-6. 工程4の公開後、GitHub Releaseからassetを新しい空ディレクトリへ取得し、試験に使ったcandidateの`SHA256SUMS`と`cmp`で一致すること、および各archiveがmacOSでは`shasum -a 256 -c`、Linuxでは`sha256sum -c`を通ることを確認する。差があれば公開を取り下げて原因を調べる。比較したrunとrelease、判定を記録する。
+5. **同一runのpackage・manifest・checksum整合（必須）:** 同じ成功runのsource jobがsource archiveを2回packageして`cmp`し、binary package stepが7 binary archiveを2回packageしてそれぞれ`cmp`し、Windowsの2回clean buildも成功していることを確認する。同じrunの`release-candidate`から8 archiveを取り出し、binary manifestの`source_ref`とsource manifestの`source_ref`/`resolved_commit`がrunの`headSha`を示し、source manifestの`tree`がそのcommitのtreeであること、各archiveの内側manifest/checksumが全memberの実値と整合すること、外側`SHA256SUMS`が8 archiveを過不足なく列挙して実archive hashと一致することを確認する。これは同一run内の再package確認であり、別runの再現性確認ではない。
+6. **同一candidate commitの独立2 run（必須）:** 成功した別run IDの`release-candidate`を別々の空directoryへ取得する。両runの`headSha`は固定candidate commitと同一、run IDは異なり、clean CI runであることを確認し、IDを版別記録の`candidate_run_id`/`reproduction_run_id`へ記録する。各runの外側checksumを各archiveの実hashと照合してから、8 archiveそれぞれと`SHA256SUMS`全体を`cmp`で比較する。8 archiveと外側checksumのいずれか1 byteでも異なれば失敗とし、timestamp等の正規化比較で合格にしない。実効toolchain/build inputが同じと記録できないpairはinconclusiveであり、合格にしない。
+7. **結果文書commit後のtag build member比較（必須）:** §3の回帰/soak結果を記録した文書only commitとtag commitが一致し、製品code・script・workflow・build input・firmware・VERSIONがcandidateから変わっていないことを確認する。tag CIが生成した8 archiveと検査6を通ったcandidateの8 archiveを別directoryへ取得し、archive member inventory、member type、mode、symlink targetを照合したうえで、以下の欄限定許可差分以外のpayload bytesが完全一致することを確認する。tag bundle自身の`SHA256SUMS`は8 archiveの実hashと照合するが、candidateとtag bundleの外側`SHA256SUMS`同士は`cmp`しない。両者のarchive hashと許可差分一覧を記録する。
+
+   Binary archiveでは、`README.md`、`manifest.json`、内側`SHA256SUMS`を既決の範囲で比較対象とし、`manifest.json.source_ref`がtag commit、READMEのfiles記録が実際のREADME bytesと一致することを確認する。`DEPENDENCY-NOTICE.txt`では`source.ref`行だけ、`evidence/binary-audit.json`、`evidence/sianod-binary-audit.json`、`evidence/sianoctl-binary-audit.json`では`source_ref`値だけをtag commitに更新可能とする。`manifest.json.files`ではREADME、および上記4 memberの実bytesから再計算されるsha256記録だけを差分可能とし、sizeと他memberのrecordは一致必須とする。内側`SHA256SUMS`の変更もこれら許可memberの実hashを反映する行に限り、member一覧と全hashの自己整合を確認する。各evidence JSONのschema、platform、binary nameとbinary SHA-256、manifestの他field、firmwareとそのhash、noticeの他行を含む、列挙外の値やpayloadはcandidateと一致しなければならない。許可member自体も指定identity欄以外のbyte変更を認めない。
+
+   Source archiveでは既存の文書許可pathに加え、candidate inventoryに存在する当該versionの`repository/docs/release-validation/1.0.0.md`だけを許可文書へ加える。`source-manifest.json`の`source_ref`、`resolved_commit`、`tree`はtag commit/treeと一致し、files記録は既存許可文書・このversion記録・noticeの実hash/size以外すべて一致しなければならない。`DEPENDENCY-NOTICE.txt`では`source.ref`、`source.resolved_commit`、`source.tree`の3行だけをtag identityへ更新可能とする。source archive内側`SHA256SUMS`は許可された文書/noticeの実hashを反映する行だけが変わり得るため、member一覧と全hashの自己整合を確認する。その他のsource manifest metadataおよびpayloadはbyte一致しなければならない。`docs/`全体、他versionの記録、helper/scriptは許可差分にしない。
+
+   現在の`release.yml`は`workflow_dispatch`のみでtag push build/releaseとmember比較の実装はない。別PRで実装されるまで検査7は未実装・未検証のblocking gateとして記録し、dispatch runや候補archiveの公開で代替しない。実装後は版別記録に明示された`candidate_run_id`と`reproduction_run_id`だけを使ってartifactを取得し、同じcommitの最新2 runを自動選択してはならない。IDの欠落/重複、run失敗、head SHA不一致はfail closedとする。次のCLIへcandidate 2 run・tag bundleのflat root（8 archiveと`SHA256SUMS`を含む）を渡し、candidate SHAとtag SHAも固定する。artifactの取得・配置形はworkflow実装後に確認し、現在の未実装CLIを成功済みとは扱わない。
 
 ```sh
+set -eu
 gh workflow run release.yml --ref <candidate-ref>          # 未実行のときのみ
 gh run list --workflow release.yml --limit 10
-gh run view <run-id> --json headSha,conclusion
-gh run download <run-id> --name release-candidate --dir <new-empty-dir>
+RUN_A='<candidate-run-id-a>'
+RUN_B='<candidate-run-id-b>'
+DIR_A='<candidate-run-a-empty-dir>'
+DIR_B='<candidate-run-b-empty-dir>'
+VERSION='<version>'
+CANDIDATE_SHA='<fixed-candidate-commit>'
+# RUN_A/RUN_B are the exact candidate_run_id/reproduction_run_id recorded for this version.
+HEAD_SHA_A=$(gh run view "$RUN_A" --json headSha --jq '.headSha')
+HEAD_SHA_B=$(gh run view "$RUN_B" --json headSha --jq '.headSha')
+CONCLUSION_A=$(gh run view "$RUN_A" --json conclusion --jq '.conclusion')
+CONCLUSION_B=$(gh run view "$RUN_B" --json conclusion --jq '.conclusion')
+test "$RUN_A" != "$RUN_B"
+test "$HEAD_SHA_A" = "$CANDIDATE_SHA"
+test "$HEAD_SHA_B" = "$CANDIDATE_SHA"
+test "$CONCLUSION_A" = success
+test "$CONCLUSION_B" = success
+gh run view "$RUN_A" --json databaseId,attempt,headSha,conclusion,event
+gh run view "$RUN_B" --json databaseId,attempt,headSha,conclusion,event
+gh run download "$RUN_A" --name release-candidate --dir "$DIR_A"
+gh run download "$RUN_B" --name release-candidate --dir "$DIR_B"
+for dir in "$DIR_A" "$DIR_B"; do
+  if [ "$(uname -s)" = Darwin ]; then
+    (cd "$dir" && shasum -a 256 -c SHA256SUMS)
+  else
+    (cd "$dir" && sha256sum -c SHA256SUMS)
+  fi
+done
+for archive in \
+  "siano-ts-$VERSION-linux-x86_64.tar.gz" \
+  "siano-ts-$VERSION-linux-aarch64.tar.gz" \
+  "siano-ts-$VERSION-darwin-arm64.tar.gz" \
+  "siano-ts-$VERSION-android-aarch64.tar.gz" \
+  "siano-ts-$VERSION-android-armv7a.tar.gz" \
+  "siano-ts-$VERSION-android-x86_64.tar.gz" \
+  "siano-ts-$VERSION-windows-x64.zip" \
+  "siano-ts-$VERSION-source.tar.gz"; do
+  cmp "$DIR_A/$archive" "$DIR_B/$archive"
+done
+cmp "$DIR_A/SHA256SUMS" "$DIR_B/SHA256SUMS"
+# 工程4の公開後。tag archive checksumの検証は行うが、candidate sumsとcmpしない。
+TAG_DIR='<tag-release-empty-dir>'
+gh release download "v$VERSION" --dir "$TAG_DIR"
 if [ "$(uname -s)" = Darwin ]; then
-  (cd <new-empty-dir> && shasum -a 256 -c SHA256SUMS)
+  (cd "$TAG_DIR" && shasum -a 256 -c SHA256SUMS)
 else
-  (cd <new-empty-dir> && sha256sum -c SHA256SUMS)
+  (cd "$TAG_DIR" && sha256sum -c SHA256SUMS)
 fi
-# 工程4の公開後
-gh release download v<version> --dir <another-new-empty-dir>
-if [ "$(uname -s)" = Darwin ]; then
-  (cd <another-new-empty-dir> && shasum -a 256 -c SHA256SUMS)
-else
-  (cd <another-new-empty-dir> && sha256sum -c SHA256SUMS)
-fi
-cmp <new-empty-dir>/SHA256SUMS <another-new-empty-dir>/SHA256SUMS
+# 各dirはsuccessful run/tag buildのflat bundle rootへ設定する。
+TAG_RUN_DIR='<tag-build-flat-bundle-dir>'
+TAG_SHA='<tag-commit>'
+python3 scripts/release_verify.py \
+  --candidate-dir "$DIR_A" \
+  --reproduction-dir "$DIR_B" \
+  --tag-dir "$TAG_RUN_DIR" \
+  --tag "v$VERSION" \
+  --candidate-sha "$CANDIDATE_SHA" \
+  --tag-sha "$TAG_SHA"
 ```
 
 CI が行う build・audit・smoke を成功後にローカル再実行しない。新しい汎用検証スクリプトは作らない。
@@ -1138,7 +1188,7 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 
 ## 9. 記録
 
-検証結果は各版の [`release-validation/<version>.md`](release-validation/1.0.0.md) へ記録する。release recordにはversion、commit、workflow run、各binary archiveとsource archiveのchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、matrix runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、連続受信の実施時間/OS/結果、FD/RSS系列とdisposition、物理操作を行えなかった場合の理由、公開assetとcandidateのbyte一致判定、残存blocker・既知の制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
+検証結果は各版の [`release-validation/<version>.md`](release-validation/1.0.0.md) へ記録する。release recordにはversion、candidate/result/tag commit、workflow run ID/attempt、8 archiveとchecksum/audit、baseline tag、各artifactのbyte-identity判定、hunk-levelの変更影響、claimごとの状態、matrix runの環境ID・host・USB `port=`・archive SHA-256・UTC時刻・コマンド・counter・終了コード・ログ保存先、連続受信の実施時間/OS/結果、FD/RSS系列とdisposition、物理操作を行えなかった場合の理由、検査5の同一run package/manifest/checksum結果、検査6の独立run IDと8 archive/外側`SHA256SUMS`のbyte比較、検査7のtag bundle/member比較・許可path/field差分一覧とtag checksum自己整合、未実装gateと残存blocker・既知の制限を記録する。失敗試行は消さず、原因切り分け後の再試験を別試行として残す。受信設備不備や誤ったコマンド等を特定できても、失敗をpassに書き換えない。
 
 次をすべて満たすまで Stable 公開へ進まない。
 
@@ -1147,7 +1197,9 @@ USBを物理的に外しても有限終了しない場合はhangとして失敗�
 - README の各 claim が実証または適格な baseline 継承に対応し、未試験の組合せを認定表示していない。
 - crash、hang、stale state、再接続不能、重大な未解決 issue がない。
 - 全配布archiveに適用される短時間matrixに未完了のartifactがある場合はStable gate未完了とし、support表示だけで完了扱いしない。
-- §2.5の同一run内byte一致確認が成功している。
+- §2の手順5の同一run package/manifest/checksum gateが成功している。
+- §2の手順6で同一candidate commitの独立2 runが8 archiveと外側`SHA256SUMS`まで完全byte一致している。
+- §2の手順7のtag build member比較とtag bundle内checksum照合が成功している。tag build/workflow/member比較または検査CLIが未実装・未確認の間はStable gate未完了とし、candidate対tagの外側`SHA256SUMS`の`cmp`で代用しない。
 - README、COPYING、LICENCE.siano、checksum、support表示、release archiveの内容が一致し、公開前レビュー済み。
 
 リリースノートには利用者向け変更、短い検証結果、必要な既知制限だけを書く。試験matrix、内部証拠系譜、詳細log、hash一覧は掲載せず、本記録とREADMEへ分離する。
