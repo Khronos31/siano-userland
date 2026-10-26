@@ -55,13 +55,30 @@ struct SianoAssembly final {
     std::string endpoint_path;
 };
 
+enum class AssemblyDiagnosticReason : std::uint8_t {
+    none,
+    group_requires_runtime_directory,
+    instance_required_with_fd,
+    invalid_instance,
+    endpoint_path,
+    listener,
+};
+
+struct AssemblyDiagnostic final {
+    AssemblyDiagnosticReason reason = AssemblyDiagnosticReason::none;
+    dtv::userland::host_runtime::EndpointDiagnostic endpoint{};
+    dtv::userland::host_listener_context::ListenerDiagnostic listener{};
+};
+
+std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic);
+
 // Builds the family, resolves the identity, claims/initializes the native
 // device, assembles the P context, reserves the namespace and publishes the
 // endpoints.  The same function is used by the real daemon and the proof.
 px4::userland::Result<SianoAssembly> assemble_siano_context(
     const SianoRuntimeConfig& config, const std::string& requested_instance,
     const char* runtime_directory, const dtv::userland::wire::Epoch& epoch,
-    const char* product_version) noexcept;
+    const char* product_version, AssemblyDiagnostic* diagnostic = nullptr) noexcept;
 
 }  // namespace siano::runtime
 

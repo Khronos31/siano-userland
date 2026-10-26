@@ -100,33 +100,104 @@ bool install_signals() noexcept
 #endif
 }
 
-std::unique_ptr<Px4TsOutput> open_output(const std::string& path) noexcept
+enum class OutputOpenFailure {
+    none,
+    invalid_path,
+    stdout_unavailable,
+    open_failed,
+    allocate_failed,
+    not_ready,
+};
+
+struct OutputOpenDiagnostic final {
+    OutputOpenFailure failure = OutputOpenFailure::none;
+    unsigned long native_error = 0UL;
+};
+
+std::unique_ptr<Px4TsOutput> open_output(
+    const std::string& path, OutputOpenDiagnostic* diagnostic = nullptr) noexcept
 {
+    if (diagnostic != nullptr) *diagnostic = OutputOpenDiagnostic{};
     const bool stdout_output = path == "-";
 #ifdef _WIN32
     HANDLE handle = ::GetStdHandle(STD_OUTPUT_HANDLE);
     if (!stdout_output) {
         const auto wide = utf8_to_wide_path(path);
-        if (wide.empty()) return {};
+        if (wide.empty()) {
+            if (diagnostic != nullptr)
+                diagnostic->failure = OutputOpenFailure::invalid_path;
+            return {};
+        }
         handle = ::CreateFileW(wide.data(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE && diagnostic != nullptr) {
+            diagnostic->failure = OutputOpenFailure::open_failed;
+            diagnostic->native_error = ::GetLastError();
+        }
     }
-    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) return {};
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        if (diagnostic != nullptr && diagnostic->failure == OutputOpenFailure::none) {
+            diagnostic->failure = stdout_output ? OutputOpenFailure::stdout_unavailable
+                                                : OutputOpenFailure::open_failed;
+            if (!stdout_output) diagnostic->native_error = ::GetLastError();
+        }
+        return {};
+    }
     auto created = Px4TsWindowsOutput::create(handle, !stdout_output);
-    if (!created) return {};
+    if (!created) {
+        if (diagnostic != nullptr)
+            diagnostic->failure = OutputOpenFailure::allocate_failed;
+        return {};
+    }
     return std::move(created.value());
 #else
     const int fd = stdout_output ? STDOUT_FILENO :
         ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-    if (fd < 0) return {};
+    if (fd < 0) {
+        if (diagnostic != nullptr) {
+            diagnostic->failure = OutputOpenFailure::open_failed;
+            diagnostic->native_error = static_cast<unsigned long>(errno);
+        }
+        return {};
+    }
     std::unique_ptr<Px4TsFdOutput> output(new (std::nothrow) Px4TsFdOutput(fd, !stdout_output));
     if (!output) {
         if (!stdout_output) ::close(fd);
+        if (diagnostic != nullptr)
+            diagnostic->failure = OutputOpenFailure::allocate_failed;
         return {};
     }
-    if (!output->ready()) return {};
+    if (!output->ready()) {
+        if (diagnostic != nullptr) {
+            diagnostic->failure = OutputOpenFailure::not_ready;
+            diagnostic->native_error = static_cast<unsigned long>(errno);
+        }
+        return {};
+    }
     return output;
 #endif
+}
+
+void report_output_open_failure(const OutputOpenDiagnostic& diagnostic) noexcept
+{
+    if (diagnostic.failure == OutputOpenFailure::invalid_path) {
+        std::fprintf(stderr, "--output is empty or not valid UTF-8 for a Windows path; use a valid writable file or '-' for stdout\n");
+    } else if (diagnostic.failure == OutputOpenFailure::stdout_unavailable) {
+        std::fprintf(stderr, "stdout is unavailable; choose a writable --output file\n");
+    } else if (diagnostic.failure == OutputOpenFailure::open_failed) {
+#ifdef _WIN32
+        std::fprintf(stderr, "--output could not be opened (Windows error %lu); choose a writable file or '-' for stdout\n",
+                     diagnostic.native_error);
+#else
+        std::fprintf(stderr, "--output could not be opened (errno %lu: %s); choose a writable file or '-' for stdout\n",
+                     diagnostic.native_error,
+                     std::strerror(static_cast<int>(diagnostic.native_error)));
+#endif
+    } else if (diagnostic.failure == OutputOpenFailure::allocate_failed) {
+        std::fprintf(stderr, "--output writer could not be started; check available system resources\n");
+    } else if (diagnostic.failure == OutputOpenFailure::not_ready) {
+        std::fprintf(stderr, "--output is not ready for writing; check the file or use '-' for stdout\n");
+    }
 }
 
 Result<void> finish_output(Px4TsOutput& output) noexcept
@@ -153,14 +224,18 @@ void usage() noexcept
         "  -f, --freq HZ          exact requested Hz (1..2^53-1)\n"
         "      --system SYS       ISDB-T (optional, case-insensitive)\n"
         "  -t, --time SECONDS     capture duration; '-' is unlimited\n"
-        "  -o, --output FILE      output file; '-' is stdout\n"
-        "      --control          accept channel N/tune HZ/quit on stdin and\n"
-        "                         re-select through the shared UDTV API\n"
-        "      --runtime-dir DIR  runtime namespace root\n"
-        "      --instance TOKEN   connection instance token (required)\n"
-        "      --receiver N       receiver index (0..7; only 0 is present; others return NOT_FOUND)\n"
-        "      --tune-timeout-ms  tune end-to-end timeout in ms\n"
-        "      --packet-count N   stop after N written 188-byte packets\n"
+        "  -o, --output FILE      writable output file; '-' is stdout\n"
+        "      --control          accept channel N (13..62), tune HZ\n"
+        "                         (1..4294967295), or quit on stdin; re-select\n"
+        "                         through the shared UDTV API\n"
+        "      --runtime-dir DIR  root for DIR/siano-userland/v1/TOKEN/<endpoint>;\n"
+        "                         full path must fit this OS build's socket field\n"
+        "      --instance TOKEN   required; 1..64 ASCII bytes, starts with a\n"
+        "                         letter/digit, then letter/digit/_/./-; no\n"
+        "                         trailing dot or reserved Windows device name\n"
+        "      --receiver N       index 0..7; this enclosure has receiver 0 only\n"
+        "      --tune-timeout-ms MS tune timeout (100..30000 ms)\n"
+        "      --packet-count N   stop after N written 188-byte packets (N > 0)\n"
         "  -h, --help             print this help\n"
         "  -V, --version          print the development version\n");
 }
@@ -215,7 +290,10 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i] != nullptr ? argv[i] : "");
         auto need_value = [&](std::string_view& value) noexcept {
-            if (i + 1 >= argc || argv[i + 1] == nullptr) return false;
+            if (i + 1 >= argc || argv[i + 1] == nullptr) {
+                args.error = "missing value for " + std::string(option);
+                return false;
+            }
             value = std::string_view(argv[++i]);
             return true;
         };
@@ -223,19 +301,19 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
         if (option == "-h" || option == "--help") { args.help = true; continue; }
         if (option == "-V" || option == "--version") { args.version = true; continue; }
         if (option == "-c" || option == "--channel") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (args.have_channel) { args.error = "duplicate --channel"; return args; }
             args.channel.assign(value.data(), value.size());
             args.have_channel = true;
         } else if (option == "-f" || option == "--freq") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (args.have_frequency) { args.error = "duplicate --freq"; return args; }
             if (!parse_unsigned(value, args.frequency_hz)) {
-                args.error = "frequency is invalid"; return args;
+                args.error = "--freq must be an unsigned integer in 1..2^53-1 Hz"; return args;
             }
             args.have_frequency = true;
         } else if (option == "--system") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (args.have_system) { args.error = "duplicate --system"; return args; }
             if (!ascii_equals(value, "isdb-t") && !ascii_equals(value, "isdb-s")) {
                 args.error = "system must be ISDB-T or ISDB-S"; return args;
@@ -243,44 +321,46 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
             args.system = ascii_equals(value, "isdb-s") ? "isdb-s" : "isdb-t";
             args.have_system = true;
         } else if (option == "-t" || option == "--time") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (args.duration_set) { args.error = "duplicate --time"; return args; }
             args.duration_set = true;
             if (value != "-") {
                 if (!parse_unsigned(value, args.duration_seconds) ||
                     args.duration_seconds == 0U) {
-                    args.error = "time is invalid"; return args;
+                    args.error = "--time must be a positive integer number of seconds or '-'"; return args;
                 }
             }
         } else if (option == "-o" || option == "--output") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (args.output != "-") { args.error = "duplicate --output"; return args; }
             args.output.assign(value.data(), value.size());
         } else if (option == "--runtime-dir") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (!args.runtime_directory.empty()) {
                 args.error = "duplicate --runtime-dir"; return args;
             }
             args.runtime_directory.assign(value.data(), value.size());
         } else if (option == "--instance") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (!args.instance.empty()) { args.error = "duplicate --instance"; return args; }
             args.instance.assign(value.data(), value.size());
         } else if (option == "--receiver") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (!parse_unsigned(value, args.receiver) || args.receiver >= 8U) {
-                args.error = "receiver must be 0..7"; return args;
+                args.error = "--receiver must be an integer in 0..7"; return args;
             }
         } else if (option == "--tune-timeout-ms") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
+            if (!need_value(value)) return args;
             if (!parse_unsigned(value, args.tune_timeout_ms)) {
-                args.error = "tune-timeout-ms is invalid"; return args;
+                args.error = "--tune-timeout-ms must be an integer in 100..30000 ms"; return args;
             }
         } else if (option == "--packet-count") {
-            if (!need_value(value)) { args.error = "option requires a value"; return args; }
-            if (args.packet_count_set || !parse_unsigned(value, args.packet_count) ||
-                args.packet_count == 0U) {
-                args.error = "packet-count is invalid"; return args;
+            if (!need_value(value)) return args;
+            if (args.packet_count_set) {
+                args.error = "duplicate --packet-count"; return args;
+            }
+            if (!parse_unsigned(value, args.packet_count) || args.packet_count == 0U) {
+                args.error = "--packet-count must be a positive integer"; return args;
             }
             args.packet_count_set = true;
         } else if (option == "--control") {
@@ -295,7 +375,7 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
                 "pass -p/--pid to sianod";
             return args;
         } else {
-            args.error = "unknown argument";
+            args.error = "unknown option or argument: " + std::string(option);
             return args;
         }
     }
@@ -362,6 +442,12 @@ ControlKind take_command(ControlState& state, std::uint32_t& value) noexcept
     return kind;
 }
 
+void report_control_input_error() noexcept
+{
+    std::fprintf(stderr,
+                 "control: use 'channel N' (13..62), 'tune HZ' (1..4294967295), or 'quit'\n");
+}
+
 // Reuses the accepted stdin parser/input helpers.  It does not touch the
 // device; every selection is executed later through the shared UDTV runner.
 void control_reader(ControlState* state) noexcept
@@ -377,6 +463,7 @@ void control_reader(ControlState* state) noexcept
         return;
     }
     std::string line;
+    bool line_too_long_reported = false;
     std::uint8_t buffer[128];
     while (!state->stop_reader.load()) {
         const int ready = siano_control_input_ready(&input);
@@ -414,15 +501,22 @@ void control_reader(ControlState* state) noexcept
                     post_command(*state, ControlKind::quit, 0U);
                     break;
                 case CONTROL_INVALID:
-                    std::fprintf(stderr, "control: invalid\n");
+                    report_control_input_error();
                     break;
                 case CONTROL_EMPTY:
                     break;
                 }
                 line.clear();
+                line_too_long_reported = false;
             } else if (character != '\r') {
                 if (line.size() < 120U) line.push_back(character);
-                else line.clear();
+                else {
+                    if (!line_too_long_reported) {
+                        std::fprintf(stderr, "control: input line exceeds 120 bytes; send one supported command per line\n");
+                        line_too_long_reported = true;
+                    }
+                    line.clear();
+                }
             }
         }
     }
@@ -499,7 +593,14 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         }
     }
     if ((args.have_channel || args.have_frequency) && !have_selection) {
-        std::fprintf(stderr, "control: invalid initial selection\n");
+        if (args.have_channel)
+            std::fprintf(stderr,
+                         "control: --channel '%s' is not an ISDB-T channel (13..62 or T13..T62)\n",
+                         args.channel.c_str());
+        else
+            std::fprintf(stderr,
+                         "control: --freq %llu is outside the Siano tuner range (1..4294967295 Hz)\n",
+                         static_cast<unsigned long long>(args.frequency_hz));
         state.stop_reader.store(true);
         reader.join();
         return 2;
@@ -515,7 +616,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
             if (kind == ControlKind::quit) break;
             if (kind == ControlKind::none) continue;
             if (!resolve_control_hz(kind, value, frequency_hz)) {
-                std::fprintf(stderr, "control: invalid\n");
+                report_control_input_error();
                 continue;
             }
             have_selection = true;
@@ -528,7 +629,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         if (pending == ControlKind::quit) break;
         if (pending != ControlKind::none) {
             if (!resolve_control_hz(pending, pending_value, frequency_hz)) {
-                std::fprintf(stderr, "control: invalid\n");
+                report_control_input_error();
                 have_selection = false;
                 continue;
             }
@@ -544,7 +645,11 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         if (!result) {
             // Preserve the old control mode's ability to accept another tune,
             // but never turn a failed UDTV operation into a silent success.
-            std::fprintf(stderr, "control: %s\n", error_string(result.error()));
+            if (diagnostics.stage == Px4TsDiagnosticStage::none) {
+                std::fprintf(stderr, "control: %s\n", error_string(result.error()));
+            } else {
+                print_px4_ts_run_diagnostic(stderr, "control", result.error(), diagnostics);
+            }
             if (platform_stop_requested()) break;
             std::uint32_t retry_value = 0U;
             const ControlKind retry = take_command(state, retry_value);
@@ -563,7 +668,7 @@ int run_control(const SianoArgs& args, Px4TsOutput& output, Px4TsClock& clock,
         if (next == ControlKind::quit) break;
         if (next == ControlKind::none) break;
         if (!resolve_control_hz(next, next_value, frequency_hz)) {
-            std::fprintf(stderr, "control: invalid\n");
+            report_control_input_error();
             have_selection = false;
             continue;
         }
@@ -643,9 +748,10 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "signal setup failed\n");
             return 70;
         }
-        auto control_output = open_output(args.output);
+        OutputOpenDiagnostic control_output_diagnostic{};
+        auto control_output = open_output(args.output, &control_output_diagnostic);
         if (!control_output) {
-            std::fprintf(stderr, "output setup failed\n");
+            report_output_open_failure(control_output_diagnostic);
             return 70;
         }
         PosixClock control_clock;
@@ -682,9 +788,10 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "signal setup failed\n");
         return 70;
     }
-    auto output = open_output(arguments.output);
+    OutputOpenDiagnostic output_diagnostic{};
+    auto output = open_output(arguments.output, &output_diagnostic);
     if (!output) {
-        std::fprintf(stderr, "output setup failed\n");
+        report_output_open_failure(output_diagnostic);
         return 70;
     }
     PosixClock clock;
@@ -695,7 +802,11 @@ int main(int argc, char** argv)
                                               &failure_kind, &diagnostics);
     const auto finished = finish_output(*output);
     if (!result) {
-        std::fprintf(stderr, "siano-ts: %s\n", error_string(result.error()));
+        if (diagnostics.stage == Px4TsDiagnosticStage::none) {
+            std::fprintf(stderr, "siano-ts: %s\n", error_string(result.error()));
+        } else {
+            print_px4_ts_run_diagnostic(stderr, "siano-ts", result.error(), diagnostics);
+        }
         std::fprintf(stderr, "written packets=%llu bytes=%llu\n",
                      static_cast<unsigned long long>(diagnostics.packets_written),
                      static_cast<unsigned long long>(diagnostics.packets_written * 188U));

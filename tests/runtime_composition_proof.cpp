@@ -12,8 +12,11 @@ int main(int argc, char**) noexcept
 {
     if (argc == 12345) {
         using dtv::userland::host_listener_context::EnclosureContext;
+        using ReserveNamespaceFunction = dtv::userland::Result<void>
+            (EnclosureContext::*)() noexcept;
         (void)&EnclosureContext::assemble;
-        (void)&EnclosureContext::reserve_namespace;
+        (void)static_cast<ReserveNamespaceFunction>(
+            &EnclosureContext::reserve_namespace);
         (void)&EnclosureContext::publish;
         (void)&EnclosureContext::close;
         (void)&px4::userland::TunerService::acquire;

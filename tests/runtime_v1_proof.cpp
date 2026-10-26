@@ -27,6 +27,7 @@ extern "C" {
 #include <string>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -119,7 +120,9 @@ std::vector<std::uint8_t> read_file(const std::string& path)
 
 int run_client(const std::string& runtime_dir, const std::string& instance,
                const std::string& output, const char* time_or_count,
-               const char* time_value, bool explicit_runtime_dir = true)
+               const char* time_value, bool explicit_runtime_dir = true,
+               const char* receiver = nullptr,
+               const std::string* diagnostic_path = nullptr)
 {
     pid_t pid = fork();
     if (pid == 0) {
@@ -137,6 +140,10 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
             argv[index++] = "--packet-count";
             argv[index++] = time_value;
         }
+        if (receiver != nullptr) {
+            argv[index++] = "--receiver";
+            argv[index++] = receiver;
+        }
         argv[index++] = "--instance";
         argv[index++] = instance.c_str();
         if (explicit_runtime_dir) {
@@ -148,6 +155,8 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
         argv[index++] = "--tune-timeout-ms";
         argv[index++] = "5000";
         argv[index] = nullptr;
+        if (diagnostic_path != nullptr && std::freopen(
+                diagnostic_path->c_str(), "w", stderr) == nullptr) _exit(126);
         execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
         _exit(127);
     }
@@ -298,8 +307,9 @@ int run_control_ts_failure(const std::string& runtime_dir,
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
     std::fprintf(stderr, "PROOF control_ts_failure exit=%d stderr=%s",
                  WEXITSTATUS(status), errors.c_str());
-    return WEXITSTATUS(status) == 0 && errors.find("control: NOT_READY") !=
-        std::string::npos ? 0 : 1;
+    return WEXITSTATUS(status) == 0 &&
+        errors.find("control: runtime namespace is missing") != std::string::npos &&
+        errors.find("--runtime-dir and --instance") != std::string::npos ? 0 : 1;
 }
 
 bool terminate_child_bounded(pid_t pid, int& status)
@@ -576,10 +586,117 @@ int main()
     SianoRuntimeConfig group_config = config;
     group_config.access =
         dtv::userland::host_runtime::EndpointAccess::shared_group;
+    AssemblyDiagnostic group_diagnostic{};
     const auto group_without_root = assemble_siano_context(
-        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION);
-    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT) {
-        std::fprintf(stderr, "PROOF groupRoot omitted root was not rejected\n");
+        group_config, "proofgroup0001", nullptr, epoch.value(), SIANO_RUNTIME_VERSION,
+        &group_diagnostic);
+    if (group_without_root || group_without_root.error() != Error::INVALID_ARGUMENT ||
+        describe_assembly_diagnostic(group_diagnostic).find("--runtime-dir") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF groupRoot omitted root diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::size_t socket_capacity = sizeof(sockaddr_un{}.sun_path);
+    const std::string long_runtime = "/" + std::string(socket_capacity + 8U, 'r');
+    AssemblyDiagnostic endpoint_diagnostic{};
+    const auto overlong_endpoint = assemble_siano_context(
+        config, "proofinst0001", long_runtime.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &endpoint_diagnostic);
+    const std::string endpoint_detail = describe_assembly_diagnostic(endpoint_diagnostic);
+    const std::string path_bytes = std::to_string(endpoint_diagnostic.endpoint.path_bytes);
+    const std::string capacity_bytes = std::to_string(socket_capacity);
+    if (overlong_endpoint || overlong_endpoint.error() != Error::INVALID_ARGUMENT ||
+        endpoint_diagnostic.reason != AssemblyDiagnosticReason::endpoint_path ||
+        endpoint_diagnostic.endpoint.reason !=
+            dtv::userland::host_runtime::EndpointDiagnosticReason::path_too_long ||
+        endpoint_diagnostic.endpoint.path_bytes + 1U !=
+            endpoint_diagnostic.endpoint.required_bytes ||
+        endpoint_diagnostic.endpoint.native_capacity != socket_capacity ||
+        endpoint_detail.find(path_bytes) == std::string::npos ||
+        endpoint_detail.find(capacity_bytes) == std::string::npos ||
+        endpoint_detail.find("--runtime-dir") == std::string::npos ||
+        endpoint_detail.find("--instance") == std::string::npos) {
+        std::fprintf(stderr, "PROOF endpointPath diagnostic mismatch: %s\n",
+                     endpoint_detail.c_str());
+        return 1;
+    }
+
+    AssemblyDiagnostic instance_diagnostic{};
+    const auto invalid_instance = assemble_siano_context(
+        config, "bad instance", runtime_dir.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &instance_diagnostic);
+    if (invalid_instance || invalid_instance.error() != Error::INVALID_ARGUMENT ||
+        instance_diagnostic.reason != AssemblyDiagnosticReason::invalid_instance ||
+        describe_assembly_diagnostic(instance_diagnostic).find("--instance") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF instance diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::string missing_root = runtime_dir + "/missing-runtime";
+    AssemblyDiagnostic missing_root_diagnostic{};
+    const auto missing_root_result = assemble_siano_context(
+        config, "proofinst0001", missing_root.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &missing_root_diagnostic);
+    if (missing_root_result || missing_root_result.error() != Error::UNSUPPORTED ||
+        missing_root_diagnostic.reason != AssemblyDiagnosticReason::listener ||
+        missing_root_diagnostic.listener.reason !=
+            dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_missing ||
+        describe_assembly_diagnostic(missing_root_diagnostic).find("--runtime-dir") ==
+            std::string::npos) {
+        std::fprintf(stderr, "PROOF missing runtime diagnostic mismatch\n");
+        return 1;
+    }
+
+    const std::string unsafe_root = make_private_dir();
+    assert(!unsafe_root.empty());
+    if (chmod(unsafe_root.c_str(), 0777) != 0) {
+        std::fprintf(stderr, "PROOF could not set isolated unsafe mode fixture\n");
+        (void)rmdir(unsafe_root.c_str());
+        return 1;
+    }
+    AssemblyDiagnostic mode_diagnostic{};
+    const auto unsafe_root_result = assemble_siano_context(
+        config, "proofinst0001", unsafe_root.c_str(), epoch.value(),
+        SIANO_RUNTIME_VERSION, &mode_diagnostic);
+    const std::string mode_detail = describe_assembly_diagnostic(mode_diagnostic);
+    (void)chmod(unsafe_root.c_str(), 0700);
+    (void)rmdir(unsafe_root.c_str());
+    if (unsafe_root_result || unsafe_root_result.error() != Error::UNSUPPORTED ||
+        mode_diagnostic.reason != AssemblyDiagnosticReason::listener ||
+        mode_diagnostic.listener.reason !=
+            dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_mode ||
+        mode_detail.find("group- or other-writable") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime mode diagnostic mismatch: %s\n",
+                     mode_detail.c_str());
+        return 1;
+    }
+
+    AssemblyDiagnostic product_diagnostic{};
+    product_diagnostic.reason = AssemblyDiagnosticReason::listener;
+    product_diagnostic.listener.reason =
+        dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_missing;
+    product_diagnostic.listener.directory_layer =
+        dtv::userland::host_listener_context::RuntimeDirectoryLayer::product;
+    const std::string product_detail = describe_assembly_diagnostic(product_diagnostic);
+    if (product_detail.find("product directory") == std::string::npos ||
+        product_detail.find("--runtime-dir") == std::string::npos ||
+        product_detail.find("--instance") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime product directory diagnostic mismatch: %s\n",
+                     product_detail.c_str());
+        return 1;
+    }
+
+    AssemblyDiagnostic encoding_diagnostic{};
+    encoding_diagnostic.reason = AssemblyDiagnosticReason::listener;
+    encoding_diagnostic.listener.reason =
+        dtv::userland::host_listener_context::ListenerDiagnosticReason::runtime_directory_encoding;
+    const std::string encoding_detail = describe_assembly_diagnostic(encoding_diagnostic);
+    if (encoding_detail.find("valid UTF-8") == std::string::npos ||
+        encoding_detail.find("--runtime-dir") == std::string::npos) {
+        std::fprintf(stderr, "PROOF runtime encoding diagnostic mismatch: %s\n",
+                     encoding_detail.c_str());
         return 1;
     }
 
@@ -637,6 +754,25 @@ int main()
         (void)owned.close(Timeout{15000U});
         return 1;
     }
+    const std::string receiver_diagnostic_path = runtime_dir + "/receiver-error.txt";
+    const std::string receiver_output_path = runtime_dir + "/receiver-error.ts";
+    const int receiver_status = run_client(runtime_dir, instance, receiver_output_path,
+                                           "time", "1", true, "1",
+                                           &receiver_diagnostic_path);
+    const auto receiver_diagnostic_bytes = read_file(receiver_diagnostic_path);
+    const std::string receiver_diagnostic(receiver_diagnostic_bytes.begin(),
+                                           receiver_diagnostic_bytes.end());
+    if (receiver_status != 3 || receiver_diagnostic.find(
+            "--receiver 1 is not present in the selected service") == std::string::npos) {
+        std::fprintf(stderr, "PROOF receiver diagnostic status=%d text=%s\n",
+                     receiver_status, receiver_diagnostic.c_str());
+        serving.store(false);
+        server.join();
+        (void)owned.close(Timeout{15000U});
+        return 1;
+    }
+    std::fprintf(stderr, "PROOF receiver diagnostic status=%d actionable=true\n",
+                 receiver_status);
     if (run_control_ts(runtime_dir, instance, control_output_path, device, *family) != 0) {
         std::fprintf(stderr, "PROOF control ts regression failed\n");
         serving.store(false);

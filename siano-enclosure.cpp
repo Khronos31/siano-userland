@@ -195,13 +195,17 @@ dtv::userland::Result<void> build_siano_control_context(
 px4::userland::Result<SianoAssembly> assemble_siano_context(
     const SianoRuntimeConfig& config, const std::string& requested_instance,
     const char* runtime_directory, const dtv::userland::wire::Epoch& epoch,
-    const char* product_version) noexcept
+    const char* product_version, AssemblyDiagnostic* diagnostic) noexcept
 {
     namespace identity = dtv::userland::identity;
+    if (diagnostic != nullptr) *diagnostic = AssemblyDiagnostic{};
 #if !defined(_WIN32)
     if ((runtime_directory == nullptr || runtime_directory[0] == '\0') &&
-        config.access == host_runtime::EndpointAccess::shared_group)
+        config.access == host_runtime::EndpointAccess::shared_group) {
+        if (diagnostic != nullptr)
+            diagnostic->reason = AssemblyDiagnosticReason::group_requires_runtime_directory;
         return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+    }
 #endif
     std::unique_ptr<SianoFamily> family(new (std::nothrow) SianoFamily(config));
     if (!family) return Result<SianoAssembly>::failure(Error::INTERNAL);
@@ -268,17 +272,28 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
             assembly.instance = assembly.lease_identity;
         } else {
             const auto canonical = identity::canonicalize_instance(requested_instance);
-            if (!canonical) return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+            if (!canonical) {
+                if (diagnostic != nullptr)
+                    diagnostic->reason = AssemblyDiagnosticReason::invalid_instance;
+                return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+            }
             assembly.instance.assign(canonical.value().bytes.data(),
                                      canonical.value().length);
         }
     } else {
         // --fd without a port path: the explicit instance is the only stable
         // name; it is also the namespace lock identity (non-serial LOCK_SH).
-        if (requested_instance.empty())
+        if (requested_instance.empty()) {
+            if (diagnostic != nullptr)
+                diagnostic->reason = AssemblyDiagnosticReason::instance_required_with_fd;
             return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+        }
         const auto canonical = identity::canonicalize_instance(requested_instance);
-        if (!canonical) return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+        if (!canonical) {
+            if (diagnostic != nullptr)
+                diagnostic->reason = AssemblyDiagnosticReason::invalid_instance;
+            return Result<SianoAssembly>::failure(Error::INVALID_ARGUMENT);
+        }
         assembly.instance.assign(canonical.value().bytes.data(), canonical.value().length);
         assembly.lease_identity = assembly.instance;
     }
@@ -315,10 +330,17 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     context_config.product = "siano-userland";
     context_config.instance = assembly.instance;
     context_config.access = config.access;
+    host_runtime::EndpointDiagnostic endpoint_diagnostic{};
     const auto endpoint = host_runtime::endpoint_path(host_runtime::EndpointConfig{
         context_config.runtime_directory, context_config.product,
-        context_config.instance, context_config.access});
-    if (!endpoint) return Result<SianoAssembly>::failure(endpoint.error());
+        context_config.instance, context_config.access}, &endpoint_diagnostic);
+    if (!endpoint) {
+        if (diagnostic != nullptr) {
+            diagnostic->reason = AssemblyDiagnosticReason::endpoint_path;
+            diagnostic->endpoint = endpoint_diagnostic;
+        }
+        return Result<SianoAssembly>::failure(endpoint.error());
+    }
     assembly.endpoint_path = endpoint.value();
     const auto built = build_siano_control_context(
         facts, epoch, product_version, context_config.canonical_list);
@@ -351,12 +373,98 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     assembly.family = family_ptr;
     assembly.context = std::move(assembled.value());
 
-    const auto reserved = assembly.context->reserve_namespace();
-    if (!reserved) { std::fprintf(stderr, "assemble: reserve %s\n", dtv::userland::error_string(reserved.error())); return Result<SianoAssembly>::failure(reserved.error()); }
+    host_context::ListenerDiagnostic listener_diagnostic{};
+    const auto reserved = assembly.context->reserve_namespace(&listener_diagnostic);
+    if (!reserved) {
+        if (diagnostic != nullptr) {
+            diagnostic->reason = AssemblyDiagnosticReason::listener;
+            diagnostic->listener = listener_diagnostic;
+        }
+        if (diagnostic == nullptr)
+            std::fprintf(stderr, "assemble: reserve %s\n", dtv::userland::error_string(reserved.error()));
+        return Result<SianoAssembly>::failure(reserved.error());
+    }
 
     const auto published = assembly.context->publish();
     if (!published) { std::fprintf(stderr, "assemble: publish %s\n", dtv::userland::error_string(published.error())); return Result<SianoAssembly>::failure(published.error()); }
     return Result<SianoAssembly>::success(std::move(assembly));
+}
+
+std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic)
+{
+    using dtv::userland::host_listener_context::ListenerDiagnosticReason;
+    using dtv::userland::host_listener_context::RuntimeDirectoryLayer;
+    using dtv::userland::host_runtime::EndpointDiagnosticReason;
+    if (diagnostic.reason == AssemblyDiagnosticReason::group_requires_runtime_directory)
+        return "--group on POSIX requires --runtime-dir; set a protected runtime namespace root";
+    if (diagnostic.reason == AssemblyDiagnosticReason::instance_required_with_fd)
+        return "--fd has no readable USB port path; provide --instance TOKEN to name the runtime namespace";
+    if (diagnostic.reason == AssemblyDiagnosticReason::invalid_instance)
+        return "invalid --instance: TOKEN must be 1..64 ASCII bytes, start with a letter or digit, and then use letters, digits, '_', '.', or '-'; reserved names and a trailing dot are not allowed";
+    if (diagnostic.reason == AssemblyDiagnosticReason::endpoint_path) {
+        const auto& endpoint = diagnostic.endpoint;
+        if (endpoint.reason == EndpointDiagnosticReason::path_too_long) {
+            return "runtime endpoint path is too long: " + std::to_string(endpoint.path_bytes) +
+                " UTF-8 bytes; this build's native socket field is " +
+                std::to_string(endpoint.native_capacity) + " bytes including NUL (requires " +
+                std::to_string(endpoint.required_bytes) + " bytes); shorten --runtime-dir or --instance";
+        }
+        if (endpoint.reason == EndpointDiagnosticReason::runtime_directory)
+            return "invalid --runtime-dir: provide an absolute runtime namespace root";
+        if (endpoint.reason == EndpointDiagnosticReason::instance)
+            return "invalid --instance: TOKEN must use the supported ASCII instance syntax";
+        return "internal runtime endpoint configuration is invalid";
+    }
+    if (diagnostic.reason == AssemblyDiagnosticReason::listener) {
+        const auto reason = diagnostic.listener.reason;
+        const auto layer = diagnostic.listener.directory_layer;
+        const char* layer_name = layer == RuntimeDirectoryLayer::product ? "product" :
+            layer == RuntimeDirectoryLayer::version ? "version" :
+            layer == RuntimeDirectoryLayer::instance ? "instance" : "runtime root";
+        const bool root_layer = layer == RuntimeDirectoryLayer::runtime_root;
+        if (reason == ListenerDiagnosticReason::endpoint_path &&
+            diagnostic.listener.endpoint.reason == EndpointDiagnosticReason::path_too_long) {
+            const auto& endpoint = diagnostic.listener.endpoint;
+            return std::string("runtime ") + std::string(diagnostic.listener.endpoint_name) +
+                " path is too long: " + std::to_string(endpoint.path_bytes) +
+                " UTF-8 bytes; this build's native socket field is " +
+                std::to_string(endpoint.native_capacity) + " bytes including NUL (requires " +
+                std::to_string(endpoint.required_bytes) + " bytes); shorten --runtime-dir or --instance";
+        }
+        if (reason == ListenerDiagnosticReason::runtime_directory_encoding)
+            return "invalid --runtime-dir: path must be valid UTF-8 for the Windows runtime namespace";
+        if (reason == ListenerDiagnosticReason::runtime_directory_missing)
+            return root_layer
+                ? "--runtime-dir does not exist; create the runtime namespace directory with the daemon user's ownership"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory is missing; check --runtime-dir, --instance, and daemon-user ownership";
+        if (reason == ListenerDiagnosticReason::runtime_directory_lookup)
+            return root_layer
+                ? "cannot inspect --runtime-dir; check the path and directory access permissions"
+                : std::string("cannot inspect the runtime namespace ") + layer_name +
+                    " directory; check --runtime-dir, --instance, and directory access permissions";
+        if (reason == ListenerDiagnosticReason::runtime_directory_type)
+            return root_layer
+                ? "--runtime-dir is not a directory; provide an existing runtime namespace directory"
+                : std::string("runtime namespace ") + layer_name +
+                    " path is not a directory; check --runtime-dir and --instance";
+        if (reason == ListenerDiagnosticReason::runtime_directory_owner)
+            return root_layer
+                ? "--runtime-dir is not owned by the daemon user; use a directory owned by the current user"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory is not owned by the daemon user; check --runtime-dir and --instance ownership";
+        if (reason == ListenerDiagnosticReason::runtime_directory_mode)
+            return root_layer
+                ? "--runtime-dir is group- or other-writable; remove those write permissions without weakening ownership checks"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory has unsafe permissions; remove disallowed write permissions without weakening ownership checks";
+        if (reason == ListenerDiagnosticReason::runtime_directory_security)
+            return root_layer
+                ? "--runtime-dir failed the platform's combined security check; use a local directory owned and protected for the current user"
+                : std::string("runtime namespace ") + layer_name +
+                    " directory failed the platform's security check; check --runtime-dir, --instance, ownership, and permissions";
+    }
+    return {};
 }
 
 }  // namespace siano::runtime
