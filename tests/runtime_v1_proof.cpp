@@ -185,6 +185,119 @@ int run_control(const std::string& runtime_dir, const std::string& instance,
     return WEXITSTATUS(status);
 }
 
+int run_control_ts(const std::string& runtime_dir, const std::string& instance,
+                   const std::string& output, siano_device& device,
+                   SianoFamily& family)
+{
+    int input_pipe[2];
+    if (pipe(input_pipe) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(input_pipe[1]);
+        if (dup2(input_pipe[0], STDIN_FILENO) < 0) _exit(127);
+        close(input_pipe[0]);
+        const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--instance", instance.c_str(), "--runtime-dir",
+                              runtime_dir.c_str(), "-o", output.c_str(),
+                              "--tune-timeout-ms", "5000", nullptr};
+        execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
+        _exit(127);
+    }
+    close(input_pipe[0]);
+    if (pid < 0) { close(input_pipe[1]); return -1; }
+
+    bool ok = true;
+    unsigned tunes = test_libusb_tune_requests();
+    std::vector<std::uint8_t> expected;
+    for (unsigned selection = 0U; selection < 2U; ++selection) {
+        bool attached = false;
+        const std::uint32_t expected_frequency =
+            selection == 0U ? 473142857U : 479142857U;
+        for (unsigned i = 0U; i < 5000U; ++i) {
+            if (test_libusb_tune_requests() > tunes && family.stream_attached() &&
+                test_libusb_last_tune_hz() == expected_frequency) {
+                attached = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!attached) { ok = false; break; }
+        for (std::size_t i = 0U; i < MAX_URBS; ++i) {
+            if (!wait_transfer_pending(device.transfers[i]) ||
+                test_libusb_deliver_control_to(device.transfers[i],
+                                               MSG_SMS_SIGNAL_DETECTED_IND) != 0 ||
+                !wait_transfer_pending(device.transfers[i])) ok = false;
+        }
+        const std::uint8_t marker = static_cast<std::uint8_t>(0x61U + selection * 8U);
+        if (ok && !deliver_ts(device, marker, 2U)) ok = false;
+        const auto packets = expected_ts(marker, 2U);
+        expected.insert(expected.end(), packets.begin(), packets.end());
+        const std::size_t expected_bytes = expected.size();
+        for (unsigned i = 0U; i < 5000U && read_file(output).size() < expected_bytes; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (read_file(output).size() < expected_bytes) { ok = false; break; }
+        tunes = test_libusb_tune_requests();
+        const char* command = selection == 0U ? "tune 479142857\n" : "quit\n";
+        const std::size_t length = std::strlen(command);
+        if (!ok || write(input_pipe[1], command, length) !=
+                       static_cast<ssize_t>(length)) {
+            ok = false;
+            break;
+        }
+    }
+    close(input_pipe[1]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+    const auto actual = read_file(output);
+    std::fprintf(stderr,
+        "PROOF control_ts ok=%d exit=%d stdout_bytes=%zu expected_bytes=%zu tunes=%u hz=%u\n",
+        ok, WEXITSTATUS(status), actual.size(), expected.size(),
+        test_libusb_tune_requests(), test_libusb_last_tune_hz());
+    if (!ok || WEXITSTATUS(status) != 0 || actual != expected ||
+        test_libusb_tune_requests() < 2U ||
+        test_libusb_last_tune_hz() != 479142857U) return 1;
+    return 0;
+}
+
+int run_control_ts_failure(const std::string& runtime_dir,
+                           const std::string& instance)
+{
+    int input_pipe[2];
+    int error_pipe[2];
+    if (pipe(input_pipe) != 0 || pipe(error_pipe) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        if (dup2(input_pipe[0], STDIN_FILENO) < 0 ||
+            dup2(error_pipe[1], STDERR_FILENO) < 0) _exit(127);
+        close(input_pipe[0]);
+        close(error_pipe[1]);
+        const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--instance", instance.c_str(), "--runtime-dir",
+                              runtime_dir.c_str(), "-o", "/dev/null",
+                              "--tune-timeout-ms", "5000", nullptr};
+        execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
+        _exit(127);
+    }
+    close(input_pipe[0]);
+    close(input_pipe[1]);
+    close(error_pipe[1]);
+    if (pid < 0) { close(error_pipe[0]); return -1; }
+    std::string errors;
+    std::array<char, 1024U> buffer{};
+    ssize_t count = 0;
+    while ((count = read(error_pipe[0], buffer.data(), buffer.size())) > 0)
+        errors.append(buffer.data(), static_cast<std::size_t>(count));
+    close(error_pipe[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+    std::fprintf(stderr, "PROOF control_ts_failure exit=%d stderr=%s",
+                 WEXITSTATUS(status), errors.c_str());
+    return WEXITSTATUS(status) == 0 && errors.find("control: NOT_READY") !=
+        std::string::npos ? 0 : 1;
+}
+
 bool check_status(std::string_view json, const std::string& instance,
                   const std::array<std::uint8_t, 16U>& epoch, const char* receiver_state)
 {
@@ -305,6 +418,23 @@ int main()
         return 1;
     }
     std::fprintf(stderr, "PROOF idle_status=%s", idle_status.c_str());
+    const std::string control_output_path = runtime_dir + "/control.ts";
+    const std::string missing_runtime_dir = runtime_dir + "/missing-runtime";
+    if (run_control_ts_failure(missing_runtime_dir, instance) != 0) {
+        std::fprintf(stderr, "PROOF control failure regression failed\n");
+        serving.store(false);
+        server.join();
+        (void)owned.close(Timeout{15000U});
+        return 1;
+    }
+    if (run_control_ts(runtime_dir, instance, control_output_path, device, *family) != 0) {
+        std::fprintf(stderr, "PROOF control ts regression failed\n");
+        serving.store(false);
+        server.join();
+        (void)owned.close(Timeout{15000U});
+        return 1;
+    }
+    const unsigned tune_requests_after_control = test_libusb_tune_requests();
 
     // 2. Real client process over the real AF_UNIX endpoints; bottom USB is
     //    the loopback.  A feeder injects SIGNAL_DETECTED and K BDA packets
@@ -367,7 +497,8 @@ int main()
                      actual.size(), expected.size());
         return 1;
     }
-    if (test_libusb_last_tune_hz() != 473142857U || test_libusb_tune_requests() != 1U) {
+    if (test_libusb_last_tune_hz() != 473142857U ||
+        test_libusb_tune_requests() != tune_requests_after_control + 1U) {
         std::fprintf(stderr, "PROOF tune hz=%u requests=%u\n",
                      test_libusb_last_tune_hz(), test_libusb_tune_requests());
         return 1;
