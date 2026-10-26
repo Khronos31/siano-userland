@@ -100,7 +100,14 @@ bool install_signals() noexcept
 #endif
 }
 
-enum class OutputOpenFailure { none, invalid_path, open_failed, allocate_failed, not_ready };
+enum class OutputOpenFailure {
+    none,
+    invalid_path,
+    stdout_unavailable,
+    open_failed,
+    allocate_failed,
+    not_ready,
+};
 
 struct OutputOpenDiagnostic final {
     OutputOpenFailure failure = OutputOpenFailure::none;
@@ -129,8 +136,11 @@ std::unique_ptr<Px4TsOutput> open_output(
         }
     }
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
-        if (diagnostic != nullptr && diagnostic->failure == OutputOpenFailure::none)
-            diagnostic->failure = OutputOpenFailure::open_failed;
+        if (diagnostic != nullptr && diagnostic->failure == OutputOpenFailure::none) {
+            diagnostic->failure = stdout_output ? OutputOpenFailure::stdout_unavailable
+                                                : OutputOpenFailure::open_failed;
+            if (!stdout_output) diagnostic->native_error = ::GetLastError();
+        }
         return {};
     }
     auto created = Px4TsWindowsOutput::create(handle, !stdout_output);
@@ -172,6 +182,8 @@ void report_output_open_failure(const OutputOpenDiagnostic& diagnostic) noexcept
 {
     if (diagnostic.failure == OutputOpenFailure::invalid_path) {
         std::fprintf(stderr, "--output is empty or not valid UTF-8 for a Windows path; use a valid writable file or '-' for stdout\n");
+    } else if (diagnostic.failure == OutputOpenFailure::stdout_unavailable) {
+        std::fprintf(stderr, "stdout is unavailable; choose a writable --output file\n");
     } else if (diagnostic.failure == OutputOpenFailure::open_failed) {
 #ifdef _WIN32
         std::fprintf(stderr, "--output could not be opened (Windows error %lu); choose a writable file or '-' for stdout\n",
