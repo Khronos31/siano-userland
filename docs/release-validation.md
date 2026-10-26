@@ -902,7 +902,7 @@ Get-Process siano-ts -ErrorAction SilentlyContinue
 | T00 | 上のZIP SHAとmanifest内3 executable SHA照合を実行する。 | source/CI run/target/hashを保存し、deviceを開かない。 |
 | T01 | `$PSVersionTable.PSVersion`、`[Environment]::OSVersion`、`[Environment]::Is64BitProcess`、`Get-PnpDevice -PresentOnly`を保存する。 | E17/Windows build/architecture、USB ID/WinUSB binding、firmware SHA、channel planを保存する。 |
 | T02 | `& $D --list-json`、`& $C --instance s1ud --runtime-dir $RT status`、`list`を実行する。 | `enclosures[].devices[].port`とready/listを保存する。daemonは前景consoleでCtrl+C停止する。 |
-| T03 | `& $B --instance s1ud --runtime-dir $RT -c 22 -t 30 -o "$LOG\t03.ts"`。 | receiver 0の1 stream、exit 0とTS/counterを保存する。 |
+| T03 | 下のbounded Windows T03 capture recipeを実行する。 | receiver 0の1 stream、exit 0とTS/counterを保存する。timeout/exit値不明/非zeroは未達。 |
 | T04 | 下の`$CHANNEL_PLAN`を現地の全無料ISDB-T channelに設定して10秒ずつ取得する。 | channelごとのexit/TS/counterを保存。初回/major以外は毎releaseの不足波を対象にする。 |
 | T05 | 下のPowerShell `.NET ProcessStartInfo` control sequenceを実行し、別consoleから`status`/`list`を反復する。 | tune応答/終了値とcapture期間の重なりを保存し、client/daemonを通常終了する。 |
 | T06 | CARD APIがないため理由付きN/A。 | reader/cardを作らず、daemonは通常停止する。 |
@@ -914,6 +914,22 @@ Get-Process siano-ts -ErrorAction SilentlyContinue
 | T12 | `$PORT_A/$PORT_B`を分けた2 daemon/instanceで実行し、下のconsole commandを使う。 | A抜去時A exit 7/B継続 exit 0、再接続後A再取得の各状態を別記録する。1台環境は2台試験の代用にしない。 |
 | T13 | `$S`を適用頻度表の時間秒へ設定し、下の同じS-RX commandで連続取得する。 | 開始・定期・終了時のTS/counter/FD/RSS/exitを保存する。全archive native shortは独立run。 |
 | T14 | version recordにT-IDごとのstateとevidence pathを記録する。 | failure/unsupported/未実施/環境不能/候補欠落は未達とし、candidate evidenceを保持する。 |
+
+T03 Windowsのcaptureは通常の`-t 30`を維持する。clientは90秒以内に終了する必要があり、timeout時はowned clientを停止して5秒以内の終了を待ち、終了値または取得不能状態を記録してT03を未達にする。
+
+```powershell
+$ts = Join-Path $LOG 't03.ts'; $clientErr = Join-Path $LOG 't03.err'
+$p = Start-Process -FilePath $B -ArgumentList @('--instance',$INSTANCE,'--runtime-dir',$RT,'-c','22','-t','30','-o',$ts) -PassThru -NoNewWindow -WorkingDirectory $CandidateDir -RedirectStandardOutput (Join-Path $LOG 't03.out') -RedirectStandardError $clientErr
+if (-not $p.WaitForExit(90000)) {
+  $p.Id | Set-Content (Join-Path $LOG 't03-client-timeout.txt')
+  Stop-Process -Id $p.Id -ErrorAction SilentlyContinue
+  if (-not $p.WaitForExit(5000)) { $p.Id | Set-Content (Join-Path $LOG 't03-client-cleanup-timeout.txt') }
+}
+$p.Refresh()
+if ($p.HasExited -and $p.ExitCode -eq 0 -and -not (Test-Path (Join-Path $LOG 't03-client-timeout.txt'))) { 'complete: client exited 0' | Set-Content (Join-Path $LOG 't03-state.txt') } else { 'incomplete: client timeout/exit failure' | Set-Content (Join-Path $LOG 't03-state.txt') }
+if ($p.HasExited) { $p.ExitCode | Set-Content (Join-Path $LOG 't03-client.rc') } else { 'unavailable: owned client did not exit' | Set-Content (Join-Path $LOG 't03-client.rc') }
+if (Test-Path $ts) { Get-FileHash -Algorithm SHA256 $ts } else { 't03.ts unavailable' | Set-Content (Join-Path $LOG 't03-ts-missing.txt') }
+```
 
 ```powershell
 $D = (Resolve-Path .\sianod.exe).Path
