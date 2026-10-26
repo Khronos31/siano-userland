@@ -540,7 +540,14 @@ N/Aは製品機能上該当しない項目だけに使う。OS/ABI候補のunsup
 ## 1. 候補とbaselineを固定する
 
 1. 候補の `VERSION`、source commit、`release.yml` の run を特定する。dirty な作業ツリーや未 push の変更を候補として試験しない。
-2. baseline は完全な記録を持つ直近 Stable とする。現在は v0.1.5（その後 v0.1.6–v0.1.9 の tag はあるが実機記録が v0.1.5 で止まっている）。baseline 以後の累積差分を `git diff --stat "$BASELINE".."$CANDIDATE"` で把握する。
+2. baseline は完全な記録を持つ直近 Stable とする。現在は v0.1.5（その後 v0.1.6–v0.1.9 の tag はあるが実機記録が v0.1.5 で止まっている）。baseline 以後の累積差分を次のように把握する。
+
+   ```sh
+   : "${BASELINE:?export the recorded baseline revision}"
+   : "${CANDIDATE:?export the fixed candidate revision}"
+   case "$BASELINE:$CANDIDATE" in *'<'*|*'>'*|:|:*|*:) echo 'set both actual revisions before comparison' >&2; exit 2 ;; esac
+   git diff --stat "$BASELINE" "$CANDIDATE"
+   ```
 3. 各 archive の member（`siano-ts`、`libusb-1.0.dll`、`firmware/isdbt_rio.inp`、mdev 等）を baseline の実機検証 artifact と比較する。**byte-identical な archive はその実機証拠を直接継承する**。byte が異なる場合は §4 の class で hunk 単位に分類する。
 4. 対象 claim ごとに `継承` / `今回再検証` / `未認定` / `対象外` を根拠付きで記録する。時間経過・release 回数だけを理由にした再検証はしない。
 5. 前回の長時間試験の日付やrelease数は事実情報として記録できるが、エージェントがsoak有無・時間・OSを決める規則として使わない。
@@ -765,6 +772,16 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 # S-ANA: §6 の 1–3 を si.ts に適用
 ```
 
+代表機の必須2時間runは、7.1のcandidate daemonを維持した同じshellで短いS-RXとは別に実行する。初回/majorのmacOS・Windowsは1800秒、他OS/ABIは600秒を設定し、OSごとに別runで記録する。
+
+```sh
+CAPTURE_SECONDS='7200'; S="$CAPTURE_SECONDS"
+case "$S" in ''|*[!0-9]*|0) echo 'soak duration must be positive integer seconds' >&2; exit 2 ;; esac
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/representative-soak.ts" \
+  > "$LOG/representative-soak.out" 2> "$LOG/representative-soak.err" || { RC=$?; echo "$RC" > "$LOG/representative-soak.rc"; exit "$RC"; }
+echo 0 > "$LOG/representative-soak.rc"
+```
+
 ```sh
 # S-CTRL（daemonは維持し、後からper-selection実出力量でretune境界を確定）
 set -eu
@@ -891,11 +908,21 @@ test "$FAIL" -eq 0 || { echo 'one or more S-DUAL clients failed; inspect both cl
 # 各processが意図したUSB nodeをdaemon経由で所有していることを /proc/<pid>/fd で確認
 ```
 
+S-DISCはS-DUALとは別runである。§7.1のcandidate path/LOG/runtime値を保持し、今回の`--list-json`から選んだ異なる2 portを`PORT_A`/`PORT_B`として同じshellに設定してから実行する。
+
 ```sh
 # S-DISC（2台。S-DUALの別run。物理抜去/再接続はユーザーが実施）
 require_value() { name=$1 value=$2; case "$value" in ''|*'<'*|*'>'*) echo "invalid or unreplaced $name" >&2; return 1 ;; esac; }
 for name in DAEMON B C FW RT LOG PORT_A PORT_B; do eval "value=\${$name-}"; require_value "$name" "$value" || exit 2; done
 S=600
+"$DAEMON" --list-json > "$LOG/disc-discovery.json"
+python3 - "$LOG/disc-discovery.json" "$PORT_A" "$PORT_B" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1],encoding='utf-8')); devices=[d for e in x.get('enclosures',[]) for d in e.get('devices',[])]
+if sys.argv[2] == sys.argv[3]: raise SystemExit('PORT_A and PORT_B must be distinct')
+for port in sys.argv[2:]:
+ if not any(d.get('port') == port and d.get('usb') == '3275:0080' for d in devices): raise SystemExit(f'not a discovered PX-S1UD: {port}')
+PY
 "$DAEMON" --device "usb:$PORT_A" --instance a --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-a.out" 2> "$LOG/disc-daemon-a.err" & PID_A=$!
 "$DAEMON" --device "usb:$PORT_B" --instance b --firmware "$FW" --runtime-dir "$RT" > "$LOG/disc-daemon-b.out" 2> "$LOG/disc-daemon-b.err" & PID_B=$!
 "$B" --instance a --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/disc-a.ts" > "$LOG/disc-a.out" 2> "$LOG/disc-a.err" & CLIENT_A=$!
@@ -904,6 +931,7 @@ sleep 20
 # beep/vibeの直後にユーザーへdevice AのUSB物理抜去を依頼し、依頼時刻と抜去確認時刻を記録する（応答待ちは最大5分）。
 # 抜去確認から120秒以内にAが自然終了すること。timeout時は未達として記録し、Aのowned clientをcleanupする。
 A_HUNG=1
+FAIL=0
 for i in $(seq 1 120); do
   A_STATE=$(ps -o stat= -p "$CLIENT_A" | tr -d ' ')
   case "$A_STATE" in ''|Z*) A_HUNG=0; break ;; esac
@@ -912,21 +940,26 @@ done
 if [ "$A_HUNG" -eq 1 ]; then kill -TERM "$CLIENT_A"; fi
 if wait "$CLIENT_A"; then RC_A=0; else RC_A=$?; fi
 printf 'hung=%s exit=%s\n' "$A_HUNG" "$RC_A" > "$LOG/disc-a.rc"
+if [ "$A_HUNG" -ne 0 ] || [ "$RC_A" -ne 7 ]; then echo "expected device A client exit 7 inside 120 seconds, got hung=$A_HUNG exit=$RC_A" >&2; FAIL=1; fi
 # 期待: hung=0 exit=7。device Bのclientが生存し、A抜去後も継続していることを記録する。
 B_STATE=$(ps -o stat= -p "$CLIENT_B" | tr -d ' ')
 case "$B_STATE" in Z*|'') B_CONTINUED=0 ;; *) B_CONTINUED=1 ;; esac
 printf '%s\n' "$B_CONTINUED" > "$LOG/disc-b-continued-after-a.txt"
+if [ "$B_CONTINUED" -ne 1 ]; then echo 'device B client did not remain active after A removal' >&2; FAIL=1; fi
 # A daemonを通常停止してwaitし、B client/daemonは停止せずS=600秒完了まで動作させる。
 if kill -0 "$PID_A" 2>/dev/null; then kill -INT "$PID_A"; fi
 if wait "$PID_A"; then RC_DAEMON_A=0; else RC_DAEMON_A=$?; fi
 printf '%s\n' "$RC_DAEMON_A" > "$LOG/disc-daemon-a.rc"
+if [ "$RC_DAEMON_A" -ne 0 ]; then echo "device A daemon cleanup exit=$RC_DAEMON_A" >&2; FAIL=1; fi
 if wait "$CLIENT_B"; then RC_B=0; else RC_B=$?; fi
 printf '%s\n' "$RC_B" > "$LOG/disc-b.rc"
+if [ "$RC_B" -ne 0 ]; then echo "device B client exit=$RC_B" >&2; FAIL=1; fi
 # 期待: B_CONTINUED=1、B client exit 0。BのTSを§6で検査する。
 python3 "$TOOL/ts-check.py" "$LOG/disc-b.ts" > "$LOG/disc-b.ts-check.json"
 if kill -0 "$PID_B" 2>/dev/null; then kill -INT "$PID_B"; fi
 if wait "$PID_B"; then RC_DAEMON_B=0; else RC_DAEMON_B=$?; fi
 printf '%s\n' "$RC_DAEMON_B" > "$LOG/disc-daemon-b.rc"
+if [ "$RC_DAEMON_B" -ne 0 ]; then echo "device B daemon cleanup exit=$RC_DAEMON_B" >&2; FAIL=1; fi
 # beep/vibeの直後にユーザーへdevice Aの物理再接続を依頼し、依頼/確認時刻を記録する（応答待ちは最大5分）。
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json"
 # 新しいportを特定してから、旧runtimeを再利用せず新しいinstance/runtimeでAを再取得する。
@@ -953,10 +986,11 @@ find "$RT" "$RT_A_RECOVERY" \( -type s -o -type p \) -print > "$LOG/disc-ipc-rem
 ps -p "$PID_A" -o pid=,stat=,command= > "$LOG/disc-process-a-after.txt" 2>&1 || :
 ps -p "$PID_B" -o pid=,stat=,command= > "$LOG/disc-process-b-after.txt" 2>&1 || :
 ps -p "$PID_A_RECOVERY" -o pid=,stat=,command= > "$LOG/disc-process-recovery-after.txt" 2>&1 || :
-test ! -s "$LOG/disc-ipc-remnants.txt"
-test ! -s "$LOG/disc-process-a-after.txt"
-test ! -s "$LOG/disc-process-b-after.txt"
-test ! -s "$LOG/disc-process-recovery-after.txt"
+if [ -s "$LOG/disc-ipc-remnants.txt" ]; then echo 'IPC endpoints remain after owned daemon cleanup' >&2; FAIL=1; fi
+for path in "$LOG/disc-process-a-after.txt" "$LOG/disc-process-b-after.txt" "$LOG/disc-process-recovery-after.txt"; do
+  if [ -s "$path" ]; then echo "owned process remains: $path" >&2; FAIL=1; fi
+done
+test "$FAIL" -eq 0 || { echo 'S-DISC expected exit/continuation or owned cleanup check failed' >&2; exit 1; }
 # 1台/1 USB portの7.1a hotplug試験はこの2台試験の代用にならず、本手順もその代用にならない。
 ```
 
@@ -973,15 +1007,18 @@ E01/E02/E03/E04/E15-G/E05/E06/E07/E17の各配布archiveで、各環境固有準
 sleep 20
 # vibe/beep の直後に利用者へUSBを物理的に抜くよう依頼する（応答待ちは最大5分）。
 # 抜去の観測から120秒以内に終了し、exit 7であることを確認:
+FAIL=0
 for i in $(seq 1 120); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
 hung=0
 if kill -0 "$p" 2>/dev/null; then hung=1; kill -TERM "$p"; fi
 if wait "$p"; then rc=0; else rc=$?; fi
 echo "hung=$hung exit=$rc" > "$LOG/hotplug.rc"  # 期待: hung=0 exit=7
+if [ "$hung" -ne 0 ] || [ "$rc" -ne 7 ]; then echo "expected hotplug client exit 7 inside 120 seconds, got hung=$hung exit=$rc" >&2; FAIL=1; fi
 # vibe/beep の直後に再接続を依頼し（応答待ちは最大5分）、再接続された後:
 kill -INT "$DAEMON_PID"
 if wait "$DAEMON_PID"; then DAEMON_RC=0; else DAEMON_RC=$?; fi
 printf '%s\n' "$DAEMON_RC" > "$LOG/hotplug-daemon.rc"
+if [ "$DAEMON_RC" -ne 0 ]; then echo "hotplug daemon cleanup exit=$DAEMON_RC" >&2; FAIL=1; fi
 "$DAEMON" --list-json > "$LOG/discovery-reconnected.json" # 新しいportを選ぶ
 PORT='1-2.5'
 case "$PORT" in ''|*'<'*|*'>'*) echo 'replace PORT with the reconnected port from discovery JSON' >&2; exit 2 ;; esac
@@ -1000,6 +1037,8 @@ printf '%s\n' "$RC" > "$LOG/reconnected.rc"
 kill -INT "$DAEMON_PID"
 if wait "$DAEMON_PID"; then DAEMON_RC=0; else DAEMON_RC=$?; fi
 printf '%s\n' "$DAEMON_RC" > "$LOG/reconnected-daemon.rc"
+if [ "$RC" -ne 0 ] || [ "$DAEMON_RC" -ne 0 ]; then echo 'reconnected receive/daemon cleanup failed' >&2; FAIL=1; fi
+test "$FAIL" -eq 0 || { echo 'hotplug expected exit or owned cleanup check failed' >&2; exit 1; }
 ```
 
 一連の操作に総時間上限はない。各物理操作の依頼から操作完了までの待機だけを最大5分とする。抜去後に有限時間内に終了しない場合はhangとして失敗を記録し、processを止めて復旧する。WindowsとTermuxでは次の環境別起動法を使い、同じ物理順・待機条件を守る。2台を使う追加topology試験はこの1台必須試験の代用ではない。
