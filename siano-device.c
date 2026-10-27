@@ -412,12 +412,26 @@ static void cancel_transfers(struct siano_device *device)
             (void)libusb_cancel_transfer(transfers[i]);
     }
 }
-static void fail_streaming(struct siano_device *device, int error)
+static void fail_streaming(struct siano_device *device, int error,
+                           const char *origin, int detail)
 {
+    int active_transfers;
+
     if (!siano_stream_state_fail(&device->state, error))
         return;
 
     fprintf(stderr, "USB streaming stopped: %s\n", libusb_error_name(error));
+    if (device->startup_diagnostics) {
+        pthread_mutex_lock(&device->state.mutex);
+        active_transfers = device->active_transfers;
+        pthread_mutex_unlock(&device->state.mutex);
+        if (strcmp(origin, "transfer_callback") == 0)
+            fprintf(stderr, "startup diagnostic: first stream failure origin=%s transfer_status=%d stream_error=%d active=%d\n",
+                    origin, detail, error, active_transfers);
+        else
+            fprintf(stderr, "startup diagnostic: first stream failure origin=%s raw_rc=%d stream_error=%d active=%d\n",
+                    origin, detail, error, active_transfers);
+    }
     /* Wake stream_ts before waiting for the event thread to drain peers. */
     ts_queue_close(&device->ts);
     pthread_mutex_lock(&device->response_mutex);
@@ -442,7 +456,8 @@ static void transfer_callback(struct libusb_transfer *transfer)
 
     action = siano_transfer_classify_status(transfer->status, stopping);
     if (action == SIANO_TRANSFER_FATAL) {
-        fail_streaming(device, siano_transfer_status_error(transfer->status));
+        fail_streaming(device, siano_transfer_status_error(transfer->status),
+                       "transfer_callback", transfer->status);
         return;
     }
     if (action == SIANO_TRANSFER_DRAIN)
@@ -461,7 +476,7 @@ static void transfer_callback(struct libusb_transfer *transfer)
             device->active_transfers++;
         } else {
             pthread_mutex_unlock(&device->state.mutex);
-            fail_streaming(device, rc);
+            fail_streaming(device, rc, "callback_resubmit", rc);
             return;
         }
     }
@@ -484,7 +499,7 @@ static void *event_thread_main(void *arg)
 
         rc = libusb_handle_events_timeout(device->usb, &timeout);
         if (rc < 0 && rc != LIBUSB_ERROR_INTERRUPTED) {
-            fail_streaming(device, rc);
+            fail_streaming(device, rc, "event_api", rc);
         }
     }
     return NULL;
@@ -607,7 +622,8 @@ static void clear_response(struct siano_device *device, uint16_t type)
 }
 static int send_message_with_timeout(struct siano_device *device,
                                     const uint8_t *message, size_t length,
-                                    uint32_t timeout_ms)
+                                    uint32_t timeout_ms, int *out_rc,
+                                    int *out_transferred)
 {
     int transferred = 0;
     int rc;
@@ -616,11 +632,16 @@ static int send_message_with_timeout(struct siano_device *device,
     if (device->verbose)
         fprintf(stderr, "TX %s(%u) length=%zu\n", sms_message_type_name(type),
                 (unsigned)type, length);
-    if (timeout_ms == 0U)
+    if (timeout_ms == 0U) {
+        if (out_rc != NULL) *out_rc = -ETIMEDOUT;
+        if (out_transferred != NULL) *out_transferred = 0;
         return -ETIMEDOUT;
+    }
     rc = libusb_bulk_transfer(device->handle, device->tx_ep,
                               (unsigned char *)message, (int)length,
                               &transferred, timeout_ms);
+    if (out_rc != NULL) *out_rc = rc;
+    if (out_transferred != NULL) *out_transferred = transferred;
     if (rc == LIBUSB_ERROR_TIMEOUT)
         return -ETIMEDOUT;
     if (rc < 0)
@@ -632,15 +653,20 @@ static int send_message_with_timeout(struct siano_device *device,
 static int send_message(struct siano_device *device, const uint8_t *message,
                         size_t length)
 {
-    return send_message_with_timeout(device, message, length, 1000U);
+    return send_message_with_timeout(device, message, length, 1000U, NULL, NULL);
 }
-static int send_and_wait(struct siano_device *device, const uint8_t *message,
-                         size_t length, uint16_t response_type)
+static int send_and_wait_with_transfer_result(struct siano_device *device,
+                                              const uint8_t *message,
+                                              size_t length,
+                                              uint16_t response_type,
+                                              int *out_rc,
+                                              int *out_transferred)
 {
     int rc;
 
     clear_response(device, response_type);
-    rc = send_message(device, message, length);
+    rc = send_message_with_timeout(device, message, length, 1000U,
+                                   out_rc, out_transferred);
     if (rc < 0)
         return rc;
     rc = wait_response(device, response_type, CONTROL_TIMEOUT_MS);
@@ -654,6 +680,12 @@ static int send_and_wait(struct siano_device *device, const uint8_t *message,
     }
     return rc;
 }
+static int send_and_wait(struct siano_device *device, const uint8_t *message,
+                         size_t length, uint16_t response_type)
+{
+    return send_and_wait_with_transfer_result(device, message, length,
+                                               response_type, NULL, NULL);
+}
 static int send_and_wait_with_timeout(struct siano_device *device,
                                       const uint8_t *message, size_t length,
                                       uint16_t response_type,
@@ -665,7 +697,7 @@ static int send_and_wait_with_timeout(struct siano_device *device,
     uint32_t timeout_ms = tune_remaining_ms(deadline);
     if (timeout_ms == 0U)
         return -ETIMEDOUT;
-    rc = send_message_with_timeout(device, message, length, timeout_ms);
+    rc = send_message_with_timeout(device, message, length, timeout_ms, NULL, NULL);
     if (rc < 0)
         return rc;
     timeout_ms = tune_remaining_ms(deadline);
@@ -780,14 +812,22 @@ static int load_family2_firmware(struct siano_device *device, const char *path,
         size_t chunk = file_size - offset;
         if (chunk > SMS_MAX_PAYLOAD_SIZE)
             chunk = SMS_MAX_PAYLOAD_SIZE;
+        int out_rc = 0;
+        int out_transferred = 0;
         sms_pack_header(message, MSG_SMS_DATA_DOWNLOAD_REQ, 0, SMS_HIF_TASK,
                         (uint16_t)(SMS_HEADER_SIZE + 4U + chunk), 0);
         sms_put_le32(message + SMS_HEADER_SIZE, address);
         memcpy(message + SMS_HEADER_SIZE + 4U, wire_payload + offset, chunk);
-        rc = send_and_wait(device, message, SMS_HEADER_SIZE + 4U + chunk,
-                           MSG_SMS_DATA_DOWNLOAD_RES);
-        if (rc < 0)
+        rc = send_and_wait_with_transfer_result(
+            device, message, SMS_HEADER_SIZE + 4U + chunk,
+            MSG_SMS_DATA_DOWNLOAD_RES, &out_rc, &out_transferred);
+        if (rc < 0) {
+            if (device->startup_diagnostics)
+                fprintf(stderr, "startup diagnostic: firmware request=MSG_SMS_DATA_DOWNLOAD_REQ offset=%zu chunk=%zu out_requested=%zu out_rc=%d out_transferred=%d result_rc=%d\n",
+                        offset, chunk, SMS_HEADER_SIZE + 4U + chunk,
+                        out_rc, out_transferred, rc);
             goto out;
+        }
         offset += chunk;
         address += (uint32_t)chunk;
     }
@@ -986,7 +1026,8 @@ static int tune_internal(struct siano_device *device, uint32_t frequency,
                         SMS_HIF_TASK, sizeof(stats), 0);
         if (whole_deadline)
             (void)send_message_with_timeout(device, stats, sizeof(stats),
-                                            tune_remaining_ms(&deadline));
+                                            tune_remaining_ms(&deadline),
+                                            NULL, NULL);
         else
             (void)send_message(device, stats, sizeof(stats));
         /* Discard a bounded amount of TS during lock wait. An unbounded
@@ -1463,6 +1504,9 @@ int init_device_state_capture(struct siano_device *device, libusb_context *usb,
     memset(device, 0, sizeof(*device));
     device->usb = usb;
     device->verbose = verbose;
+    const char *startup_diagnostics = getenv("SIANO_STARTUP_DIAGNOSTICS");
+    device->startup_diagnostics = startup_diagnostics != NULL &&
+                                  strcmp(startup_diagnostics, "1") == 0;
     device->interface_number = -1;
     if (siano_stream_state_init(&device->state) != 0)
         return -1;
