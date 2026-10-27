@@ -42,7 +42,8 @@ px4::userland::TunerStreamCounters to_legacy(const engine::StreamCounters& count
                                               counters.sync_errors, counters.tei_packets,
                                               counters.continuity_errors,
                                               counters.queue_drops, counters.usb_errors,
-                                              counters.empty_intervals};
+                                              counters.empty_intervals,
+                                              counters.availability};
 }
 
 libusb_context* init_own_usb(bool no_device_discovery) noexcept
