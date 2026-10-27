@@ -71,6 +71,7 @@ struct siano_device {
     uint8_t tx_ep;
     int response_alignment;
     int verbose;
+    bool startup_diagnostics;
 
     pthread_t event_thread;
     bool event_thread_started;

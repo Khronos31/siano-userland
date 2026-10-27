@@ -13,6 +13,7 @@ extern "C" {
 #include <cstring>
 #include <ctime>
 #include <cstdio>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -25,6 +26,7 @@ extern "C" unsigned test_libusb_pid_requests(void);
 extern "C" std::uint32_t test_libusb_last_tune_hz(void);
 extern "C" void test_libusb_suppress_tune_response(bool);
 extern "C" void test_libusb_fail_next_bulk(int);
+extern "C" int test_libusb_fail_stream(int);
 extern "C" int test_libusb_deliver_control_to(struct libusb_transfer*, std::uint16_t);
 
 namespace {
@@ -123,6 +125,21 @@ int main()
     test_libusb_fail_next_bulk(LIBUSB_ERROR_NO_DEVICE);
     const auto unavailable = backend.open(receiver);
     assert(!unavailable && unavailable.error() == Error::DISCONNECTED);
+    {
+        auto failure_consumer = std::make_unique<Consumer>();
+        auto failure_backend = std::make_unique<ReceiverAdapter>(
+            nullptr, selector, "0", std::string{}, receiver,
+            *failure_consumer, clock, 2U);
+        assert(failure_backend->open(receiver));
+        assert(test_libusb_fail_stream(LIBUSB_TRANSFER_ERROR) == 0);
+        for (unsigned attempt = 0U; attempt < 2000U; ++attempt) {
+            if (siano_stream_state_is_stopping(&failure_backend->device().state)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        assert(siano_stream_state_error(&failure_backend->device().state) ==
+               LIBUSB_ERROR_NO_DEVICE);
+        assert(failure_backend->close(receiver));
+    }
     const std::array<ReceiverId, 1> receivers{receiver};
     ReceiverEngine engine(backend, receivers.data(), receivers.size(), tokens, clock,
                           &leases, &attachments, &backend);

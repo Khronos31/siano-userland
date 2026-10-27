@@ -146,6 +146,22 @@ void test_libusb_suppress_tune_response(bool suppress)
 { suppress_tune_response = suppress; }
 void test_libusb_fail_next_bulk(int error)
 { next_bulk_error = error; }
+int test_libusb_fail_stream(int status)
+{
+    pthread_mutex_lock(&loop_mutex);
+    for (size_t i = 0U; i < LOOPBACK_TRANSFERS; ++i) {
+        if (transfers[i] && pending[i]) {
+            pending[i] = false;
+            transfers[i]->status = status;
+            transfers[i]->actual_length = 0;
+            const int rc = queue_event(transfers[i]);
+            pthread_mutex_unlock(&loop_mutex);
+            return rc;
+        }
+    }
+    pthread_mutex_unlock(&loop_mutex);
+    return LIBUSB_ERROR_NOT_FOUND;
+}
 int test_libusb_deliver_control_to(struct libusb_transfer *transfer, uint16_t type)
 {
     uint8_t message[SMS_HEADER_SIZE];
