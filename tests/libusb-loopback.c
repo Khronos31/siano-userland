@@ -32,6 +32,7 @@ static size_t event_head;
 static size_t event_count;
 static unsigned control_requests;
 static uint16_t last_control_type;
+static int next_bulk_error;
 int test_libusb_deliver(struct libusb_transfer*, const uint8_t*, size_t);
 int test_libusb_pending(struct libusb_transfer*);
 static int queue_event(struct libusb_transfer *transfer);
@@ -143,6 +144,8 @@ static int deliver_response(uint16_t type, const uint8_t *payload, size_t payloa
 
 void test_libusb_suppress_tune_response(bool suppress)
 { suppress_tune_response = suppress; }
+void test_libusb_fail_next_bulk(int error)
+{ next_bulk_error = error; }
 int test_libusb_deliver_control_to(struct libusb_transfer *transfer, uint16_t type)
 {
     uint8_t message[SMS_HEADER_SIZE];
@@ -161,6 +164,12 @@ int LIBUSB_CALL libusb_bulk_transfer(libusb_device_handle *handle,
 {
     (void)handle; (void)timeout;
     if ((endpoint & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT && length >= (int)SMS_HEADER_SIZE) {
+        if (next_bulk_error != 0) {
+            const int error = next_bulk_error;
+            next_bulk_error = 0;
+            *transferred = 0;
+            return error;
+        }
         const uint16_t type = sms_get_le16(data);
         ++control_requests;
         last_control_type = type;

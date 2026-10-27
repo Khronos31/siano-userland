@@ -73,7 +73,8 @@ std::uint32_t ReceiverAdapter::lock_settle_ms(ReceiverId, ReceiverSystem) const 
 ReceiverAdapter::Result ReceiverAdapter::from_errno(int rc) noexcept
 {
     if (rc == -ETIMEDOUT) return result(Error::TIMEOUT);
-    if (rc == -ENODEV || rc == -ENXIO) return result(Error::DISCONNECTED);
+    if (rc == LIBUSB_ERROR_NO_DEVICE || rc == -ENODEV || rc == -ENXIO)
+        return result(Error::DISCONNECTED);
     if (rc == -EBUSY || rc == -EALREADY) return result(Error::BUSY);
     if (rc == -EINVAL) return result(Error::INVALID_ARGUMENT);
     return result(Error::INTERNAL);

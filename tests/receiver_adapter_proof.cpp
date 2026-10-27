@@ -24,6 +24,7 @@ extern "C" unsigned test_libusb_tune_requests(void);
 extern "C" unsigned test_libusb_pid_requests(void);
 extern "C" std::uint32_t test_libusb_last_tune_hz(void);
 extern "C" void test_libusb_suppress_tune_response(bool);
+extern "C" void test_libusb_fail_next_bulk(int);
 extern "C" int test_libusb_deliver_control_to(struct libusb_transfer*, std::uint16_t);
 
 namespace {
@@ -119,6 +120,9 @@ int main()
     siano_device_selector selector{};
     assert(siano_parse_device_selector("0", &selector) == 0);
     ReceiverAdapter backend(nullptr, selector, "0", {}, receiver, consumer, clock, 2U);
+    test_libusb_fail_next_bulk(LIBUSB_ERROR_NO_DEVICE);
+    const auto unavailable = backend.open(receiver);
+    assert(!unavailable && unavailable.error() == Error::DISCONNECTED);
     const std::array<ReceiverId, 1> receivers{receiver};
     ReceiverEngine engine(backend, receivers.data(), receivers.size(), tokens, clock,
                           &leases, &attachments, &backend);
