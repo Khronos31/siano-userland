@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <unistd.h>
 
 extern "C" unsigned test_libusb_pid_requests(void);
@@ -48,6 +49,12 @@ int main()
     dtv::userland::wire::ListResponse control{};
     if (!build_siano_control_context(facts, epoch.value(),
             "0.0.0-dev", control)) return 1;
+    if (std::string(control.producer.version.bytes.data(),
+                    control.producer.version.length) != "0.0.0-dev" ||
+        !control.producer.core_version.present ||
+        std::string(control.producer.core_version.value.bytes.data(),
+                    control.producer.core_version.value.length) !=
+            DTV_USERLAND_CORE_VERSION) return 1;
     if (control.functions.items[0].location.usb_path.present) return 1;
     const auto closed = assembly.context->close(dtv::userland::Timeout{15000U});
     if (!closed || closed.value() !=
