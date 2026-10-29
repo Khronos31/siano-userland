@@ -419,7 +419,7 @@ TOOL="$WORK/tooling"; mkdir -m 700 -p "$TOOL"
 gh api -H 'Accept: application/vnd.github.raw' "repos/Khronos31/siano-userland/contents/docs/release-validation/ts-check.py?ref=$RUNBOOK_REF" > "$TOOL/ts-check.py"
 if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | sha256sum -c -; else printf '%s  %s\n' "$HELPER_SHA256" "$TOOL/ts-check.py" | shasum -a 256 -c -; fi
 printf '%s\n' "$RUNBOOK_REF $HELPER_SHA256" > "$LOG/ts-helper-version.txt"
-QUALITY_REF='a41e1ff9bd059b1d77441664380a338de683cd9b'; QUALITY_SHA256='69db89cbae511fe849e3eec48524ed8177490002a5c18109acbbeda77a71e57d'
+QUALITY_REF='9d9d998672952e0608728fa35cc94e59eaf1b26e'; QUALITY_SHA256='8414beef6c3735ffa480a907b332a5776d9a7c734dacde9203920e18e4dce190'
 gh api -H 'Accept: application/vnd.github.raw' "repos/Khronos31/siano-userland/contents/docs/release-validation/ts-quality-check.py?ref=$QUALITY_REF" > "$TOOL/ts-quality-check.py"
 if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$QUALITY_SHA256" "$TOOL/ts-quality-check.py" | sha256sum -c -; else printf '%s  %s\n' "$QUALITY_SHA256" "$TOOL/ts-quality-check.py" | shasum -a 256 -c -; fi
 printf '%s\n' "$QUALITY_REF $QUALITY_SHA256" > "$LOG/ts-quality-helper-version.txt"
@@ -520,15 +520,26 @@ if ($parserRc -ne 0) { throw "TS parser failed: $parserRc" }
 | `siano-s1ud` | PX-S1UD receiver 0 | `TEI × 100000 < packets`（0.001%未満） | 10件未満 |
 
 各環境で次を一度実行する。
-Windows PowerShellでは`python $QualityGate --profile siano-s1ud --environment windows <scan-json>`、macOSでは`python3 "$TOOL/ts-quality-check.py" --profile siano-s1ud --environment macos <scan-json>`を使い、JSONと終了値を保存する。
+Windows PowerShellでは`python $QualityGate --profile siano-s1ud --environment windows 0=<scan-json>`、macOSでは`python3 "$TOOL/ts-quality-check.py" --profile siano-s1ud --environment macos 0=<scan-json>`を使い、JSONと終了値を保存する。
 
 ```sh
 PROFILE='siano-s1ud'; ENVIRONMENT='representative-linux'
-if python3 "$TOOL/ts-quality-check.py" --profile "$PROFILE" --environment "$ENVIRONMENT" "$LOG/capture.ts-check.json" > "$LOG/t15-$PROFILE.json"; then T15_RC=0; else T15_RC=$?; fi
+if python3 "$TOOL/ts-quality-check.py" --profile "$PROFILE" --environment "$ENVIRONMENT" "0=$LOG/capture.ts-check.json" > "$LOG/t15-$PROFILE.json"; then T15_RC=0; else T15_RC=$?; fi
 printf '%s\n' "$T15_RC" > "$LOG/t15-$PROFILE.rc"
 ```
 
-- **期待値/終了値:** TEI率はTEI件数/packet数×100で、境界値を含まず整数の元値で判定する。CCは採用`tei_null_excluded`定義。CCは10件未満。0 packet、scan JSON欠落/不正はFAILとし、0%/0件へ補完しない。T15はTEI/CC判定のみで、既存T09 parser exitやsync/framing判定を上書きしない。
+- **Windows PowerShell T15例:** T09と同じhelperで各TS JSON・stderr・終了値を残す。非0でもthrowせず数値判定へ進み、T09の記録・評価は変更しない。
+
+```powershell
+$Ts = Join-Path $LOG 'capture.ts'; $Json = Join-Path $LOG 'capture.ts-check.json'; $Err = Join-Path $LOG 'capture.ts-check.err'
+& python $Helper $Ts 1> $Json 2> $Err; $ParserRc = $LASTEXITCODE
+$ParserRc | Set-Content (Join-Path $LOG 'capture.ts-check.rc')
+$ScanArg = '0=' + $Json
+& python $QualityGate --profile siano-s1ud --environment windows $ScanArg 1> (Join-Path $LOG 't15-siano-s1ud.json') 2> (Join-Path $LOG 't15-siano-s1ud.err'); $T15Rc = $LASTEXITCODE
+$T15Rc | Set-Content (Join-Path $LOG 't15-siano-s1ud.rc')
+```
+
+- **期待値/終了値:** TEI率はTEI件数/packet数×100で、境界値を含まず整数の元値で判定する。CCは採用`tei_null_excluded`定義。CCは10件未満。0 packet、scan JSON欠落/不正はFAILとし、0%/0件へ補完しない。tool出力の`scope`は`tei_cc_numeric_only`、`capture_conditions_verified_by_tool`はfalse、`t15_overall`は`not_determined_by_tool`とし、数値判定とT15全体を混同しない。T15全体は版別記録で、必要receiverのTSが揃い、各TSが記録時刻で300秒以上、client exit・T09 rc/JSON・tool出力が記録され、数値toolがPASSの場合に限り「完了・数値PASS」とする。欠落時は未完了、数値FAIL時は「完了・数値FAIL」として人間の逐次判断を待つ。T15はTEI/CC判定のみで、既存T09 parser exitやsync/framing判定を上書きしない。
 - **停止/cleanup:** 自動再取得・自動修復はしない。不合格で停止して人間の逐次判断を待つ。
 - **記録:** profile/pattern、環境、実測capture秒数、candidate/archive/helper ref/hash、TS path/hash、packet数/TEI数/TEI率/採用CC、clientとparser終了値、T15 JSON/終了値を版別記録から参照する。人間が不合格を受け入れる場合は理由・判断者・コメント等の参照を別に記録し、測定値・T15 JSONの自動判定を編集しない。
 
