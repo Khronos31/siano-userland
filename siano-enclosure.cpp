@@ -133,8 +133,10 @@ dtv::userland::Result<void> build_siano_control_context(
     wire::ListResponse& list = out;
     list.epoch = epoch;
     if (!copy_text(list.producer.product, "siano-userland") ||
-        !copy_text(list.producer.version, product_version))
+        !copy_text(list.producer.version, product_version) ||
+        !copy_text(list.producer.core_version.value, DTV_USERLAND_CORE_VERSION))
         return Result<void>::failure(Error::INVALID_ARGUMENT);
+    list.producer.core_version.present = true;
     list.topology.state = wire::TopologyState::complete;
     list.topology.expected_function_count.present = true;
     list.topology.expected_function_count.value = 1U;

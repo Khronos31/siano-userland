@@ -5,12 +5,20 @@ include(FetchContent)
 option(BUILD_TESTING "Build the existing Siano proofs" ON)
 set(SIANO_LINK_MAP_DIR "" CACHE PATH "Optional per-program link map output directory")
 
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SIANO_PRODUCT_VERSION_LINES)
+list(LENGTH SIANO_PRODUCT_VERSION_LINES SIANO_PRODUCT_VERSION_LINE_COUNT)
+if(NOT SIANO_PRODUCT_VERSION_LINE_COUNT EQUAL 1 OR
+        NOT SIANO_PRODUCT_VERSION_LINES MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION must contain one N.N.N line")
+endif()
+list(GET SIANO_PRODUCT_VERSION_LINES 0 SIANO_PRODUCT_VERSION)
+
 set(DTV_USERLAND_CORE_SOURCE_DIR "" CACHE PATH
     "Explicit local dtv-userland-core source override")
 set(SIANO_PX4_USERLAND_SOURCE_DIR "" CACHE PATH
     "Explicit local PX4 userland source override")
-set(SIANO_RUNTIME_VERSION "0.0.0-dev" CACHE STRING
-    "Siano runtime version (default is an unreleased development build)")
+set(SIANO_RUNTIME_VERSION "${SIANO_PRODUCT_VERSION}" CACHE STRING
+    "Siano runtime version (defaults to VERSION)")
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmake/dtv-userland-core.revision" DTV_CORE_REVISION)
 string(STRIP "${DTV_CORE_REVISION}" DTV_CORE_REVISION)
@@ -63,6 +71,13 @@ endif()
 if(NOT EXISTS "${DTV_CORE_SOURCE}/CMakeLists.txt")
     message(FATAL_ERROR "dtv-userland-core source has no CMakeLists.txt: ${DTV_CORE_SOURCE}")
 endif()
+file(STRINGS "${DTV_CORE_SOURCE}/CMakeLists.txt" DTV_CORE_PROJECT_LINE
+    REGEX "^project\\(dtv_userland_core VERSION ")
+if(NOT DTV_CORE_PROJECT_LINE MATCHES
+        "^project\\(dtv_userland_core VERSION ([0-9]+\\.[0-9]+\\.[0-9]+) LANGUAGES CXX\\)$")
+    message(FATAL_ERROR "Could not read dtv-userland-core project version")
+endif()
+set(DTV_USERLAND_CORE_VERSION "${CMAKE_MATCH_1}")
 set(DTV_USERLAND_BUILD_CAPTURE ON CACHE BOOL "Build packet capture storage" FORCE)
 set(DTV_USERLAND_BUILD_RECEIVER ON CACHE BOOL "Build receiver engine" FORCE)
 set(DTV_USERLAND_BUILD_CARD ON CACHE BOOL "Build card ownership engine" FORCE)
@@ -217,6 +232,8 @@ add_library(siano_runtime STATIC
     siano-runtime-backend.cpp
     siano-enclosure.cpp)
 target_compile_features(siano_runtime PUBLIC cxx_std_17)
+target_compile_definitions(siano_runtime PRIVATE
+    DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}")
 siano_include_project_root(siano_runtime)
 target_link_libraries(siano_runtime PUBLIC
     siano_px4_runtime siano_capture_composition
@@ -306,6 +323,8 @@ add_executable(siano_runtime_features_proof
     tests/runtime_features_proof.cpp
     tests/libusb-loopback.c tests/libusb-loopback-topology.c)
 target_compile_features(siano_runtime_features_proof PRIVATE cxx_std_17)
+target_compile_definitions(siano_runtime_features_proof PRIVATE
+    DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}")
 target_link_libraries(siano_runtime_features_proof PRIVATE
     siano_runtime siano_libusb Threads::Threads)
 
