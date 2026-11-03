@@ -297,9 +297,9 @@ D="$WORK/candidate"; LOG="$WORK/log"; RT="$WORK/runtime"; mkdir -m 700 "$LOG" "$
 python3 -c 'import json,sys; m=json.load(open("manifest.json")); assert m.get("source_ref")==sys.argv[1] and m.get("platform")==sys.argv[2]' "$SOURCE_SHA" "$TARGET"
 ```
 
-Windows PowerShell unpacks the candidate ZIP with `Expand-Archive` to a new empty `$D` and compares `Get-FileHash -Algorithm SHA256` with the matching entry in the downloaded `SHA256SUMS`. On Linux/macOS/Termux verify the outer `SHA256SUMS`, then hash the selected archive and compare it with that manifest entry. Record target archive, artifact ID/name, source/run/attempt, manifest provenance, and archive SHA. Termux uses `$PREFIX/tmp` or `$HOME`, never assumes OS `/tmp`; acquire `termux-usb -l` output and request permission only for the node whose VID/PID/name matches the Siano tuner. Check `gh`, Python 3.11+, `tar`, `unzip`, and SHA tool (`python --version` on Windows); Termux dependencies use `pkg install gh python coreutils tar unzip`. Host package changes require host owner approval. Linux permissions are first observed with `id`, `stat`, and `lsusb -t`; any approved udev/group change saves original state and restores it after the run. HAOS/Supervisor settings are not changed.
+Windows PowerShellでは、新しい空の `$D` に `Expand-Archive` で候補ZIPを展開し、`Get-FileHash -Algorithm SHA256` をダウンロードした `SHA256SUMS` の対応するエントリと比較する。Linux/macOS/Termuxでは外側の `SHA256SUMS` を検証したうえで、選択したアーカイブをハッシュ化してマニフェストエントリと比較する。対象アーカイブ、artifact ID/名称、source/run/attempt、マニフェストの由来、およびアーカイブのSHAを記録する。TermuxはOSの `/tmp` を前提とせず、`$PREFIX/tmp` または `$HOME` を使う。`termux-usb -l` の出力を取得し、VID/PID/名称がSianoチューナーと一致するノードにのみアクセス権を要求する。`gh`、Python 3.11以上、`tar`、`unzip`、およびSHAツール（Windowsでは `python --version`）を確認する。Termuxの依存関係は `pkg install gh python coreutils tar unzip` を使う。ホストのパッケージ変更にはホスト管理者の承認を要する。Linuxのアクセス権は最初に `id`、`stat`、`lsusb -t` で確認する。承認されたudev/groupの変更は元の状態を退避し、試験後に復元する。HAOS/Supervisor設定は変更しない。
 
-Windows PowerShell candidate retrieval and extraction:
+Windows PowerShellでの候補取得と展開手順:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
