@@ -819,12 +819,14 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 # S-ANA: §6 の 1–3 を si.ts に適用
 ```
 
-代表機の必須2時間runは、7.1のcandidate daemonを維持した同じshellで短いS-RXとは別に実行する。初回/majorのmacOS・Windowsは1800秒、他OS/ABIは600秒を設定し、OSごとに別runで記録する。
+代表機の必須2時間runは、7.1のcandidate daemonを維持した同じshellで短いS-RXとは別に実行する。初回/majorのmacOS・Windowsは1800秒、他OS/ABIは600秒を設定し、OSごとに別runで記録する。7200秒はTSを破棄し、1800秒/600秒ではTSを代表soakファイルへ保存して既存の品質検査に利用できる。
 
 ```sh
 CAPTURE_SECONDS='7200'; S="$CAPTURE_SECONDS"
 case "$S" in ''|*[!0-9]*|0) echo 'soak duration must be positive integer seconds' >&2; exit 2 ;; esac
-"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o /dev/null \
+CAPTURE_OUTPUT="$LOG/representative-soak.ts"
+if [ "$S" = 7200 ]; then CAPTURE_OUTPUT=/dev/null; fi
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$CAPTURE_OUTPUT" \
   > "$LOG/representative-soak.out" 2> "$LOG/representative-soak.err" || { RC=$?; echo "$RC" > "$LOG/representative-soak.rc"; exit "$RC"; }
 echo 0 > "$LOG/representative-soak.rc"
 ```
