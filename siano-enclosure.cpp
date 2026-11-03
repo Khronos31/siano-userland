@@ -6,6 +6,7 @@ extern "C" {
 }
 
 #ifdef _WIN32
+#include <dtv/userland/host_runtime/posix_ipc.h>
 #include "px4/windows_tuner_nonce.h"
 #else
 #include "px4/posix_ipc.h"
@@ -313,18 +314,12 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     const char* selected_root = runtime_directory;
     std::string automatic_root;
     if (selected_root == nullptr) {
-#if defined(_WIN32)
-        selected_root = std::getenv("LOCALAPPDATA");
-        if (selected_root == nullptr || selected_root[0] == '\0')
-            selected_root = std::getenv("TEMP");
-#else
         const auto selected =
             px4::userland::ipc::posix::select_publish_runtime_root(
                 "siano-userland", assembly.instance.c_str());
         if (!selected) return Result<SianoAssembly>::failure(selected.error());
         automatic_root = selected.value();
         selected_root = automatic_root.c_str();
-#endif
     }
 
     host_context::ContextConfig context_config{};
