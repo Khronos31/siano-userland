@@ -307,6 +307,16 @@ ParsedArguments parse_arguments(int argc, char* const* argv) noexcept
         parsed.arguments.valid = false;
         parsed.arguments.error = "--control cannot be combined with --time or --packet-count";
     }
+    if (parsed.arguments.valid && !parsed.arguments.help &&
+        !parsed.arguments.version && parsed.arguments.instance.empty()) {
+        parsed.arguments.valid = false;
+        parsed.arguments.error = "--instance is required";
+    }
+    if (parsed.arguments.valid && !parsed.arguments.help &&
+        !parsed.arguments.version && parsed.arguments.receiver >= 8U) {
+        parsed.arguments.valid = false;
+        parsed.arguments.error = "--receiver must be an integer in 0..7";
+    }
     return parsed;
 }
 

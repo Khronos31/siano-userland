@@ -66,6 +66,10 @@ for args in \
     "--control --control --instance RoomA --receiver 0 -o $sentinel" \
     "--control --instance RoomA --receiver 0 --time - -o $sentinel" \
     "--control --instance RoomA --receiver 0 --packet-count 1 -o $sentinel" \
+    "--control --receiver 0 -o $sentinel" \
+    "--control --instance RoomA -o $sentinel" \
+    "--control --instance RoomA --receiver 8 -o $sentinel" \
+    "--control --instance RoomA --receiver 255 -o $sentinel" \
     "--control --instance CON --receiver 0 -o $sentinel" \
     "--control --instance room/name --receiver 0 -o $sentinel" \
     "--control --instance RoomA. --receiver 0 -o $sentinel"; do
