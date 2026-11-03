@@ -6,6 +6,7 @@ extern "C" {
 }
 
 #ifdef _WIN32
+#include <dtv/userland/host_runtime/posix_ipc.h>
 #include "px4/windows_tuner_nonce.h"
 #else
 #include "px4/posix_ipc.h"
