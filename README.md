@@ -11,13 +11,13 @@ daemon 構成では、USB の `--fd` と `-p/--pid` は **`sianod` に指定**�
 `siano-ts --receiver` は共通 CLI の範囲 `0..7` を受け付けますが、Siano が公開する受信機は `0` のみです。未搭載の受信機 ID は daemon への照会後に `NOT_FOUND`（終了コード `3`）になります。
 
 ```sh
-./sianod --device usb:1-4.2 --instance s1ud --pid 0x2000
+./sianod --device usb:1-4.2 --instance s1ud --firmware /path/isdbt_rio.inp --pid 0x2000
 ./sianoctl --instance s1ud status
-./siano-ts --instance s1ud --control
+./siano-ts --instance s1ud --receiver 0 --control
 # stdin: channel 27 / tune 545142857 / quit
 
 # Termux: USB 所有者の daemon を termux-usb から起動
-termux-usb -r -e './sianod --instance s1ud' /dev/bus/usb/001/004
+termux-usb -r -e './sianod --instance s1ud --firmware /path/isdbt_rio.inp' /dev/bus/usb/001/004
 ```
 
 `--control` は初期の `-c/-f` を省略でき、既存の stdin parser と共有 UDTV 選局・停止 API を使います。`--time` / `--packet-count` とは併用できません。PID は daemon 起動時に最大64個を指定でき、最初の選局成功後に設定します。未指定と明示 `0x2000` は ACK を待たない catch-all を使います。daemon が USB を所有している間の PID 構成は固定です。
@@ -77,7 +77,7 @@ termux-usb -r -e './sianod --instance s1ud' /dev/bus/usb/001/004
 .\sianod.exe --device usb:BUS-PORT --instance s1ud --firmware .\firmware\isdbt_rio.inp
 # BUS-PORTは実際の値へ置換。daemonを動かしたまま別のPowerShellで:
 .\sianoctl.exe --instance s1ud status
-.\siano-ts.exe --instance s1ud -c 22 -t 30 -o received.ts
+.\siano-ts.exe --instance s1ud --receiver 0 -c 22 -t 30 -o received.ts
 # 終了時はdaemonのconsoleでCtrl+C。
 ```
 
@@ -133,7 +133,7 @@ Fedora 44（SELinux Enforcing）における検証要約、証明範囲、再検
 ./sianod --device usb:1-4.2 --instance s1ud --firmware /path/isdbt_rio.inp
 # 別のターミナルから同じユーザーで接続
 ./sianoctl --instance s1ud list
-./siano-ts --instance s1ud -c T27 -t 30 -o /tmp/output.ts
+./siano-ts --instance s1ud --receiver 0 -c T27 -t 30 -o /tmp/output.ts
 ```
 
 USB node の権限は `sianod` に必要です。`--runtime-dir` を指定する場合は3コマンドで同じ値を使ってください。Termux では上の `termux-usb` 例で daemon を起動し、そのプロセスと FD を保持したまま別のターミナルから client を実行します。USB FD を client に渡し直す必要はありません。

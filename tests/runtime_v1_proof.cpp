@@ -140,10 +140,8 @@ int run_client(const std::string& runtime_dir, const std::string& instance,
             argv[index++] = "--packet-count";
             argv[index++] = time_value;
         }
-        if (receiver != nullptr) {
-            argv[index++] = "--receiver";
-            argv[index++] = receiver;
-        }
+        argv[index++] = "--receiver";
+        argv[index++] = receiver != nullptr ? receiver : "0";
         argv[index++] = "--instance";
         argv[index++] = instance.c_str();
         if (explicit_runtime_dir) {
@@ -209,7 +207,7 @@ int run_control_ts(const std::string& runtime_dir, const std::string& instance,
         close(input_pipe[1]);
         if (dup2(input_pipe[0], STDIN_FILENO) < 0) _exit(127);
         close(input_pipe[0]);
-        const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+        const char* argv[] = {SIANO_TS_PATH, "--control", "--receiver", "0",
                               "--instance", instance.c_str(), "--runtime-dir",
                               runtime_dir.c_str(), "-o", output.c_str(),
                               "--tune-timeout-ms", "5000", nullptr};
@@ -222,6 +220,9 @@ int run_control_ts(const std::string& runtime_dir, const std::string& instance,
     bool ok = true;
     unsigned tunes = test_libusb_tune_requests();
     std::vector<std::uint8_t> expected;
+    const char initial_command[] = "channel 13\n";
+    if (write(input_pipe[1], initial_command, sizeof(initial_command) - 1U) !=
+        static_cast<ssize_t>(sizeof(initial_command) - 1U)) ok = false;
     for (unsigned selection = 0U; selection < 2U; ++selection) {
         bool attached = false;
         const std::uint32_t expected_frequency =
@@ -287,6 +288,7 @@ int run_control_ts_failure(const std::string& runtime_dir,
         close(input_pipe[0]);
         close(error_pipe[1]);
         const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--receiver", "0",
                               "--instance", instance.c_str(), "--runtime-dir",
                               runtime_dir.c_str(), "-o", "/dev/null",
                               "--tune-timeout-ms", "5000", nullptr};
@@ -310,6 +312,70 @@ int run_control_ts_failure(const std::string& runtime_dir,
     return WEXITSTATUS(status) == 0 &&
         errors.find("control: runtime namespace is missing") != std::string::npos &&
         errors.find("--runtime-dir and --instance") != std::string::npos ? 0 : 1;
+}
+
+int run_control_ts_missing_receiver(const std::string& runtime_dir,
+                                    const std::string& instance)
+{
+    int input_pipe[2];
+    int error_pipe[2];
+    if (pipe(input_pipe) != 0 || pipe(error_pipe) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid == 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        if (dup2(input_pipe[0], STDIN_FILENO) < 0 ||
+            dup2(error_pipe[1], STDERR_FILENO) < 0) _exit(127);
+        close(input_pipe[0]);
+        close(error_pipe[1]);
+        std::freopen("/dev/null", "w", stdout);
+        const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--receiver", "1",
+                              "--instance", instance.c_str(), "--runtime-dir",
+                              runtime_dir.c_str(), "--tune-timeout-ms", "500", nullptr};
+        execv(SIANO_TS_PATH, const_cast<char* const*>(argv));
+        _exit(127);
+    }
+    close(input_pipe[0]);
+    close(error_pipe[1]);
+    if (pid < 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        return -1;
+    }
+    const int error_flags = fcntl(error_pipe[0], F_GETFL, 0);
+    if (error_flags < 0 || fcntl(error_pipe[0], F_SETFL,
+                                  error_flags | O_NONBLOCK) != 0) {
+        close(input_pipe[1]);
+        close(error_pipe[0]);
+        return -1;
+    }
+    std::string errors;
+    std::array<char, 1024U> buffer{};
+    for (unsigned i = 0U; i < 2000U; ++i) {
+        const ssize_t count = read(error_pipe[0], buffer.data(), buffer.size());
+        if (count > 0) errors.append(buffer.data(), static_cast<std::size_t>(count));
+        if (errors.find("--receiver 1 is not present in the selected service") !=
+            std::string::npos) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const char quit[] = "quit\n";
+    const bool quit_written = write(input_pipe[1], quit, sizeof(quit) - 1U) ==
+                              static_cast<ssize_t>(sizeof(quit) - 1U);
+    close(input_pipe[1]);
+    int status = 0;
+    if (!quit_written || waitpid(pid, &status, 0) != pid ||
+        !WIFEXITED(status)) {
+        close(error_pipe[0]);
+        return -1;
+    }
+    ssize_t count = 0;
+    while ((count = read(error_pipe[0], buffer.data(), buffer.size())) > 0)
+        errors.append(buffer.data(), static_cast<std::size_t>(count));
+    close(error_pipe[0]);
+    return WEXITSTATUS(status) == 0 &&
+        errors.find("--receiver 1 is not present in the selected service") !=
+            std::string::npos ? 0 : 1;
 }
 
 bool terminate_child_bounded(pid_t pid, int& status)
@@ -386,6 +452,7 @@ int run_control_ts_write_failure(const std::string& runtime_dir,
         close(input_pipe[0]);
         close(error_pipe[1]);
         const char* argv[] = {SIANO_TS_PATH, "--control", "--channel", "T13",
+                              "--receiver", "0",
                               "--instance", instance.c_str(), "--runtime-dir",
                               runtime_dir.c_str(), "-o", output.c_str(),
                               "--tune-timeout-ms", "5000", nullptr};
@@ -773,6 +840,17 @@ int main()
     }
     std::fprintf(stderr, "PROOF receiver diagnostic status=%d actionable=true\n",
                  receiver_status);
+    const unsigned receiver_tunes = test_libusb_tune_requests();
+    const int missing_receiver_status =
+        run_control_ts_missing_receiver(runtime_dir, instance);
+    const unsigned receiver_tunes_after = test_libusb_tune_requests();
+    if (missing_receiver_status != 0 || receiver_tunes_after != receiver_tunes) {
+        std::fprintf(stderr, "PROOF control receiver selection did not fail explicitly\n");
+        serving.store(false);
+        server.join();
+        (void)owned.close(Timeout{15000U});
+        return 1;
+    }
     if (run_control_ts(runtime_dir, instance, control_output_path, device, *family) != 0) {
         std::fprintf(stderr, "PROOF control ts regression failed\n");
         serving.store(false);

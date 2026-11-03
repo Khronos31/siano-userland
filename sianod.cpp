@@ -411,6 +411,10 @@ int main(int argc, char** argv)
     std::string firmware;
     std::string runtime_directory;
     std::string instance;
+    bool have_device = false;
+    bool have_firmware = false;
+    bool have_runtime_directory = false;
+    bool have_instance = false;
     bool group = false;
 #ifdef _WIN32
     bool exit_on_stdin_eof = false;
@@ -431,9 +435,10 @@ int main(int argc, char** argv)
             return 0;
         }
         if (option == "--device") {
-            if (!device.empty() || !need_value(device)) {
+            if (have_device || !need_value(device)) {
                 std::fprintf(stderr, "argument error: --device\n"); return 2;
             }
+            have_device = true;
         } else if (option == "--fd") {
             std::string text;
             std::uint32_t value = 0U;
@@ -451,17 +456,20 @@ int main(int argc, char** argv)
             }
             config.pids[config.pid_count++] = pid;
         } else if (option == "--firmware") {
-            if (!firmware.empty() || !need_value(firmware)) {
+            if (have_firmware || !need_value(firmware)) {
                 std::fprintf(stderr, "argument error: --firmware\n"); return 2;
             }
+            have_firmware = true;
         } else if (option == "--runtime-dir") {
-            if (!runtime_directory.empty() || !need_value(runtime_directory)) {
+            if (have_runtime_directory || !need_value(runtime_directory)) {
                 std::fprintf(stderr, "argument error: --runtime-dir\n"); return 2;
             }
+            have_runtime_directory = true;
         } else if (option == "--instance") {
-            if (!instance.empty() || !need_value(instance)) {
+            if (have_instance || !need_value(instance)) {
                 std::fprintf(stderr, "argument error: --instance\n"); return 2;
             }
+            have_instance = true;
         } else if (option == "--group") {
             group = true;
 #ifdef _WIN32
