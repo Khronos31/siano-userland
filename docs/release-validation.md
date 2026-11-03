@@ -447,7 +447,7 @@ helperのversionはrunbook Git commitとSHA-256の組で固定する。candidate
 
 ### T09 TS・counter・終了値判定
 
-- **適用対象/頻度:** 全capture/soak。
+- **適用対象/頻度:** 保存TSを対象とする品質確認。2時間ソークでは自動適用せず、5分品質試験と運転安定性の記録を分ける。
 - **準備:** Python 3.11以上を`python3 --version`で確認し、固定取得した`$TOOL/ts-check.py`（Windowsは`$Helper`）を使う。TSDuck 3.45-4798は§6の追加確認にも使う。
 - **実操作/利用者への依頼:** 各TSで`python3 $TOOL/ts-check.py "$LOG/<capture>.ts" > "$LOG/<capture>.ts-check.json"`を実行する。§6のTSDuck `tsanalyze --normalized`も実行し、同じTSの結果を併記する。Android TermuxからのcaptureはTermux内でhelperを実行し、TSDuck追加確認用の転送では送受信前後のSHA-256一致を確認する。
 - **期待値/終了値:** helperは固定4096 packet chunkでTSを走査し、null PIDはcontinuity判定から除外して`null_packet_count`をJSONへ出す。詳細indexが必要なrunだけ`--null-indices "$LOG/<capture>.null-indices.txt"`を追加し、zero-based indexを別fileへ1行ずつ出力する。出力先とTSを同じpathにしない。同一PIDの隣接payload duplicate pairはPCR timestamp以外の全byte一致時だけ1組を許容し、duplicate indexをJSONへ記録する。3個目、内容差、非連続再送はcontinuity error。retune境界を確認できるrunはzero-basedの最初の出力packet indexを`--retune-boundary-at`へ渡し、境界後の各PID初回packetだけCC比較を除外する。TEI、sync、framing、invalid adaptationは除外しない。PCR reserved bits/extension違反とinvalid adaptationはfail。全TSが製品SPEC基準を満たし通常取得exit 0。非空file/counter 0だけでpassにしない。
@@ -495,10 +495,10 @@ if ($parserRc -ne 0) { throw "TS parser failed: $parserRc" }
 
 - **適用対象/頻度:** 毎releaseおよび全model初回/major。
 - **準備:** 確定頻度表の対象archive/model/timeをmatrixへ展開する。
-- **実操作/利用者への依頼:** 各runで適用頻度表の時間を`CAPTURE_SECONDS='<matrix seconds>'; S="$CAPTURE_SECONDS"`へ代入し、`test "$S" -gt 0`の後にS-RXをその秒数以上連続実行する。毎release代表Linux x86_64 glibc 2h/全archive native short; 初回全modelの地上channel 10s、macOS/Windows 30m、他ABI 10m。
-- **期待値/終了値:** 指定連続時間完了かつTS条件合格。追加soakは明示ユーザー決定分のみ。
+- **実操作/利用者への依頼:** 各runで適用頻度表の時間を`CAPTURE_SECONDS='<matrix seconds>'; S="$CAPTURE_SECONDS"`へ代入し、`test "$S" -gt 0`の後にS-RXをその秒数以上連続実行する。2時間運転安定性の基本負荷は機種ごとの地上波1 streamを`/dev/null`へ出力する。別の負荷を指定する場合は、その負荷の結果として記録する。毎release代表Linux x86_64 glibc 2h/全archive native short; 初回全modelの地上channel 10s、macOS/Windows 30m、他ABI 10m。
+- **期待値/終了値:** 2時間ソークは指定負荷での運転安定性を判定する。指定時間を連続完了し、daemonからIPCを経てclientへ届くbyte/packetの観測系列が進行し、実daemon/client PID・実行ファイルに紐づくFD/RSS系列を記録し、client/daemonの正常終了と所有process・FD・IPCの解放を確認する。PID生存だけを出力進行としない。FD/RSSの定量閾値は設けず、最終観測まで安定しない持続増加は判定保留とする。観測欠測はnull/errorとして記録し、zeroやpassにしない。TEI/CC等のTS品質は5分品質試験で判定し、2時間ソークへ自動結合しない。追加soakは明示ユーザー決定分のみ。この運転安定性判定は2時間ソークに適用し、他の既存時間条件・採否は変更しない。
 - **停止/cleanup:** T08通常stopと全resource cleanup。
-- **記録:** model/OS/ABI/archive、時間、TS/counter、FD/RSS、未実施理由。
+- **記録:** model/OS/ABI/archive、指定負荷と時間、観測間のbyte/packet進行、実PID/executableごとのFD/RSS系列、終了値と所有resource/IPC cleanup、欠測/未実施理由を記録する。品質結果は別欄に保持する。Windowsのhandle countはFDの代替とせず、FD未取得はnull/errorとする。
 
 ### T14 失敗・リリース判定
 
@@ -743,13 +743,13 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 
 短時間回帰とは分けて連続受信を行う。毎release必須の代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。これらとは別の追加soakはユーザーから指示された場合に実施有無・時間・OSを記録する。
 
-各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、TS品質、process/FD/RSSの観測値、cleanupを記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
+各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、process/FD/RSSの観測値、cleanupを記録する。TS品質結果は運転安定性の判定と分けて記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
 
 ### 連続受信の内容
 
 - 共通の頻度表またはユーザーの追加指示で指定された時間、OS、topologyを用いる。
 - 10秒以下の間隔で RSS と FD 数を記録し、傾向を示す。**数値の合否基準は設けない**。記録系列が最終観測まで安定化しない持続的な増加を示し、外部要因も特定できない場合、その soak は `判定保留` として pass にせず、release前に原因を調査する。途中で頭打ちになる増加は自動的な失敗ではなく、証拠と理由を記録する。この disposition は soak の受入規則であり、新しい soak trigger でも、trigger のない追加 run を要求するものでもない。
-- 各 cycle の出力を §6 で検査する。終了後にprocess残存と`sianoctl status/list`を確認する。
+- 2時間runは基本負荷として地上波1 streamを`/dev/null`へ出力し、§6のTS品質条件を運転安定性の合否へ結合しない。保存TS品質は既存の5分品質試験で独立に判定する。2時間以外の既存captureで保存したTSは従来どおり§6で検査する。終了後にprocess残存と`sianoctl status/list`を確認する。
 - S1UD は `port=` で個体を選ぶ。ユーザー指定OSで必要な台数/topologyを用意できない場合は、制約を報告してユーザーに次の判断を求める。他OSへの振替やsoak中止をagentが決めない。
 
 ## 6. TS 検査
@@ -819,12 +819,14 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 # S-ANA: §6 の 1–3 を si.ts に適用
 ```
 
-代表機の必須2時間runは、7.1のcandidate daemonを維持した同じshellで短いS-RXとは別に実行する。初回/majorのmacOS・Windowsは1800秒、他OS/ABIは600秒を設定し、OSごとに別runで記録する。
+代表機の必須2時間runは、7.1のcandidate daemonを維持した同じshellで短いS-RXとは別に実行する。初回/majorのmacOS・Windowsは1800秒、他OS/ABIは600秒を設定し、OSごとに別runで記録する。7200秒はTSを破棄し、1800秒/600秒ではTSを代表soakファイルへ保存して既存の品質検査に利用できる。
 
 ```sh
 CAPTURE_SECONDS='7200'; S="$CAPTURE_SECONDS"
 case "$S" in ''|*[!0-9]*|0) echo 'soak duration must be positive integer seconds' >&2; exit 2 ;; esac
-"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/representative-soak.ts" \
+CAPTURE_OUTPUT="$LOG/representative-soak.ts"
+if [ "$S" = 7200 ]; then CAPTURE_OUTPUT=/dev/null; fi
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$CAPTURE_OUTPUT" \
   > "$LOG/representative-soak.out" 2> "$LOG/representative-soak.err" || { RC=$?; echo "$RC" > "$LOG/representative-soak.rc"; exit "$RC"; }
 echo 0 > "$LOG/representative-soak.rc"
 ```
