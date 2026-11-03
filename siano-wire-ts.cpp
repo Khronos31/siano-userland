@@ -763,28 +763,18 @@ int main(int argc, char** argv)
     argc = static_cast<int>(argv_views.size());
     argv = argv_views.data();
 #endif
-    bool control_mode = false;
-    std::vector<const char*> metadata_argv;
-    metadata_argv.reserve(static_cast<std::size_t>(argc));
-    metadata_argv.push_back(argv[0]);
-    for (int index = 1; index < argc; ++index) {
-        const std::string_view option(argv[index] != nullptr ? argv[index] : "");
-        if (option == "--control") {
-            control_mode = true;
-            continue;
-        }
-        metadata_argv.push_back(argv[index]);
-    }
     const auto shared_metadata = parse_px4_ts_product_arguments(
-        static_cast<int>(metadata_argv.size()), metadata_argv.data(), siano_profile);
+        argc, const_cast<const char* const*>(argv), siano_profile);
     if (shared_metadata.help) { usage(stdout); return 0; }
     if (shared_metadata.version) {
         std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
                      SIANO_RUNTIME_VERSION);
         return 0;
     }
-    if (control_mode) {
-        const SianoArgs args = parse_arguments(argc, const_cast<const char* const*>(argv));
+    const SianoArgs control_args =
+        parse_arguments(argc, const_cast<const char* const*>(argv));
+    if (control_args.control) {
+        const SianoArgs& args = control_args;
         if (!args.valid) {
             std::fprintf(stderr, "argument error: %s\n", args.error.c_str());
             usage();

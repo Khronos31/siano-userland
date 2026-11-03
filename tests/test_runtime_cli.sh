@@ -105,6 +105,15 @@ grep -q '^usage:' "$test_root/siano-ts-metadata.out" || {
     echo 'siano-ts metadata scan differs from the shared parser' >&2
     exit 1
 }
+for args in \
+    '--control --output --control -h' \
+    '--control --output --control -h --version'; do
+    "$siano_ts" $args >"$test_root/siano-ts-control-metadata.out"
+    grep -q '^usage:' "$test_root/siano-ts-control-metadata.out" || {
+        echo "siano-ts failed shared metadata scan for $args" >&2
+        exit 1
+    }
+done
 
 (
     cd "$test_root"
@@ -119,6 +128,15 @@ if grep -q '^usage:' "$test_root/siano-ts-output-help-value.err"; then
     echo 'siano-ts treated the output value -h as --help' >&2
     exit 1
 fi
+(
+    cd "$test_root"
+    "$siano_ts" --control --output --control --instance RoomA --receiver 0 \
+        </dev/null >/dev/null 2>"$test_root/siano-ts-output-control-value.err"
+)
+test -f "$test_root/--control" || {
+    echo 'siano-ts lost --control in output value position' >&2
+    exit 1
+}
 
 ctl_version=$("$sianoctl" --version)
 case "$ctl_version" in 'siano-userland '*) ;; *) echo 'sianoctl --version failed' >&2; exit 1 ;; esac
