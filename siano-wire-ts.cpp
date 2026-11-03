@@ -213,12 +213,12 @@ Result<void> finish_output(Px4TsOutput& output) noexcept
 #endif
 }
 
-void usage() noexcept
+void usage(FILE* output = stderr) noexcept
 {
-    std::fprintf(stderr,
+    std::fprintf(output,
         "usage: siano-ts (-c CHANNEL | -f HZ) [--system ISDB-T] --instance TOKEN\n"
         "                [-t SECONDS|-] [-o FILE|-] [--runtime-dir DIR]\n"
-        "                [--receiver N] [--tune-timeout-ms MS] [--packet-count N]\n"
+        "                --receiver N [--tune-timeout-ms MS] [--packet-count N]\n"
         "                [--control]\n"
         "  -c, --channel TEXT     ISDB-T channel (13..62/T13..T62)\n"
         "  -f, --freq HZ          exact requested Hz (1..2^53-1)\n"
@@ -233,7 +233,7 @@ void usage() noexcept
         "      --instance TOKEN   required; 1..64 ASCII bytes, starts with a\n"
         "                         letter/digit, then letter/digit/_/./-; no\n"
         "                         trailing dot or reserved Windows device name\n"
-        "      --receiver N       index 0..7; this enclosure has receiver 0 only\n"
+        "      --receiver N       required; index 0..7; this enclosure has receiver 0 only\n"
         "      --tune-timeout-ms MS tune timeout (100..30000 ms)\n"
         "      --packet-count N   stop after N written 188-byte packets (N > 0)\n"
         "  -h, --help             print this help\n"
@@ -263,6 +263,7 @@ struct SianoArgs final {
     bool have_channel = false;
     bool have_frequency = false;
     bool have_system = false;
+    bool have_receiver = false;
     bool control = false;
     std::uint64_t frequency_hz = 0U;
     std::uint64_t duration_seconds = 0U;
@@ -289,6 +290,31 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
     SianoArgs args;
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i] != nullptr ? argv[i] : "");
+        if (option == "-h" || option == "--help") args.help = true;
+        else if (option == "--version") args.version = true;
+        if ((option == "-o" || option == "--output" ||
+             option == "--runtime-dir") && i + 1 < argc && argv[i + 1] != nullptr &&
+            std::string_view(argv[i + 1]).rfind("--", 0U) != 0U) {
+            ++i;
+        } else if ((option == "-c" || option == "--channel" ||
+                    option == "-f" || option == "--freq" ||
+                    option == "--system" || option == "-t" ||
+                    option == "--time" || option == "--instance" ||
+                    option == "--receiver" || option == "--tune-timeout-ms" ||
+                    option == "--packet-count") && i + 1 < argc &&
+                   argv[i + 1] != nullptr &&
+                   std::string_view(argv[i + 1]) != "-h" &&
+                   std::string_view(argv[i + 1]) != "--help" &&
+                   std::string_view(argv[i + 1]) != "--version") {
+            ++i;
+        }
+    }
+    if (args.help || args.version) {
+        args.valid = true;
+        return args;
+    }
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view option(argv[i] != nullptr ? argv[i] : "");
         auto need_value = [&](std::string_view& value) noexcept {
             if (i + 1 >= argc || argv[i + 1] == nullptr) {
                 args.error = "missing value for " + std::string(option);
@@ -298,8 +324,8 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
             return true;
         };
         std::string_view value;
-        if (option == "-h" || option == "--help") { args.help = true; continue; }
-        if (option == "--version") { args.version = true; continue; }
+        if (option == "-h" || option == "--help" || option == "--version")
+            return args;
         if (option == "-c" || option == "--channel") {
             if (!need_value(value)) return args;
             if (args.have_channel) { args.error = "duplicate --channel"; return args; }
@@ -346,9 +372,11 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
             args.instance.assign(value.data(), value.size());
         } else if (option == "--receiver") {
             if (!need_value(value)) return args;
+            if (args.have_receiver) { args.error = "duplicate --receiver"; return args; }
             if (!parse_unsigned(value, args.receiver) || args.receiver >= 8U) {
                 args.error = "--receiver must be an integer in 0..7"; return args;
             }
+            args.have_receiver = true;
         } else if (option == "--tune-timeout-ms") {
             if (!need_value(value)) return args;
             if (!parse_unsigned(value, args.tune_timeout_ms)) {
@@ -388,6 +416,7 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
         args.error = "exactly one of --channel or --freq is required";
         return args;
     }
+    if (!args.have_receiver) { args.error = "--receiver is required"; return args; }
     if (args.instance.empty()) { args.error = "--instance is required"; return args; }
     if (args.control && (args.duration_set || args.packet_count_set)) {
         args.error = "--control cannot be combined with --time or --packet-count";
@@ -723,9 +752,29 @@ int main(int argc, char** argv)
     bool compatibility_flag = false;
     for (int index = 1; index < argc; ++index) {
         const std::string_view option(argv[index] != nullptr ? argv[index] : "");
-        if (option == "--control") control_mode = true;
-        if (option == "-h" || option == "--help" || option == "--version")
+        if (option == "--control") {
+            control_mode = true;
+            continue;
+        }
+        if (option == "-h" || option == "--help" || option == "--version") {
             compatibility_flag = true;
+            continue;
+        }
+        const bool path_value = option == "-o" || option == "--output" ||
+                                option == "--runtime-dir";
+        const bool other_value = option == "-c" || option == "--channel" ||
+            option == "-f" || option == "--freq" || option == "--system" ||
+            option == "-t" || option == "--time" || option == "--instance" ||
+            option == "--receiver" || option == "--tune-timeout-ms" ||
+            option == "--packet-count";
+        if ((path_value || other_value) && index + 1 < argc && argv[index + 1] != nullptr) {
+            const std::string_view value(argv[index + 1]);
+            if (value.rfind("--", 0U) != 0U &&
+                (path_value || (value != "-h" && value != "--help" &&
+                                value != "--version"))) {
+                ++index;
+            }
+        }
     }
     if (control_mode || compatibility_flag) {
         const SianoArgs args = parse_arguments(argc, const_cast<const char* const*>(argv));
@@ -734,7 +783,7 @@ int main(int argc, char** argv)
             usage();
             return 2;
         }
-        if (args.help) { usage(); return 0; }
+        if (args.help) { usage(stdout); return 0; }
         if (args.version) {
             std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
                          SIANO_RUNTIME_VERSION);
@@ -769,7 +818,7 @@ int main(int argc, char** argv)
         usage();
         return 2;
     }
-    if (arguments.help) { usage(); return 0; }
+    if (arguments.help) { usage(stdout); return 0; }
     if (arguments.version) {
         std::fprintf(stdout, "siano-ts %s (development; not a v1 release)\n",
                      SIANO_RUNTIME_VERSION);

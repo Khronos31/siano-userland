@@ -51,7 +51,7 @@ using namespace px4::userland;
 void usage() noexcept
 {
     std::fprintf(stderr,
-        "usage: sianod --device usb:BUS-PORT[.PORT...] [--firmware PATH]\n"
+        "usage: sianod --device usb:BUS-PORT[.PORT...] --firmware PATH\n"
         "              [--runtime-dir DIR] [--instance TOKEN] [--group]\n"
         "              [--fd FD] [-p PID ...]\n"
 #ifdef _WIN32
@@ -374,6 +374,34 @@ int main(int argc, char** argv)
     argc = static_cast<int>(argv_views.size());
     argv = argv_views.data();
 #endif
+    bool request_help = false;
+    bool request_version = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view option(argv[index] != nullptr ? argv[index] : "");
+        if (option == "--help" || option == "-h") request_help = true;
+        else if (option == "--version") request_version = true;
+        if ((option == "--firmware" || option == "--runtime-dir") &&
+            index + 1 < argc && argv[index + 1] != nullptr &&
+            std::string_view(argv[index + 1]).rfind("--", 0U) != 0U) {
+            ++index;
+        } else if ((option == "--device" || option == "--instance") &&
+                   index + 1 < argc && argv[index + 1] != nullptr &&
+                   std::string_view(argv[index + 1]).rfind("-", 0U) != 0U) {
+            ++index;
+        } else if ((option == "--fd" || option == "--pid" || option == "-p") &&
+                   index + 1 < argc && argv[index + 1] != nullptr &&
+                   std::string_view(argv[index + 1]) != "-h" &&
+                   std::string_view(argv[index + 1]) != "--help" &&
+                   std::string_view(argv[index + 1]) != "--version") {
+            ++index;
+        }
+    }
+    if (request_help) { usage(); return 0; }
+    if (request_version) {
+        std::fprintf(stdout, "sianod %s (development; not a v1 release)\n",
+                     SIANO_RUNTIME_VERSION);
+        return 0;
+    }
     if (argc == 2 && argv != nullptr && argv[1] != nullptr) {
         const std::string_view option(argv[1]);
         if (option == "--models") return write_models();
@@ -464,6 +492,11 @@ int main(int argc, char** argv)
     }
     if (device_fd >= 0 && !device.empty()) {
         std::fprintf(stderr, "argument error: --device cannot be combined with --fd\n");
+        return 2;
+    }
+    if (firmware.empty()) {
+        std::fprintf(stderr, "argument error: --firmware is required\n");
+        usage();
         return 2;
     }
 
