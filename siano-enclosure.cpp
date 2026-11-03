@@ -313,16 +313,12 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     const char* selected_root = runtime_directory;
     std::string automatic_root;
     if (selected_root == nullptr) {
-#if defined(_WIN32)
-        selected_root = std::getenv("LOCALAPPDATA");
-#else
         const auto selected =
             px4::userland::ipc::posix::select_publish_runtime_root(
                 "siano-userland", assembly.instance.c_str());
         if (!selected) return Result<SianoAssembly>::failure(selected.error());
         automatic_root = selected.value();
         selected_root = automatic_root.c_str();
-#endif
     }
 
     host_context::ContextConfig context_config{};
