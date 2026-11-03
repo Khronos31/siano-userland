@@ -63,6 +63,9 @@ printf '%s' KEEP >"$sentinel"
 for args in \
     "--control --instance RoomA --receiver 0 -o - --output $sentinel" \
     "--control --instance RoomA --receiver 0 --tune-timeout-ms 100 --tune-timeout-ms 200" \
+    "--control --control --instance RoomA --receiver 0 -o $sentinel" \
+    "--control --instance RoomA --receiver 0 --time - -o $sentinel" \
+    "--control --instance RoomA --receiver 0 --packet-count 1 -o $sentinel" \
     "--control --instance CON --receiver 0 -o $sentinel" \
     "--control --instance room/name --receiver 0 -o $sentinel" \
     "--control --instance RoomA. --receiver 0 -o $sentinel"; do
