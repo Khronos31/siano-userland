@@ -743,13 +743,13 @@ platform-only の hunk は、そのplatformのmatrix環境で機能確認を行�
 
 短時間回帰とは分けて連続受信を行う。毎release必須の代表Linux x86_64 2時間と初回/majorのmacOS/Windows 30分、残るOS/ABI 10分は「共通の検証項目と頻度」で定める。これらとは別の追加soakはユーザーから指示された場合に実施有無・時間・OSを記録する。
 
-各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、TS品質、process/FD/RSSの観測値、cleanupを記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
+各連続受信では実行archive、OS/ABI、モデル、channel、実行時間、client/daemon終了値、process/FD/RSSの観測値、cleanupを記録する。TS品質結果は運転安定性の判定と分けて記録する。追加試験の選択や、頻度表の対象外へ追加する条件はユーザーの指示に従う。
 
 ### 連続受信の内容
 
 - 共通の頻度表またはユーザーの追加指示で指定された時間、OS、topologyを用いる。
 - 10秒以下の間隔で RSS と FD 数を記録し、傾向を示す。**数値の合否基準は設けない**。記録系列が最終観測まで安定化しない持続的な増加を示し、外部要因も特定できない場合、その soak は `判定保留` として pass にせず、release前に原因を調査する。途中で頭打ちになる増加は自動的な失敗ではなく、証拠と理由を記録する。この disposition は soak の受入規則であり、新しい soak trigger でも、trigger のない追加 run を要求するものでもない。
-- 各 cycle の出力を §6 で検査する。終了後にprocess残存と`sianoctl status/list`を確認する。
+- 2時間runは基本負荷として地上波1 streamを`/dev/null`へ出力し、§6のTS品質条件を運転安定性の合否へ結合しない。保存TS品質は既存の5分品質試験で独立に判定する。2時間以外の既存captureで保存したTSは従来どおり§6で検査する。終了後にprocess残存と`sianoctl status/list`を確認する。
 - S1UD は `port=` で個体を選ぶ。ユーザー指定OSで必要な台数/topologyを用意できない場合は、制約を報告してユーザーに次の判断を求める。他OSへの振替やsoak中止をagentが決めない。
 
 ## 6. TS 検査
@@ -824,7 +824,7 @@ USB discoveryの期待値は `sianod --list-json` の `enclosures[].devices[]` �
 ```sh
 CAPTURE_SECONDS='7200'; S="$CAPTURE_SECONDS"
 case "$S" in ''|*[!0-9]*|0) echo 'soak duration must be positive integer seconds' >&2; exit 2 ;; esac
-"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o "$LOG/representative-soak.ts" \
+"$B" --instance "$INSTANCE" --runtime-dir "$RT" -c 22 -t "$S" -o /dev/null \
   > "$LOG/representative-soak.out" 2> "$LOG/representative-soak.err" || { RC=$?; echo "$RC" > "$LOG/representative-soak.rc"; exit "$RC"; }
 echo 0 > "$LOG/representative-soak.rc"
 ```
