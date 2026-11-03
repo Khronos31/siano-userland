@@ -81,7 +81,7 @@ void usage() noexcept
         "  --exit-on-stdin-eof    stop when the parent closes stdin\n"
 #endif
         "  -h, --help             print this help\n"
-        "  -V, --version          print the development version\n"
+        "      --version          print the development version\n"
         "  --models              print static supported models and USB IDs (text)\n"
         "  --list-json           print read-only USB discovery as JSON\n");
 }
@@ -397,7 +397,7 @@ int main(int argc, char** argv)
             return true;
         };
         if (option == "-h" || option == "--help") { usage(); return 0; }
-        if (option == "-V" || option == "--version") {
+        if (option == "--version") {
             std::fprintf(stdout, "sianod %s (development; not a v1 release)\n",
                          SIANO_RUNTIME_VERSION);
             return 0;

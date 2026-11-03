@@ -237,7 +237,7 @@ void usage() noexcept
         "      --tune-timeout-ms MS tune timeout (100..30000 ms)\n"
         "      --packet-count N   stop after N written 188-byte packets (N > 0)\n"
         "  -h, --help             print this help\n"
-        "  -V, --version          print the development version\n");
+        "      --version          print the development version\n");
 }
 
 bool parse_unsigned(std::string_view text, std::uint64_t& out) noexcept
@@ -299,7 +299,7 @@ SianoArgs parse_arguments(int argc, const char* const* argv) noexcept
         };
         std::string_view value;
         if (option == "-h" || option == "--help") { args.help = true; continue; }
-        if (option == "-V" || option == "--version") { args.version = true; continue; }
+        if (option == "--version") { args.version = true; continue; }
         if (option == "-c" || option == "--channel") {
             if (!need_value(value)) return args;
             if (args.have_channel) { args.error = "duplicate --channel"; return args; }
@@ -724,8 +724,8 @@ int main(int argc, char** argv)
     for (int index = 1; index < argc; ++index) {
         const std::string_view option(argv[index] != nullptr ? argv[index] : "");
         if (option == "--control") control_mode = true;
-        if (option == "-h" || option == "--help" || option == "-V" ||
-            option == "--version") compatibility_flag = true;
+        if (option == "-h" || option == "--help" || option == "--version")
+            compatibility_flag = true;
     }
     if (control_mode || compatibility_flag) {
         const SianoArgs args = parse_arguments(argc, const_cast<const char* const*>(argv));
