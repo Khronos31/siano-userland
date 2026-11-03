@@ -51,7 +51,7 @@ using namespace px4::userland;
 void usage() noexcept
 {
     std::fprintf(stderr,
-        "usage: sianod --device usb:BUS-PORT[.PORT...] [--firmware PATH]\n"
+        "usage: sianod --device usb:BUS-PORT[.PORT...] --firmware PATH\n"
         "              [--runtime-dir DIR] [--instance TOKEN] [--group]\n"
         "              [--fd FD] [-p PID ...]\n"
 #ifdef _WIN32
@@ -374,6 +374,34 @@ int main(int argc, char** argv)
     argc = static_cast<int>(argv_views.size());
     argv = argv_views.data();
 #endif
+    bool request_help = false;
+    bool request_version = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view option(argv[index] != nullptr ? argv[index] : "");
+        if (option == "--help" || option == "-h") request_help = true;
+        else if (option == "--version") request_version = true;
+        if ((option == "--firmware" || option == "--runtime-dir") &&
+            index + 1 < argc && argv[index + 1] != nullptr &&
+            std::string_view(argv[index + 1]).rfind("--", 0U) != 0U) {
+            ++index;
+        } else if ((option == "--device" || option == "--instance") &&
+                   index + 1 < argc && argv[index + 1] != nullptr &&
+                   std::string_view(argv[index + 1]).rfind("-", 0U) != 0U) {
+            ++index;
+        } else if ((option == "--fd" || option == "--pid" || option == "-p") &&
+                   index + 1 < argc && argv[index + 1] != nullptr &&
+                   std::string_view(argv[index + 1]) != "-h" &&
+                   std::string_view(argv[index + 1]) != "--help" &&
+                   std::string_view(argv[index + 1]) != "--version") {
+            ++index;
+        }
+    }
+    if (request_help) { usage(); return 0; }
+    if (request_version) {
+        std::fprintf(stdout, "sianod %s (development; not a v1 release)\n",
+                     SIANO_RUNTIME_VERSION);
+        return 0;
+    }
     if (argc == 2 && argv != nullptr && argv[1] != nullptr) {
         const std::string_view option(argv[1]);
         if (option == "--models") return write_models();
@@ -383,6 +411,10 @@ int main(int argc, char** argv)
     std::string firmware;
     std::string runtime_directory;
     std::string instance;
+    bool have_device = false;
+    bool have_firmware = false;
+    bool have_runtime_directory = false;
+    bool have_instance = false;
     bool group = false;
 #ifdef _WIN32
     bool exit_on_stdin_eof = false;
@@ -403,9 +435,10 @@ int main(int argc, char** argv)
             return 0;
         }
         if (option == "--device") {
-            if (!device.empty() || !need_value(device)) {
+            if (have_device || !need_value(device)) {
                 std::fprintf(stderr, "argument error: --device\n"); return 2;
             }
+            have_device = true;
         } else if (option == "--fd") {
             std::string text;
             std::uint32_t value = 0U;
@@ -423,17 +456,20 @@ int main(int argc, char** argv)
             }
             config.pids[config.pid_count++] = pid;
         } else if (option == "--firmware") {
-            if (!firmware.empty() || !need_value(firmware)) {
+            if (have_firmware || !need_value(firmware)) {
                 std::fprintf(stderr, "argument error: --firmware\n"); return 2;
             }
+            have_firmware = true;
         } else if (option == "--runtime-dir") {
-            if (!runtime_directory.empty() || !need_value(runtime_directory)) {
+            if (have_runtime_directory || !need_value(runtime_directory)) {
                 std::fprintf(stderr, "argument error: --runtime-dir\n"); return 2;
             }
+            have_runtime_directory = true;
         } else if (option == "--instance") {
-            if (!instance.empty() || !need_value(instance)) {
+            if (have_instance || !need_value(instance)) {
                 std::fprintf(stderr, "argument error: --instance\n"); return 2;
             }
+            have_instance = true;
         } else if (option == "--group") {
             group = true;
 #ifdef _WIN32
@@ -464,6 +500,11 @@ int main(int argc, char** argv)
     }
     if (device_fd >= 0 && !device.empty()) {
         std::fprintf(stderr, "argument error: --device cannot be combined with --fd\n");
+        return 2;
+    }
+    if (firmware.empty()) {
+        std::fprintf(stderr, "argument error: --firmware is required\n");
+        usage();
         return 2;
     }
 
