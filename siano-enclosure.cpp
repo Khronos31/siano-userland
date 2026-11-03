@@ -315,8 +315,6 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     if (selected_root == nullptr) {
 #if defined(_WIN32)
         selected_root = std::getenv("LOCALAPPDATA");
-        if (selected_root == nullptr || selected_root[0] == '\0')
-            selected_root = std::getenv("TEMP");
 #else
         const auto selected =
             px4::userland::ipc::posix::select_publish_runtime_root(
