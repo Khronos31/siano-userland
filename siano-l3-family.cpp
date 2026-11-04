@@ -164,6 +164,18 @@ public:
     {
         return receiver == 0U && system == System::ISDB_T;
     }
+    px4::userland::TunerStrictProfile strict_profile(
+        std::uint8_t receiver, System system) const noexcept override
+    {
+        if (receiver != 0U || system != System::ISDB_T)
+            return px4::userland::TunerStrictProfile{};
+        px4::userland::TunerStrictProfile profile{};
+        profile.native_hz = true;
+        profile.min_hz = 1U;
+        profile.max_hz = 0xffffffffULL;
+        profile.readiness = dtv::userland::detail::TuneReadiness::terminal_lock;
+        return profile;
+    }
     bool selects_satellite_stream_before_tune() const noexcept override { return false; }
 
     Result<void> open_receiver(std::uint8_t receiver) noexcept override
@@ -193,11 +205,23 @@ public:
         return Result<void>::failure(Error::UNSUPPORTED);
     }
     Result<TunerHzProgramming> tune_terrestrial_hz(std::uint8_t receiver,
-                                                   std::uint64_t,
+                                                   std::uint64_t frequency_hz,
                                                    std::uint32_t) noexcept override
     {
-        (void)receiver;
-        return Result<TunerHzProgramming>::failure(Error::UNSUPPORTED);
+        if (receiver != 0U || family_.lease_ == nullptr)
+            return Result<TunerHzProgramming>::failure(Error::INVALID_ARGUMENT);
+        std::uint64_t programmed = 0U;
+        std::uint64_t revision = 0U;
+        if (dtv_l3_lease_tune(family_.lease_, frequency_hz, &programmed,
+                              &revision) != DTV_L3_OK)
+            return Result<TunerHzProgramming>::failure(Error::USB_IO);
+        family_.running_ = true;
+        TunerHzProgramming programming{};
+        programming.programmed_hz = programmed;
+        programming.lock.state = wire::MeasureState::valid;
+        programming.lock.value = true;
+        programming.ts_synchronized = false;
+        return Result<TunerHzProgramming>::success(programming);
     }
     Result<TunerHzProgramming> tune_satellite_hz(std::uint8_t, std::uint64_t,
                                                  std::uint32_t) noexcept override
