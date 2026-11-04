@@ -24,6 +24,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -410,6 +411,23 @@ Result<void> L3Family::detach_stream() noexcept
 
 void L3Family::close_context() noexcept
 {
+    if (std::getenv("SIANO_L3_DIAGNOSTICS") != nullptr && adapter_ != nullptr) {
+        siano_l3_stats stats{};
+        if (siano_l3_adapter_stats(adapter_, &stats) == DTV_L3_OK) {
+            std::fprintf(stderr,
+                         "SIANO_L3_STATS owner_sub=%llu owner_comp=%llu "
+                         "in_flight_max=%u in_submits=%llu in_completions=%llu "
+                         "ts_packets=%llu ts_tei=%llu ts_cc=%llu\n",
+                         (unsigned long long)stats.owner_in_submits,
+                         (unsigned long long)stats.owner_in_completions,
+                         stats.in_flight_max,
+                         (unsigned long long)stats.in_submits,
+                         (unsigned long long)stats.in_completions,
+                         (unsigned long long)stats.ts_packets,
+                         (unsigned long long)stats.ts_tei_errors,
+                         (unsigned long long)stats.ts_continuity_errors);
+        }
+    }
     if (owner_ != nullptr) {
         (void)dtv_l3_close(owner_, 1000U);
         dtv_l3_close_status status{};
