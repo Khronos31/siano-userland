@@ -85,6 +85,24 @@ int main(void)
         return 1;
     }
     (void)dtv_l3_op_release(opened.op);
+#ifdef SIANO_L3_HAS_CATALOG
+    {
+        const dtv_l3_capability_catalog *catalog = NULL;
+        if (dtv_l3_capabilities_get_catalog(opened.owner, &catalog) !=
+                DTV_L3_OK ||
+            catalog == NULL || catalog->receiver_count != 1U ||
+            catalog->receivers == NULL ||
+            (catalog->receivers[0].systems & DTV_L3_SYSTEM_ISDB_T) == 0U ||
+            catalog->receivers[0].support != DTV_L3_SUPPORT_SUPPORTED ||
+            catalog->shared_scope_count != 1U ||
+            catalog->shared_scopes == NULL ||
+            catalog->shared_scopes[0].compatibility !=
+                DTV_L3_LEASE_SHAREABLE) {
+            fprintf(stderr, "split catalog mismatch\n");
+            return 1;
+        }
+    }
+#endif
 
     if (dtv_l3_lease_acquire(opened.owner, 0U, &lease) != DTV_L3_OK ||
         dtv_l3_lease_tune(lease, 527142857ULL, &programmed, &revision) !=

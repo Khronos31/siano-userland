@@ -49,6 +49,27 @@ struct StreamEntry {
     void *context = nullptr;
 };
 
+#ifdef SIANO_L3_HAS_CATALOG
+const dtv_l3_receiver_capability kSianoReceivers[] = {
+    {0U, DTV_L3_SYSTEM_ISDB_T, DTV_L3_PID_FILTER_HARDWARE,
+     DTV_L3_SUPPORT_SUPPORTED},
+};
+const dtv_l3_shared_scope_capability kSianoSharedScopes[] = {
+    {0U, DTV_L3_LEASE_SHAREABLE, DTV_L3_SUPPORT_SUPPORTED},
+};
+const dtv_l3_capability_catalog kSianoCatalog = {
+    kSianoReceivers,
+    1U,
+    nullptr,
+    0U,
+    nullptr,
+    0U,
+    kSianoSharedScopes,
+    1U,
+    DTV_L3_SUPPORT_SUPPORTED,
+};
+#endif
+
 } // namespace
 
 struct siano_l3_adapter {
@@ -166,6 +187,12 @@ bool port_supported(const siano_l3_port *port)
            port->in_endpoint != 0U && port->out_endpoint != 0U;
 }
 
+dtv_l3_provider_binding *current_binding(siano_l3_adapter *adapter)
+{
+    std::lock_guard<std::mutex> lock(adapter->state_mutex);
+    return adapter->binding;
+}
+
 uint64_t allocate_internal_id(siano_l3_adapter *adapter)
 {
     std::lock_guard<std::mutex> lock(adapter->id_mutex);
@@ -262,6 +289,10 @@ dtv_l3_result submit_message(siano_l3_adapter *adapter, uint16_t type,
         std::memcpy(message.data() + SMS_HEADER_SIZE, payload, payload_len);
     }
 
+    dtv_l3_provider_binding *binding = current_binding(adapter);
+    if (binding == nullptr) {
+        return DTV_L3_FAILED;
+    }
     auto pending = std::make_shared<PendingCompletion>();
     pending->message = std::move(message);
     dtv_l3_transfer_request request{};
@@ -274,8 +305,8 @@ dtv_l3_result submit_message(siano_l3_adapter *adapter, uint16_t type,
     const uint64_t id = allocate_internal_id(adapter);
 
     dtv_l3_result result = adapter->host.submit(
-        adapter->host.provider_context, adapter->binding, id, &request,
-        out_complete, pending.get());
+        adapter->host.provider_context, binding, id, &request, out_complete,
+        pending.get());
     if (result != DTV_L3_ACCEPTED && result != DTV_L3_OK) {
         return result;
     }
@@ -287,8 +318,7 @@ dtv_l3_result submit_message(siano_l3_adapter *adapter, uint16_t type,
                                     [&pending] { return pending->done; });
     }
     if (!pending->done) {
-        (void)adapter->host.cancel(adapter->host.provider_context,
-                                   adapter->binding, id);
+        (void)adapter->host.cancel(adapter->host.provider_context, binding, id);
         std::unique_lock<std::mutex> lock(pending->mutex);
         pending->condition.wait_for(lock, std::chrono::milliseconds(1000U),
                                     [&pending] { return pending->done; });
@@ -495,13 +525,23 @@ void handle_ts(siano_l3_adapter *adapter, const uint8_t *payload, size_t size)
             position += 188U;
             continue;
         }
-        const uint8_t cc = static_cast<uint8_t>(packet[3] & 0x0fU);
-        if (adapter->cc_valid[pid] != 0U &&
-            cc != static_cast<uint8_t>((adapter->last_cc[pid] + 1U) & 0x0fU)) {
-            ++adapter->ts_continuity_errors;
+        if (pid != 0x1fffU) {
+            const uint8_t afc = static_cast<uint8_t>((packet[3] >> 4) & 0x03U);
+            const uint8_t cc = static_cast<uint8_t>(packet[3] & 0x0fU);
+            if (afc == 2U) {
+                /* Adaptation-only packets do not advance the counter. */
+                adapter->last_cc[pid] = cc;
+                adapter->cc_valid[pid] = 1U;
+            } else {
+                if (adapter->cc_valid[pid] != 0U &&
+                    cc != static_cast<uint8_t>(
+                              (adapter->last_cc[pid] + 1U) & 0x0fU)) {
+                    ++adapter->ts_continuity_errors;
+                }
+                adapter->last_cc[pid] = cc;
+                adapter->cc_valid[pid] = 1U;
+            }
         }
-        adapter->last_cc[pid] = cc;
-        adapter->cc_valid[pid] = 1U;
         output.insert(output.end(), packet, packet + 188U);
         ++adapter->ts_delivered_packets;
         position += 188U;
@@ -598,6 +638,12 @@ void in_loop(siano_l3_adapter *adapter)
             adapter->in_transfer_id = id;
         }
 
+        dtv_l3_provider_binding *binding = current_binding(adapter);
+        if (binding == nullptr) {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            adapter->in_outstanding = false;
+            break;
+        }
         dtv_l3_transfer_request request{};
         request.kind = DTV_L3_TRANSFER_BULK;
         request.endpoint = adapter->port.in_endpoint;
@@ -605,8 +651,8 @@ void in_loop(siano_l3_adapter *adapter)
         request.in_capacity = adapter->in_buffer.size();
         request.claim_index = 0U;
         dtv_l3_result submitted = adapter->host.submit(
-            adapter->host.provider_context, adapter->binding, id, &request,
-            in_complete, adapter);
+            adapter->host.provider_context, binding, id, &request, in_complete,
+            adapter);
         if (submitted != DTV_L3_ACCEPTED && submitted != DTV_L3_OK) {
             std::lock_guard<std::mutex> lock(adapter->in_mutex);
             adapter->in_outstanding = false;
@@ -636,8 +682,8 @@ void in_loop(siano_l3_adapter *adapter)
             }
         }
         if (!completed) {
-            (void)adapter->host.cancel(adapter->host.provider_context,
-                                       adapter->binding, id);
+            (void)adapter->host.cancel(adapter->host.provider_context, binding,
+                                       id);
             std::unique_lock<std::mutex> lock(adapter->in_mutex);
             adapter->in_condition.wait_for(
                 lock, std::chrono::milliseconds(1000U),
@@ -673,9 +719,9 @@ void stop_reader(siano_l3_adapter *adapter)
         id = adapter->in_transfer_id;
         outstanding = adapter->in_outstanding;
     }
-    if (outstanding && id != 0U) {
-        (void)adapter->host.cancel(adapter->host.provider_context,
-                                   adapter->binding, id);
+    dtv_l3_provider_binding *binding = current_binding(adapter);
+    if (outstanding && id != 0U && binding != nullptr) {
+        (void)adapter->host.cancel(adapter->host.provider_context, binding, id);
     }
 }
 
@@ -885,7 +931,7 @@ dtv_l3_result submit_cb(void *provider_context,
 {
     auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
     (void)binding;
-    return adapter->host.submit(adapter->host.provider_context, adapter->binding,
+    return adapter->host.submit(adapter->host.provider_context, binding,
                                 transfer_id, request, complete, callback_context);
 }
 
@@ -895,7 +941,7 @@ dtv_l3_result cancel_cb(void *provider_context,
 {
     auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
     (void)binding;
-    return adapter->host.cancel(adapter->host.provider_context, adapter->binding,
+    return adapter->host.cancel(adapter->host.provider_context, binding,
                                 transfer_id);
 }
 
@@ -1190,6 +1236,80 @@ dtv_l3_result siano_l3_adapter_poll_stats(siano_l3_adapter *adapter)
 }
 
 #ifdef SIANO_L3_SPLIT_API
+dtv_l3_claim_result split_usb_claim(void *provider_context,
+                                   dtv_l3_provider_binding *binding,
+                                   uint32_t claim_index)
+{
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->binding = binding;
+    }
+    return adapter->host.claim(adapter->host.provider_context, binding,
+                               claim_index);
+}
+
+dtv_l3_release_result split_usb_release_claim(
+    void *provider_context, dtv_l3_provider_binding *binding,
+    uint32_t claim_index)
+{
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    dtv_l3_release_result result = adapter->host.release_claim(
+        adapter->host.provider_context, binding, claim_index);
+    if (claim_index == 0U) {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->binding = nullptr;
+    }
+    return result;
+}
+
+dtv_l3_result split_usb_submit(void *provider_context,
+                               dtv_l3_provider_binding *binding,
+                               uint64_t transfer_id,
+                               const dtv_l3_transfer_request *request,
+                               dtv_l3_transfer_complete_fn complete,
+                               void *callback_context)
+{
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    return adapter->host.submit(adapter->host.provider_context, binding,
+                                transfer_id, request, complete,
+                                callback_context);
+}
+
+dtv_l3_result split_usb_cancel(void *provider_context,
+                               dtv_l3_provider_binding *binding,
+                               uint64_t transfer_id)
+{
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    return adapter->host.cancel(adapter->host.provider_context, binding,
+                                transfer_id);
+}
+
+#ifdef SIANO_L3_SPLIT_INIT_HOOKS
+dtv_l3_result split_bind_cb(void *provider_context, dtv_l3_context *owner)
+{
+    (void)provider_context;
+    (void)owner;
+    return DTV_L3_OK;
+}
+
+dtv_l3_result split_initialize_cb(void *provider_context,
+                                  dtv_l3_context *owner)
+{
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    (void)owner;
+    dtv_l3_provider_binding *binding = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        binding = adapter->binding;
+    }
+    if (binding == nullptr) {
+        return DTV_L3_FAILED;
+    }
+    return siano_l3_adapter_attach(adapter, binding);
+}
+#endif
+
 dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
                                       dtv_l3_provider_binding *binding)
 {
@@ -1240,11 +1360,11 @@ const dtv_l3_usb_provider *siano_l3_adapter_usb_provider(
         return nullptr;
     }
     adapter->usb_view = dtv_l3_usb_provider{};
-    adapter->usb_view.provider_context = adapter->host.provider_context;
-    adapter->usb_view.claim = adapter->host.claim;
-    adapter->usb_view.release_claim = adapter->host.release_claim;
-    adapter->usb_view.submit = adapter->host.submit;
-    adapter->usb_view.cancel = adapter->host.cancel;
+    adapter->usb_view.provider_context = adapter;
+    adapter->usb_view.claim = split_usb_claim;
+    adapter->usb_view.release_claim = split_usb_release_claim;
+    adapter->usb_view.submit = split_usb_submit;
+    adapter->usb_view.cancel = split_usb_cancel;
     adapter->usb_view.claim_cancel = adapter->host.claim_cancel;
     adapter->usb_view.cancel_scope = adapter->host.cancel_scope;
     adapter->usb_view.logger = adapter->host.logger;
@@ -1264,6 +1384,13 @@ const dtv_l3_product_adapter *siano_l3_adapter_product_adapter(
     adapter->product_view.capabilities.cancel_scope =
         adapter->host.cancel_scope;
     adapter->product_view.firmware = nullptr;
+#ifdef SIANO_L3_HAS_CATALOG
+    adapter->product_view.catalog = &kSianoCatalog;
+#endif
+#ifdef SIANO_L3_SPLIT_INIT_HOOKS
+    adapter->product_view.bind = split_bind_cb;
+    adapter->product_view.initialize = split_initialize_cb;
+#endif
     adapter->product_view.scope_query = scope_query_cb;
     adapter->product_view.tune = split_tune_cb;
     adapter->product_view.bridge_start = bridge_start_cb;

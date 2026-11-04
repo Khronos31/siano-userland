@@ -260,13 +260,19 @@ int main(int argc, char **argv)
         output.close();
     }
     siano_l3_adapter_stats(adapter, &stats);
+    dtv_l3_stream_status stream_status{};
+    (void)dtv_l3_stream_status_get(stream, &stream_status);
     std::printf("stream: packets=%llu bytes=%llu bad_sync=%llu tei=%llu "
-                "adapter_tei=%llu adapter_cc=%llu filtered=%llu signal=%u\n",
+                "adapter_packets=%llu adapter_tei=%llu adapter_cc=%llu "
+                "filtered=%llu dropped=%llu queued=%llu signal=%u\n",
                 (unsigned long long)packets, (unsigned long long)bytes,
                 (unsigned long long)bad_sync, (unsigned long long)tei,
+                (unsigned long long)stats.ts_packets,
                 (unsigned long long)stats.ts_tei_errors,
                 (unsigned long long)stats.ts_continuity_errors,
                 (unsigned long long)stats.ts_filtered_packets,
+                (unsigned long long)stream_status.dropped_overflow_packets,
+                (unsigned long long)stream_status.queued_packets,
                 stats.signal_detected);
 
     const bool stream_ok = finish_stream(stream);
