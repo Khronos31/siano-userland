@@ -212,8 +212,9 @@ public:
             return Result<TunerHzProgramming>::failure(Error::INVALID_ARGUMENT);
         std::uint64_t programmed = 0U;
         std::uint64_t revision = 0U;
-        if (dtv_l3_lease_tune(family_.lease_, frequency_hz, &programmed,
-                              &revision) != DTV_L3_OK)
+        const dtv_l3_result tuned = dtv_l3_lease_tune(family_.lease_, frequency_hz, &programmed,
+                              &revision);
+        if (tuned != DTV_L3_OK)
             return Result<TunerHzProgramming>::failure(Error::USB_IO);
         family_.running_ = true;
         TunerHzProgramming programming{};
@@ -291,11 +292,12 @@ public:
             const auto detached = family_.detach_stream();
             if (!detached) return detached;
         }
-        if (!family_.running_ && dtv_l3_lease_start(family_.lease_) != DTV_L3_OK)
+        const dtv_l3_result started = dtv_l3_lease_start(family_.lease_);
+        if (started != DTV_L3_OK)
             return Result<void>::failure(Error::USB_IO);
         dtv_l3_stream* stream = nullptr;
-        if (dtv_l3_lease_attach(family_.lease_, &stream) != DTV_L3_OK ||
-            stream == nullptr)
+        const dtv_l3_result attached = dtv_l3_lease_attach(family_.lease_, &stream);
+        if (attached != DTV_L3_OK || stream == nullptr)
             return Result<void>::failure(Error::USB_IO);
         family_.stream_ = stream;
         family_.attachment_id_ = attachment.attachment_id;
@@ -411,7 +413,8 @@ TunerStreamCounters L3Family::current_counters() const noexcept
 Result<void> L3Family::ensure_lease() noexcept
 {
     if (owner_ == nullptr || lease_ != nullptr) return Result<void>::success();
-    if (dtv_l3_lease_acquire(owner_, 0U, &lease_) != DTV_L3_OK)
+    const dtv_l3_result acquired = dtv_l3_lease_acquire(owner_, 0U, &lease_);
+    if (acquired != DTV_L3_OK)
         return Result<void>::failure(Error::USB_IO);
     return Result<void>::success();
 }

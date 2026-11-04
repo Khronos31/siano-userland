@@ -331,6 +331,9 @@ dtv_l3_result test_submit(void *context, dtv_l3_provider_binding *binding,
         std::lock_guard<std::mutex> lock(host->mutex);
         if (host->out_cursor >= host->out_events.size()) {
             host->error = "unexpected OUT transfer";
+            std::fprintf(stderr, "FAKE_UNEXPECTED_OUT type=%u size=%u\n",
+                         (unsigned)sms_get_le16(request->out_data),
+                         (unsigned)request->out_size);
             return DTV_L3_FAILED;
         }
         FixtureEvent &event = host->out_events[host->out_cursor];
