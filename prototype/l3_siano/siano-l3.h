@@ -138,12 +138,13 @@ dtv_l3_result siano_l3_adapter_create(const dtv_l3_provider *host,
 
 void siano_l3_adapter_destroy(siano_l3_adapter *adapter);
 void siano_l3_adapter_stop(siano_l3_adapter *adapter);
+void siano_l3_adapter_quiesce_owner_reader(siano_l3_adapter *adapter);
 const dtv_l3_provider *siano_l3_adapter_provider(siano_l3_adapter *adapter);
 
 /*
  * Split-API bridge for Core's usb_provider/product_adapter candidate.  The
- * caller opens with dtv_l3_open_ex() and must call siano_l3_adapter_stop()
- * after context_release, or use a factory that destroys the adapter.
+ * caller opens with dtv_l3_open_ex(), quiesces the owner reader before
+ * context_release, and calls siano_l3_adapter_stop() after release.
  */
 #ifdef SIANO_L3_FACTORY
 typedef struct siano_l3_factory siano_l3_factory;

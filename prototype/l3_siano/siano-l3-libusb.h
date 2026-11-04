@@ -31,6 +31,8 @@ dtv_l3_result siano_l3_libusb_find_selector(
     unsigned *index_out, char *error, size_t error_size);
 const siano_l3_port *siano_l3_libusb_session_port(
     siano_l3_libusb_session *session);
+void siano_l3_libusb_session_end_initialization_trace(
+    siano_l3_libusb_session *session);
 siano_l3_adapter *siano_l3_libusb_session_adapter(
     siano_l3_libusb_session *session);
 void siano_l3_libusb_session_close(siano_l3_libusb_session *session);

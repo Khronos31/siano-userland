@@ -31,6 +31,7 @@ struct LibusbHost {
     bool claimed = false;
     bool preopened = false;
     bool closing = false;
+    std::atomic<bool> trace_initialization{true};
     std::thread event_thread;
     std::mutex mutex;
     std::condition_variable condition;
@@ -51,6 +52,8 @@ struct TransferContext {
     bool in = false;
     uint8_t *buffer = nullptr;
     size_t capacity = 0;
+    std::chrono::steady_clock::time_point submitted_at{};
+    bool trace_initialization = false;
 };
 
 } // namespace
@@ -191,6 +194,24 @@ void LIBUSB_CALL transfer_complete(struct libusb_transfer *transfer)
     completion.size = context->in ? transfer->actual_length : 0U;
     completion.actual_length = transfer->actual_length;
     completion.actual_length_known = 1U;
+    if (context->trace_initialization) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_complete transfer_id=%llu direction=%s endpoint=0x%02x usb_status=%d result=%d actual_length=%d transfer_context=%p callback_context=%p binding=%p host=%p usb_context=%p device=%p handle=%p elapsed_ms=%lld\n",
+                     static_cast<unsigned long long>(context->id),
+                     context->in ? "IN" : "OUT", transfer->endpoint,
+                     static_cast<int>(transfer->status),
+                     static_cast<int>(completion.result), transfer->actual_length,
+                     static_cast<void*>(context), context->callback_context,
+                     static_cast<void*>(context->binding),
+                     static_cast<void*>(context->host),
+                     static_cast<void*>(context->host->context),
+                     static_cast<void*>(context->host->device),
+                     static_cast<void*>(context->host->handle),
+                     static_cast<long long>(std::chrono::duration_cast<
+                         std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - context->submitted_at)
+                                                .count()));
+    }
     if (context->complete != nullptr) {
         context->complete(context->binding, context->id, &completion,
                           context->callback_context);
@@ -217,8 +238,18 @@ void event_loop(LibusbHost *host)
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 200000;
-        (void)libusb_handle_events_timeout_completed(host->context, &timeout,
-                                                     nullptr);
+        const int result = libusb_handle_events_timeout_completed(
+            host->context, &timeout, nullptr);
+        if (host->trace_initialization.load() && result != 0 &&
+            result != LIBUSB_ERROR_INTERRUPTED) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_events result=%d error=%s host=%p usb_context=%p device=%p handle=%p\n",
+                         result, libusb_error_name(result),
+                         static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle));
+        }
     }
 }
 
@@ -228,21 +259,61 @@ dtv_l3_claim_result host_claim(void *context, dtv_l3_provider_binding *binding,
     auto *host = static_cast<LibusbHost *>(context);
     (void)binding;
     if (claim_index != 0U || host->handle != nullptr) {
+        if (host->trace_initialization.load()) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_claim_precondition result=%d claim_index=%u host=%p usb_context=%p device=%p handle=%p interface=%u\n",
+                         DTV_L3_FAILED, claim_index, static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle), host->interface_number);
+        }
         return dtv_l3_claim_result{DTV_L3_FAILED, DTV_L3_CLAIM_NONE};
     }
     if (!host->preopened) {
-        if (libusb_open(host->device, &host->handle) != 0) {
+        const int open_result = libusb_open(host->device, &host->handle);
+        if (host->trace_initialization.load()) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_open usb_result=%d usb_error=%s host=%p usb_context=%p device=%p handle=%p interface=%u\n",
+                         open_result, libusb_error_name(open_result),
+                         static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle), host->interface_number);
+        }
+        if (open_result != 0) {
             host->handle = nullptr;
             return dtv_l3_claim_result{DTV_L3_DISCONNECTED, DTV_L3_CLAIM_NONE};
         }
     }
-    if (libusb_claim_interface(host->handle, host->interface_number) != 0) {
+    const int claim_result =
+        libusb_claim_interface(host->handle, host->interface_number);
+    if (host->trace_initialization.load()) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_claim usb_result=%d usb_error=%s host=%p usb_context=%p device=%p handle=%p interface=%u\n",
+                     claim_result, libusb_error_name(claim_result),
+                     static_cast<void*>(host),
+                     static_cast<void*>(host->context),
+                     static_cast<void*>(host->device),
+                     static_cast<void*>(host->handle), host->interface_number);
+    }
+    if (claim_result != 0) {
         libusb_close(host->handle);
         host->handle = nullptr;
         return dtv_l3_claim_result{DTV_L3_BUSY, DTV_L3_CLAIM_NONE};
     }
-    (void)libusb_clear_halt(host->handle, host->in_endpoint);
-    (void)libusb_clear_halt(host->handle, host->out_endpoint);
+    const int clear_in_result =
+        libusb_clear_halt(host->handle, host->in_endpoint);
+    const int clear_out_result =
+        libusb_clear_halt(host->handle, host->out_endpoint);
+    if (host->trace_initialization.load()) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_clear_halt in_endpoint=0x%02x in_result=%d out_endpoint=0x%02x out_result=%d host=%p usb_context=%p device=%p handle=%p\n",
+                     host->in_endpoint, clear_in_result, host->out_endpoint,
+                     clear_out_result, static_cast<void*>(host),
+                     static_cast<void*>(host->context),
+                     static_cast<void*>(host->device),
+                     static_cast<void*>(host->handle));
+    }
     host->claimed = true;
     host->closing = false;
     host->event_thread = std::thread(event_loop, host);
@@ -299,15 +370,48 @@ dtv_l3_result host_submit(void *context, dtv_l3_provider_binding *binding,
 {
     auto *host = static_cast<LibusbHost *>(context);
     if (request == nullptr || host->handle == nullptr || complete == nullptr) {
+        if (host->trace_initialization.load()) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_submit_precondition result=%d request=%p host=%p usb_context=%p device=%p handle=%p binding=%p callback_context=%p transfer_id=%llu\n",
+                         DTV_L3_INVALID, static_cast<const void*>(request),
+                         static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle),
+                         static_cast<void*>(binding), callback_context,
+                         static_cast<unsigned long long>(transfer_id));
+        }
         return DTV_L3_INVALID;
     }
     const bool in = request->endpoint == host->in_endpoint;
     const size_t length = in ? request->in_capacity : request->out_size;
     if (length == 0U) {
+        if (host->trace_initialization.load()) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_submit_precondition result=%d direction=%s endpoint=0x%02x host=%p usb_context=%p device=%p handle=%p binding=%p callback_context=%p transfer_id=%llu\n",
+                         DTV_L3_INVALID, in ? "IN" : "OUT", request->endpoint,
+                         static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle),
+                         static_cast<void*>(binding), callback_context,
+                         static_cast<unsigned long long>(transfer_id));
+        }
         return DTV_L3_INVALID;
     }
     auto *transfer = libusb_alloc_transfer(0);
     if (transfer == nullptr) {
+        if (host->trace_initialization.load()) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_alloc_transfer result=%d direction=%s endpoint=0x%02x length=%zu host=%p usb_context=%p device=%p handle=%p binding=%p callback_context=%p transfer_id=%llu\n",
+                         DTV_L3_FAILED, in ? "IN" : "OUT", request->endpoint,
+                         length, static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle),
+                         static_cast<void*>(binding), callback_context,
+                         static_cast<unsigned long long>(transfer_id));
+        }
         return DTV_L3_FAILED;
     }
     auto *transfer_context = new TransferContext();
@@ -318,8 +422,23 @@ dtv_l3_result host_submit(void *context, dtv_l3_provider_binding *binding,
     transfer_context->callback_context = callback_context;
     transfer_context->in = in;
     transfer_context->capacity = length;
+    transfer_context->submitted_at = std::chrono::steady_clock::now();
+    transfer_context->trace_initialization =
+        host->trace_initialization.load();
     transfer_context->buffer = new (std::nothrow) uint8_t[length];
     if (transfer_context->buffer == nullptr) {
+        if (transfer_context->trace_initialization) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=usb_alloc_buffer result=%d direction=%s endpoint=0x%02x length=%zu transfer_context=%p callback_context=%p binding=%p host=%p usb_context=%p device=%p handle=%p transfer_id=%llu\n",
+                         DTV_L3_FAILED, in ? "IN" : "OUT", request->endpoint,
+                         length, static_cast<void*>(transfer_context),
+                         callback_context, static_cast<void*>(binding),
+                         static_cast<void*>(host),
+                         static_cast<void*>(host->context),
+                         static_cast<void*>(host->device),
+                         static_cast<void*>(host->handle),
+                         static_cast<unsigned long long>(transfer_id));
+        }
         libusb_free_transfer(transfer);
         delete transfer_context;
         return DTV_L3_FAILED;
@@ -334,6 +453,19 @@ dtv_l3_result host_submit(void *context, dtv_l3_provider_binding *binding,
     {
         std::lock_guard<std::mutex> lock(host->mutex);
         if (host->closing) {
+            if (transfer_context->trace_initialization) {
+                std::fprintf(stderr,
+                             "siano-init-trace stage=usb_submit_closing result=%d direction=%s endpoint=0x%02x transfer_id=%llu transfer_context=%p callback_context=%p binding=%p host=%p usb_context=%p device=%p handle=%p\n",
+                             DTV_L3_CLOSING, in ? "IN" : "OUT",
+                             request->endpoint,
+                             static_cast<unsigned long long>(transfer_id),
+                             static_cast<void*>(transfer_context),
+                             callback_context, static_cast<void*>(binding),
+                             static_cast<void*>(host),
+                             static_cast<void*>(host->context),
+                             static_cast<void*>(host->device),
+                             static_cast<void*>(host->handle));
+            }
             delete[] transfer_context->buffer;
             libusb_free_transfer(transfer);
             delete transfer_context;
@@ -341,7 +473,22 @@ dtv_l3_result host_submit(void *context, dtv_l3_provider_binding *binding,
         }
         host->transfers[transfer_id] = transfer;
     }
-    if (libusb_submit_transfer(transfer) != 0) {
+    const int submit_result = libusb_submit_transfer(transfer);
+    if (transfer_context->trace_initialization) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_submit direction=%s kind=BULK endpoint=0x%02x length=%zu timeout_ms=%u transfer_id=%llu usb_result=%d usb_error=%s provider_result=%d transfer_context=%p callback_context=%p binding=%p host=%p usb_context=%p device=%p handle=%p\n",
+                     in ? "IN" : "OUT", request->endpoint, length,
+                     request->timeout_ms,
+                     static_cast<unsigned long long>(transfer_id), submit_result,
+                     libusb_error_name(submit_result),
+                     submit_result == 0 ? DTV_L3_ACCEPTED : DTV_L3_FAILED,
+                     static_cast<void*>(transfer_context), callback_context,
+                     static_cast<void*>(binding), static_cast<void*>(host),
+                     static_cast<void*>(host->context),
+                     static_cast<void*>(host->device),
+                     static_cast<void*>(host->handle));
+    }
+    if (submit_result != 0) {
         {
             std::lock_guard<std::mutex> lock(host->mutex);
             host->transfers.erase(transfer_id);
@@ -364,11 +511,33 @@ dtv_l3_result host_cancel(void *context, dtv_l3_provider_binding *binding,
         std::lock_guard<std::mutex> lock(host->mutex);
         const auto found = host->transfers.find(transfer_id);
         if (found == host->transfers.end()) {
+            if (host->trace_initialization.load()) {
+                std::fprintf(stderr,
+                             "siano-init-trace stage=usb_cancel_missing transfer_id=%llu result=%d host=%p usb_context=%p device=%p handle=%p binding=%p\n",
+                             static_cast<unsigned long long>(transfer_id),
+                             DTV_L3_STALE, static_cast<void*>(host),
+                             static_cast<void*>(host->context),
+                             static_cast<void*>(host->device),
+                             static_cast<void*>(host->handle),
+                             static_cast<void*>(binding));
+            }
             return DTV_L3_STALE;
         }
         transfer = found->second;
     }
-    return libusb_cancel_transfer(transfer) == 0 ? DTV_L3_OK : DTV_L3_FAILED;
+    const int cancel_result = libusb_cancel_transfer(transfer);
+    if (host->trace_initialization.load()) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_cancel transfer_id=%llu usb_result=%d provider_result=%d host=%p usb_context=%p device=%p handle=%p binding=%p transfer=%p\n",
+                     static_cast<unsigned long long>(transfer_id), cancel_result,
+                     cancel_result == 0 ? DTV_L3_OK : DTV_L3_FAILED,
+                     static_cast<void*>(host),
+                     static_cast<void*>(host->context),
+                     static_cast<void*>(host->device),
+                     static_cast<void*>(host->handle),
+                     static_cast<void*>(binding), static_cast<void*>(transfer));
+    }
+    return cancel_result == 0 ? DTV_L3_OK : DTV_L3_FAILED;
 }
 
 } // namespace
@@ -424,13 +593,26 @@ dtv_l3_result siano_l3_libusb_session_open(
     if (session == nullptr) {
         return DTV_L3_FAILED;
     }
-    if (libusb_init(&session->host.context) != 0) {
+    const int init_result = libusb_init(&session->host.context);
+    if (init_result != 0) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_context_init usb_result=%d usb_error=%s host=%p usb_context=%p device=%p handle=%p\n",
+                     init_result, libusb_error_name(init_result),
+                     static_cast<void*>(&session->host),
+                     static_cast<void*>(session->host.context),
+                     static_cast<void*>(session->host.device),
+                     static_cast<void*>(session->host.handle));
         delete session;
         return DTV_L3_FAILED;
     }
     const std::vector<libusb_device *> devices =
         matching_devices(session->host.context);
     if (index >= devices.size()) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_select result=%d index=%u matching_devices=%zu host=%p usb_context=%p\n",
+                     DTV_L3_UNSUPPORTED, index, devices.size(),
+                     static_cast<void*>(&session->host),
+                     static_cast<void*>(session->host.context));
         if (error != nullptr && error_size != 0U) {
             std::snprintf(error, error_size, "no matching device at index %u",
                           index);
@@ -450,6 +632,13 @@ dtv_l3_result siano_l3_libusb_session_open(
     }
     std::string port_error;
     if (!read_port(session->host.device, &session->port, &port_error)) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=usb_read_port result=%d detail=%s host=%p usb_context=%p device=%p handle=%p index=%u\n",
+                     DTV_L3_UNSUPPORTED, port_error.c_str(),
+                     static_cast<void*>(&session->host),
+                     static_cast<void*>(session->host.context),
+                     static_cast<void*>(session->host.device),
+                     static_cast<void*>(session->host.handle), index);
         if (error != nullptr && error_size != 0U) {
             std::snprintf(error, error_size, "%s", port_error.c_str());
         }
@@ -472,6 +661,14 @@ dtv_l3_result siano_l3_libusb_session_open(
         &session->host.provider, &session->port, firmware, options,
         &session->adapter);
     if (result != DTV_L3_OK) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=adapter_create result=%d host=%p usb_context=%p device=%p handle=%p adapter=%p\n",
+                     static_cast<int>(result),
+                     static_cast<void*>(&session->host),
+                     static_cast<void*>(session->host.context),
+                     static_cast<void*>(session->host.device),
+                     static_cast<void*>(session->host.handle),
+                     static_cast<void*>(session->adapter));
         libusb_unref_device(session->host.device);
         libusb_exit(session->host.context);
         delete session;
@@ -629,6 +826,14 @@ const siano_l3_port *siano_l3_libusb_session_port(
     siano_l3_libusb_session *session)
 {
     return session == nullptr ? nullptr : &session->port;
+}
+
+void siano_l3_libusb_session_end_initialization_trace(
+    siano_l3_libusb_session *session)
+{
+    if (session != nullptr) {
+        session->host.trace_initialization.store(false);
+    }
 }
 
 siano_l3_adapter *siano_l3_libusb_session_adapter(

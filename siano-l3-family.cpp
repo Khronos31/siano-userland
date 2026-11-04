@@ -456,6 +456,9 @@ void L3Family::close_context() noexcept
         }
     }
     if (owner_ != nullptr) {
+        if (adapter_ != nullptr) {
+            siano_l3_adapter_quiesce_owner_reader(adapter_);
+        }
         (void)dtv_l3_close(owner_, 1000U);
         dtv_l3_close_status status{};
         for (unsigned attempt = 0; attempt < 1000U; ++attempt) {
@@ -480,6 +483,7 @@ void L3Family::close_context() noexcept
 Result<void> L3Family::start_device() noexcept
 {
     if (owner_ != nullptr) return Result<void>::success();
+    const auto initialize_started = std::chrono::steady_clock::now();
     if (!config_.firmware.empty()) {
         std::ifstream file(config_.firmware, std::ios::binary);
         if (!file) return Result<void>::failure(Error::INVALID_ARGUMENT);
@@ -507,7 +511,16 @@ Result<void> L3Family::start_device() noexcept
             : siano_l3_libusb_session_open(
                   index_, firmware_.empty() ? nullptr : &firmware, &options,
                   &session_, nullptr, 0U);
-    if (opened != DTV_L3_OK) return Result<void>::failure(Error::USB_IO);
+    if (opened != DTV_L3_OK) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=session_open result=%d session=%p elapsed_ms=%lld\n",
+                     static_cast<int>(opened), static_cast<void*>(session_),
+                     static_cast<long long>(std::chrono::duration_cast<
+                         std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - initialize_started)
+                                                .count()));
+        return Result<void>::failure(Error::USB_IO);
+    }
     adapter_ = siano_l3_libusb_session_adapter(session_);
     const dtv_l3_usb_provider* usb = siano_l3_adapter_usb_provider(adapter_);
     const dtv_l3_product_adapter* product =
@@ -515,21 +528,74 @@ Result<void> L3Family::start_device() noexcept
     if (usb == nullptr || product == nullptr)
         return Result<void>::failure(Error::INTERNAL);
     dtv_l3_open_result result = dtv_l3_open_ex(usb, product, 1U);
+    std::fprintf(stderr,
+                 "siano-init-trace stage=open_ex result=%d owner=%p op=%p session=%p adapter=%p provider=%p product=%p poll_budget_ms=6000 poll_interval_ms=1\n",
+                 static_cast<int>(result.result),
+                 static_cast<void*>(result.owner), static_cast<void*>(result.op),
+                 static_cast<void*>(session_), static_cast<void*>(adapter_),
+                 static_cast<const void*>(usb),
+                 static_cast<const void*>(product));
     if (result.result != DTV_L3_ACCEPTED || result.owner == nullptr ||
         result.op == nullptr)
         return Result<void>::failure(Error::USB_IO);
     dtv_l3_op_result op{};
+    dtv_l3_result poll_result = DTV_L3_OK;
+    unsigned attempts = 0U;
     for (unsigned attempt = 0; attempt < 6000U; ++attempt) {
-        if (dtv_l3_op_poll(result.op, &op) != DTV_L3_OK)
+        attempts = attempt + 1U;
+        poll_result = dtv_l3_op_poll(result.op, &op);
+        if (poll_result != DTV_L3_OK) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=open_poll poll_result=%d state=%d op_result=%d owner=%p op=%p attempts=%u elapsed_ms=%lld deadline_ms=6000\n",
+                         static_cast<int>(poll_result), static_cast<int>(op.state),
+                         static_cast<int>(op.result),
+                         static_cast<void*>(result.owner),
+                         static_cast<void*>(result.op), attempts,
+                         static_cast<long long>(std::chrono::duration_cast<
+                             std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - initialize_started)
+                                                    .count()));
             return Result<void>::failure(Error::USB_IO);
+        }
         if (op.state == DTV_L3_OP_DONE) break;
-        if (op.state == DTV_L3_OP_FAILED)
+        if (op.state == DTV_L3_OP_FAILED) {
+            std::fprintf(stderr,
+                         "siano-init-trace stage=open_complete state=%d op_result=%d owner=%p op=%p attempts=%u elapsed_ms=%lld deadline_ms=6000\n",
+                         static_cast<int>(op.state), static_cast<int>(op.result),
+                         static_cast<void*>(result.owner),
+                         static_cast<void*>(result.op), attempts,
+                         static_cast<long long>(std::chrono::duration_cast<
+                             std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - initialize_started)
+                                                    .count()));
             return Result<void>::failure(Error::USB_IO);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (op.state != DTV_L3_OP_DONE || op.result != DTV_L3_OK)
+    if (op.state != DTV_L3_OP_DONE || op.result != DTV_L3_OK) {
+        std::fprintf(stderr,
+                     "siano-init-trace stage=open_deadline poll_result=%d state=%d op_result=%d owner=%p op=%p attempts=%u elapsed_ms=%lld deadline_ms=6000\n",
+                     static_cast<int>(poll_result), static_cast<int>(op.state),
+                     static_cast<int>(op.result),
+                     static_cast<void*>(result.owner),
+                     static_cast<void*>(result.op), attempts,
+                     static_cast<long long>(std::chrono::duration_cast<
+                         std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - initialize_started)
+                                                .count()));
         return Result<void>::failure(Error::USB_IO);
-    (void)dtv_l3_op_release(result.op);
+    }
+    const dtv_l3_result released = dtv_l3_op_release(result.op);
+    std::fprintf(stderr,
+                 "siano-init-trace stage=open_complete state=%d op_result=%d release_result=%d owner=%p op=%p attempts=%u elapsed_ms=%lld\n",
+                 static_cast<int>(op.state), static_cast<int>(op.result),
+                 static_cast<int>(released), static_cast<void*>(result.owner),
+                 static_cast<void*>(result.op), attempts,
+                 static_cast<long long>(std::chrono::duration_cast<
+                     std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - initialize_started)
+                                            .count()));
+    siano_l3_libusb_session_end_initialization_trace(session_);
     owner_ = result.owner;
     if (config_.device_fd >= 0) {
         const siano_l3_port* port = siano_l3_libusb_session_port(session_);

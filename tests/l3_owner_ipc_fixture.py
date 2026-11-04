@@ -22,19 +22,29 @@ def write_firmware(path):
 
 
 def wait_ready(process):
-    lines = queue.Queue()
+    diagnostics = []
+    while True:
+        lines = queue.Queue()
 
-    def read_line():
-        lines.put(process.stderr.readline())
+        def read_line():
+            lines.put(process.stderr.readline())
 
-    reader = threading.Thread(target=read_line, daemon=True)
-    reader.start()
-    try:
-        line = lines.get(timeout=10).decode("utf-8", errors="replace").rstrip()
-    except queue.Empty as error:
-        raise TimeoutError("sianod_l3_offline did not become ready") from error
-    if not line.startswith("sianod ready: endpoint="):
-        raise RuntimeError(f"unexpected daemon startup: {line!r}")
+        reader = threading.Thread(target=read_line, daemon=True)
+        reader.start()
+        try:
+            line = lines.get(timeout=10).decode(
+                "utf-8", errors="replace").rstrip()
+        except queue.Empty as error:
+            raise TimeoutError(
+                "sianod_l3_offline did not become ready\n" +
+                "\n".join(diagnostics)) from error
+        if line.startswith("sianod ready: endpoint="):
+            return diagnostics
+        diagnostics.append(line)
+        if not line.startswith("siano-init-trace "):
+            raise RuntimeError(
+                f"unexpected daemon startup: {line!r}\n" +
+                "\n".join(diagnostics))
 
 
 def main():
@@ -59,8 +69,10 @@ def main():
         server = subprocess.Popen(args, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=env)
+        startup_diagnostics = []
+        failure = None
         try:
-            wait_ready(server)
+            startup_diagnostics = wait_ready(server)
             time.sleep(0.25)
             capture = subprocess.run(
                 [str(client), "--runtime-dir", str(runtime), "--instance",
@@ -73,6 +85,8 @@ def main():
                         "utf-8", errors="replace"))
             if not output.exists() or output.stat().st_size == 0:
                 raise RuntimeError("siano-ts produced no transport stream")
+        except Exception as error:
+            failure = error
         finally:
             if server.poll() is None:
                 if os.name == "nt":
@@ -85,8 +99,15 @@ def main():
             except subprocess.TimeoutExpired:
                 server.kill()
                 _, stderr = server.communicate(timeout=5)
-                raise RuntimeError("sianod_l3_offline did not shut down")
-        diagnostics = stderr.decode("utf-8", errors="replace")
+                failure = failure or RuntimeError(
+                    "sianod_l3_offline did not shut down")
+        diagnostics = "\n".join(
+            startup_diagnostics +
+            stderr.decode("utf-8", errors="replace").splitlines())
+        if failure is not None:
+            raise RuntimeError(
+                f"{failure}\nsianod_l3_offline exited {server.returncode}:\n"
+                f"{diagnostics}") from failure
         if server.returncode != 0:
             raise RuntimeError(f"sianod_l3_offline exited {server.returncode}:\n{diagnostics}")
         stats = next((line for line in diagnostics.splitlines()
