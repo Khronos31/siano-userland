@@ -32,6 +32,7 @@ uint16_t siano_l3_test_host_out_type(siano_l3_test_host *host, size_t index);
 uint16_t siano_l3_test_host_out_len(siano_l3_test_host *host, size_t index);
 int siano_l3_test_host_error(siano_l3_test_host *host, char *error,
                              size_t error_size);
+size_t siano_l3_test_host_max_pending(siano_l3_test_host *host);
 
 #ifdef __cplusplus
 }

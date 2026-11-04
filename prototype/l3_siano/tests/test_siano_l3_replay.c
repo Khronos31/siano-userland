@@ -649,6 +649,62 @@ static int scenario_owner_queue(void)
     return 1;
 }
 
+
+static int scenario_inflight(void)
+{
+    siano_l3_test_host *host = NULL;
+    siano_l3_adapter *adapter = NULL;
+    dtv_l3_context *owner = NULL;
+    dtv_l3_lease *lease = NULL;
+    dtv_l3_stream *stream = NULL;
+    siano_l3_options options;
+    siano_l3_stats stats;
+    uint8_t packets[4U * MAX_PACKET];
+    char error[128] = {0};
+    size_t index;
+
+    memset(&options, 0, sizeof(options));
+    options.in_flight = 4U;
+    if (!siano_l3_test_host_create(SIANO_L3_FIXTURE_DIR "/warm_tune.jsonl",
+                                   &host, error, sizeof(error))) {
+        return 0;
+    }
+    if (!open_owner(host, &options, &adapter, &owner) ||
+        !arm_stream(owner, &lease, &stream)) {
+        fprintf(stderr, "inflight arm failed\n");
+        return 0;
+    }
+    for (index = 0; index < 4U; ++index) {
+        fill_packet(packets + index * MAX_PACKET, 0x0200U,
+                    (uint8_t)index, 0);
+    }
+    if (!siano_l3_test_host_feed_ts(host, packets, sizeof(packets)) ||
+        !read_packets(stream, packets, 4U)) {
+        fprintf(stderr, "inflight read failed\n");
+        return 0;
+    }
+    sleep_ms(10);
+    if (siano_l3_adapter_stats(adapter, &stats) != DTV_L3_OK ||
+        stats.in_flight_max < 4U ||
+        siano_l3_test_host_max_pending(host) < 4U ||
+        stats.ts_packets != 4U || stats.ts_continuity_errors != 0U) {
+        fprintf(stderr,
+                "inflight mismatch in_flight_max=%u host_max_pending=%zu "
+                "raw=%llu cc=%llu\n",
+                stats.in_flight_max, siano_l3_test_host_max_pending(host),
+                (unsigned long long)stats.ts_packets,
+                (unsigned long long)stats.ts_continuity_errors);
+        return 0;
+    }
+    if (!finish_stream(stream) || dtv_l3_lease_release(lease) != DTV_L3_OK ||
+        !close_owner(owner, 1)) {
+        return 0;
+    }
+    siano_l3_adapter_destroy(adapter);
+    siano_l3_test_host_destroy(host);
+    return 1;
+}
+
 static int scenario_quality(void)
 {
     siano_l3_test_host *host = NULL;
@@ -717,6 +773,8 @@ int main(int argc, char **argv)
         ok = scenario_quality();
     } else if (strcmp(argv[1], "owner_queue") == 0) {
         ok = scenario_owner_queue();
+    } else if (strcmp(argv[1], "inflight") == 0) {
+        ok = scenario_inflight();
     } else {
         fprintf(stderr, "unknown scenario %s\n", argv[1]);
         return 2;

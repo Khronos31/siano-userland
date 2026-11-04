@@ -63,6 +63,8 @@ typedef struct siano_l3_options {
     uint32_t version_timeout_ms;
     uint32_t download_timeout_ms;
     uint32_t stats_poll_ms;
+    /* Number of simultaneous IN transfers; zero selects one. */
+    uint32_t in_flight;
 } siano_l3_options;
 
 /*
@@ -103,6 +105,10 @@ typedef struct siano_l3_stats {
     uint64_t ts_continuity_errors;
     uint64_t ts_filtered_packets;
     uint64_t ts_delivered_packets;
+    uint64_t in_submits;
+    uint64_t in_completions;
+    uint32_t in_flight_max;
+    uint32_t reserved_in;
 } siano_l3_stats;
 
 /*

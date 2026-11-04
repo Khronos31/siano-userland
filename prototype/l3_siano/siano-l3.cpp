@@ -51,6 +51,17 @@ struct StreamEntry {
     void *context = nullptr;
 };
 
+struct InSlot {
+    void *adapter = nullptr;
+    uint32_t index = 0;
+    uint64_t id = 0;
+    bool active = false;
+    bool done = false;
+    dtv_l3_result result = DTV_L3_FAILED;
+    size_t actual = 0;
+    std::vector<uint8_t> data;
+};
+
 #ifdef SIANO_L3_HAS_CATALOG
 const dtv_l3_receiver_capability kSianoReceivers[] = {
     {0U, DTV_L3_SYSTEM_ISDB_T, DTV_L3_PID_FILTER_HARDWARE,
@@ -96,6 +107,13 @@ struct siano_l3_adapter {
     size_t in_actual = 0;
     std::vector<uint8_t> in_copy;
     uint64_t in_transfer_id = 0;
+    std::vector<InSlot> in_slots;
+    std::vector<uint32_t> in_done_queue;
+    uint32_t in_slots_done = 0;
+    uint32_t in_flight_current = 0;
+    uint32_t in_flight_max = 0;
+    uint64_t in_submits = 0;
+    uint64_t in_completions = 0;
     std::array<uint8_t, SIANO_L3_USB2_BUFFER_SIZE> in_buffer{};
 
     std::mutex state_mutex;
@@ -728,19 +746,196 @@ void in_loop(siano_l3_adapter *adapter)
     }
 }
 
+void in_slot_complete(dtv_l3_provider_binding *binding, uint64_t transfer_id,
+                      const dtv_l3_transfer_completion *completion,
+                      void *callback_context)
+{
+    (void)binding;
+    (void)transfer_id;
+    auto *slot = static_cast<InSlot *>(callback_context);
+    auto *adapter = static_cast<siano_l3_adapter *>(slot->adapter);
+    std::lock_guard<std::mutex> lock(adapter->in_mutex);
+    slot->done = true;
+    slot->active = false;
+    slot->result = completion == nullptr ? DTV_L3_FAILED : completion->result;
+    slot->actual = completion == nullptr ? 0U : completion->size;
+    slot->data.clear();
+    if (completion != nullptr && completion->data != nullptr &&
+        completion->size != 0U) {
+        slot->data.assign(completion->data,
+                          completion->data + completion->size);
+    }
+    ++adapter->in_slots_done;
+    ++adapter->in_completions;
+    adapter->in_done_queue.push_back(slot->index);
+    if (adapter->in_flight_current != 0U) {
+        --adapter->in_flight_current;
+    }
+    adapter->in_condition.notify_all();
+}
+
+dtv_l3_result submit_in_slot(siano_l3_adapter *adapter,
+                              dtv_l3_provider_binding *binding,
+                              InSlot *slot)
+{
+    uint64_t id = allocate_internal_id(adapter);
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        slot->id = id;
+        slot->done = false;
+        slot->active = false;
+        slot->result = DTV_L3_FAILED;
+        slot->actual = 0;
+        slot->data.clear();
+    }
+    dtv_l3_transfer_request request{};
+    request.kind = DTV_L3_TRANSFER_BULK;
+    request.endpoint = adapter->port.in_endpoint;
+    request.timeout_ms = kInTransferTimeoutMs;
+    request.in_capacity = adapter->in_buffer.size();
+    request.claim_index = 0U;
+    dtv_l3_result submitted = adapter->host.submit(
+        adapter->host.provider_context, binding, id, &request,
+        in_slot_complete, slot);
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        if (submitted == DTV_L3_ACCEPTED || submitted == DTV_L3_OK) {
+            ++adapter->in_submits;
+            if (!slot->done) {
+                slot->active = true;
+                ++adapter->in_flight_current;
+                if (adapter->in_flight_current > adapter->in_flight_max) {
+                    adapter->in_flight_max = adapter->in_flight_current;
+                }
+            }
+        } else if (!slot->done) {
+            slot->done = true;
+            slot->result = submitted;
+            adapter->in_done_queue.push_back(slot->index);
+        }
+    }
+    return submitted;
+}
+
+void in_loop_multi(siano_l3_adapter *adapter)
+{
+    uint32_t count = adapter->options.in_flight;
+    if (count < 2U) {
+        count = 2U;
+    }
+    if (count > 16U) {
+        count = 16U;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        if (adapter->closing) {
+            return;
+        }
+        adapter->in_slots.resize(count);
+        adapter->in_done_queue.clear();
+        adapter->in_slots_done = 0;
+        adapter->in_flight_current = 0;
+        for (uint32_t index = 0; index < count; ++index) {
+            InSlot &slot = adapter->in_slots[index];
+            slot.adapter = adapter;
+            slot.index = index;
+            slot.id = 0;
+            slot.active = false;
+            slot.done = false;
+            slot.result = DTV_L3_FAILED;
+            slot.actual = 0;
+            slot.data.clear();
+        }
+    }
+    dtv_l3_provider_binding *binding = current_binding(adapter);
+    if (binding == nullptr) {
+        return;
+    }
+    for (uint32_t index = 0; index < count; ++index) {
+        (void)submit_in_slot(adapter, binding, &adapter->in_slots[index]);
+    }
+
+    while (true) {
+        uint32_t index = 0;
+        bool have_completion = false;
+        {
+            std::unique_lock<std::mutex> lock(adapter->in_mutex);
+            adapter->in_condition.wait_for(
+                lock, std::chrono::milliseconds(kInTransferTimeoutMs + 1000U),
+                [adapter] {
+                    return adapter->closing ||
+                           !adapter->in_done_queue.empty();
+                });
+            if (adapter->closing && adapter->in_done_queue.empty()) {
+                break;
+            }
+            if (!adapter->in_done_queue.empty()) {
+                index = adapter->in_done_queue.front();
+                adapter->in_done_queue.erase(
+                    adapter->in_done_queue.begin());
+                have_completion = true;
+            }
+        }
+        if (!have_completion) {
+            /* No completion within the deadline; release handles the rest. */
+            break;
+        }
+        InSlot slot;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            if (index >= adapter->in_slots.size()) {
+                continue;
+            }
+            slot = adapter->in_slots[index];
+        }
+        if (slot.result == DTV_L3_OK && slot.actual != 0U &&
+            !slot.data.empty()) {
+            route_message(adapter, slot.data.data(), slot.actual);
+        }
+        if (current_binding(adapter) == nullptr) {
+            break;
+        }
+        binding = current_binding(adapter);
+        if (binding == nullptr) {
+            break;
+        }
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            if (adapter->closing) {
+                break;
+            }
+        }
+        (void)submit_in_slot(adapter, binding, &adapter->in_slots[index]);
+    }
+}
+
 void stop_reader(siano_l3_adapter *adapter)
 {
     uint64_t id = 0;
     bool outstanding = false;
+    std::vector<uint64_t> ids;
     {
         std::lock_guard<std::mutex> lock(adapter->in_mutex);
         adapter->closing = true;
         id = adapter->in_transfer_id;
         outstanding = adapter->in_outstanding;
+        for (const InSlot &slot : adapter->in_slots) {
+            if (slot.active && slot.id != 0U) {
+                ids.push_back(slot.id);
+            }
+        }
+        adapter->in_condition.notify_all();
     }
     dtv_l3_provider_binding *binding = current_binding(adapter);
-    if (outstanding && id != 0U && binding != nullptr) {
-        (void)adapter->host.cancel(adapter->host.provider_context, binding, id);
+    if (binding != nullptr) {
+        if (outstanding && id != 0U) {
+            (void)adapter->host.cancel(adapter->host.provider_context, binding,
+                                       id);
+        }
+        for (uint64_t slot_id : ids) {
+            (void)adapter->host.cancel(adapter->host.provider_context, binding,
+                                       slot_id);
+        }
     }
 }
 
@@ -793,7 +988,11 @@ void start_reader(siano_l3_adapter *adapter)
         adapter->in_outstanding = false;
     }
     if (!adapter->in_thread.joinable()) {
-        adapter->in_thread = std::thread(in_loop, adapter);
+        if (adapter->options.in_flight > 1U) {
+            adapter->in_thread = std::thread(in_loop_multi, adapter);
+        } else {
+            adapter->in_thread = std::thread(in_loop, adapter);
+        }
         std::lock_guard<std::mutex> lock(adapter->in_mutex);
         adapter->in_started = true;
     }
@@ -1460,6 +1659,11 @@ dtv_l3_result siano_l3_adapter_create(const dtv_l3_provider *host,
         if (adapter->options.software_filter > SIANO_L3_FILTER_DISABLE) {
             adapter->options.software_filter = SIANO_L3_FILTER_AUTO;
         }
+        adapter->options.in_flight =
+            first_nonzero(adapter->options.in_flight, 1U);
+        if (adapter->options.in_flight > 16U) {
+            adapter->options.in_flight = 16U;
+        }
 
         adapter->exported = dtv_l3_provider{};
         adapter->exported.provider_context = adapter;
@@ -1554,6 +1758,12 @@ dtv_l3_result siano_l3_adapter_stats(siano_l3_adapter *adapter,
         stats->ts_continuity_errors = adapter->ts_continuity_errors;
         stats->ts_filtered_packets = adapter->ts_filtered_packets;
         stats->ts_delivered_packets = adapter->ts_delivered_packets;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        stats->in_submits = adapter->in_submits;
+        stats->in_completions = adapter->in_completions;
+        stats->in_flight_max = adapter->in_flight_max;
     }
     return DTV_L3_OK;
 }

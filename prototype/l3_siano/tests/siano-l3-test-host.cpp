@@ -32,6 +32,7 @@ struct FixtureEvent {
 
 struct PendingIn {
     bool active = false;
+    uint64_t id = 0;
     uint8_t *buffer = nullptr;
     size_t capacity = 0;
     dtv_l3_transfer_complete_fn complete = nullptr;
@@ -52,7 +53,8 @@ struct siano_l3_test_host {
     size_t out_cursor = 0;
     size_t in_cursor = 0;
     std::vector<Injection> injected;
-    PendingIn pending;
+    std::vector<PendingIn> pending;
+    size_t max_pending = 0;
     bool waiting_in = false;
     uint16_t expected_in = 0;
     std::vector<uint16_t> out_types;
@@ -61,7 +63,7 @@ struct siano_l3_test_host {
     bool claimed = false;
     siano_l3_port port{};
     dtv_l3_provider provider{};
-    std::array<uint8_t, SIANO_L3_USB2_BUFFER_SIZE> in_buffer{};
+    std::array<std::array<uint8_t, SIANO_L3_USB2_BUFFER_SIZE>, 16> in_buffers{};
 };
 
 namespace {
@@ -170,7 +172,14 @@ void deliver_in(siano_l3_test_host *host)
     bool have = false;
     {
         std::lock_guard<std::mutex> lock(host->mutex);
-        if (!host->pending.active) {
+        size_t pending_index = host->pending.size();
+        for (size_t index = 0; index < host->pending.size(); ++index) {
+            if (host->pending[index].active) {
+                pending_index = index;
+                break;
+            }
+        }
+        if (pending_index == host->pending.size()) {
             return;
         }
         if (!host->injected.empty()) {
@@ -195,8 +204,8 @@ void deliver_in(siano_l3_test_host *host)
         } else {
             return;
         }
-        pending = host->pending;
-        host->pending.active = false;
+        pending = host->pending[pending_index];
+        host->pending[pending_index].active = false;
         have = true;
     }
     if (!have) {
@@ -213,7 +222,7 @@ void deliver_in(siano_l3_test_host *host)
     completion.actual_length = copied;
     completion.actual_length_known = 1U;
     if (pending.complete != nullptr) {
-        pending.complete(nullptr, 0U, &completion, pending.context);
+        pending.complete(nullptr, pending.id, &completion, pending.context);
     }
 }
 
@@ -241,21 +250,22 @@ dtv_l3_release_result test_release_claim(void *context,
                                        DTV_L3_CLAIM_NONE,
                                        DTV_L3_RESTORE_SUCCEEDED, DTV_L3_OK};
     }
-    PendingIn pending;
+    std::vector<PendingIn> pending;
     {
         std::lock_guard<std::mutex> lock(host->mutex);
         host->claimed = false;
-        pending = host->pending;
-        host->pending.active = false;
+        pending.swap(host->pending);
     }
-    if (pending.active && pending.complete != nullptr) {
-        dtv_l3_transfer_completion completion{};
-        completion.result = DTV_L3_CANCELLED;
-        completion.data = nullptr;
-        completion.size = 0;
-        completion.actual_length = 0;
-        completion.actual_length_known = 1U;
-        pending.complete(nullptr, 0U, &completion, pending.context);
+    for (const PendingIn &entry : pending) {
+        if (entry.active && entry.complete != nullptr) {
+            dtv_l3_transfer_completion completion{};
+            completion.result = DTV_L3_CANCELLED;
+            completion.data = nullptr;
+            completion.size = 0;
+            completion.actual_length = 0;
+            completion.actual_length_known = 1U;
+            entry.complete(nullptr, entry.id, &completion, entry.context);
+        }
     }
     return dtv_l3_release_result{DTV_L3_RELEASE_QUIESCED, DTV_L3_CLAIM_NONE,
                                    DTV_L3_RESTORE_SUCCEEDED, DTV_L3_OK};
@@ -279,11 +289,35 @@ dtv_l3_result test_submit(void *context, dtv_l3_provider_binding *binding,
             if (request->in_capacity == 0U || request->in_capacity > SIANO_L3_USB2_BUFFER_SIZE) {
                 return DTV_L3_INVALID;
             }
-            host->pending.active = true;
-            host->pending.buffer = host->in_buffer.data();
-            host->pending.capacity = request->in_capacity;
-            host->pending.complete = complete;
-            host->pending.context = callback_context;
+            size_t slot = host->pending.size();
+            for (size_t index = 0; index < host->pending.size(); ++index) {
+                if (!host->pending[index].active) {
+                    slot = index;
+                    break;
+                }
+            }
+            if (slot == host->pending.size()) {
+                if (slot >= host->in_buffers.size()) {
+                    return DTV_L3_INVALID;
+                }
+                host->pending.resize(slot + 1);
+            }
+            PendingIn &entry = host->pending[slot];
+            entry.active = true;
+            entry.id = transfer_id;
+            entry.buffer = host->in_buffers[slot].data();
+            entry.capacity = request->in_capacity;
+            entry.complete = complete;
+            entry.context = callback_context;
+            unsigned int active = 0;
+            for (const PendingIn &p : host->pending) {
+                if (p.active) {
+                    ++active;
+                }
+            }
+            if (active > host->max_pending) {
+                host->max_pending = active;
+            }
         }
         deliver_in(host);
         return DTV_L3_ACCEPTED;
@@ -337,21 +371,27 @@ dtv_l3_result test_cancel(void *context, dtv_l3_provider_binding *binding,
 {
     auto *host = static_cast<siano_l3_test_host *>(context);
     (void)binding;
-    (void)transfer_id;
     PendingIn pending;
+    bool have = false;
     {
         std::lock_guard<std::mutex> lock(host->mutex);
-        pending = host->pending;
-        host->pending.active = false;
+        for (PendingIn &entry : host->pending) {
+            if (entry.active && entry.id == transfer_id) {
+                pending = entry;
+                entry.active = false;
+                have = true;
+                break;
+            }
+        }
     }
-    if (pending.active && pending.complete != nullptr) {
+    if (have && pending.complete != nullptr) {
         dtv_l3_transfer_completion completion{};
         completion.result = DTV_L3_CANCELLED;
         completion.data = nullptr;
         completion.size = 0;
         completion.actual_length = 0;
         completion.actual_length_known = 1U;
-        pending.complete(nullptr, 0U, &completion, pending.context);
+        pending.complete(nullptr, pending.id, &completion, pending.context);
     }
     return DTV_L3_OK;
 }
@@ -487,6 +527,15 @@ uint16_t siano_l3_test_host_out_len(siano_l3_test_host *host, size_t index)
     }
     std::lock_guard<std::mutex> lock(host->mutex);
     return index < host->out_lengths.size() ? host->out_lengths[index] : 0U;
+}
+
+size_t siano_l3_test_host_max_pending(siano_l3_test_host *host)
+{
+    if (host == nullptr) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(host->mutex);
+    return host->max_pending;
 }
 
 int siano_l3_test_host_error(siano_l3_test_host *host, char *error,

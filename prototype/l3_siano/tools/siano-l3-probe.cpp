@@ -81,7 +81,7 @@ void usage(const char *name)
     std::fprintf(stderr,
                  "usage: %s [--list] [--index N] [--firmware PATH] "
                  "[--warm|--cold] [--pid N] [--hz N] [--seconds N] "
-                 "[--stats-ms N] [--output PATH]\n",
+                 "[--stats-ms N] [--in-flight N] [--output PATH]\n",
                  name);
 }
 
@@ -93,6 +93,7 @@ int main(int argc, char **argv)
     unsigned index = 0;
     unsigned seconds = 60;
     unsigned stats_ms = 1000;
+    unsigned in_flight = 10;
     unsigned long hz = 527142857UL;
     unsigned long pid = 0;
     unsigned boot_mode = SIANO_L3_BOOT_AUTO;
@@ -119,6 +120,9 @@ int main(int argc, char **argv)
                 std::strtoul(argv[++arg], nullptr, 0));
         } else if (std::strcmp(argv[arg], "--stats-ms") == 0 && arg + 1 < argc) {
             stats_ms = static_cast<unsigned>(
+                std::strtoul(argv[++arg], nullptr, 0));
+        } else if (std::strcmp(argv[arg], "--in-flight") == 0 && arg + 1 < argc) {
+            in_flight = static_cast<unsigned>(
                 std::strtoul(argv[++arg], nullptr, 0));
         } else if (std::strcmp(argv[arg], "--output") == 0 && arg + 1 < argc) {
             output_path = argv[++arg];
@@ -160,6 +164,7 @@ int main(int argc, char **argv)
     options.boot_mode = boot_mode;
     options.pid = static_cast<uint32_t>(pid);
     options.stats_poll_ms = stats_ms;
+    options.in_flight = in_flight;
     siano_l3_libusb_session *session = nullptr;
     char error[256] = {0};
     dtv_l3_result result = siano_l3_libusb_session_open(
@@ -264,7 +269,8 @@ int main(int argc, char **argv)
     (void)dtv_l3_stream_status_get(stream, &stream_status);
     std::printf("stream: packets=%llu bytes=%llu bad_sync=%llu tei=%llu "
                 "adapter_packets=%llu adapter_tei=%llu adapter_cc=%llu "
-                "filtered=%llu dropped=%llu queued=%llu signal=%u\n",
+                "filtered=%llu dropped=%llu queued=%llu signal=%u "
+                "in_submits=%llu in_completions=%llu in_flight_max=%u\n",
                 (unsigned long long)packets, (unsigned long long)bytes,
                 (unsigned long long)bad_sync, (unsigned long long)tei,
                 (unsigned long long)stats.ts_packets,
@@ -273,7 +279,10 @@ int main(int argc, char **argv)
                 (unsigned long long)stats.ts_filtered_packets,
                 (unsigned long long)stream_status.dropped_overflow_packets,
                 (unsigned long long)stream_status.queued_packets,
-                stats.signal_detected);
+                stats.signal_detected,
+                (unsigned long long)stats.in_submits,
+                (unsigned long long)stats.in_completions,
+                stats.in_flight_max);
 
     const bool stream_ok = finish_stream(stream);
     const dtv_l3_result lease_result = dtv_l3_lease_release(lease);

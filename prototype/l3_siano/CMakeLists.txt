@@ -218,7 +218,7 @@ if(BUILD_TESTING)
     add_test(NAME siano_l3_source_spdx
         COMMAND bash ${SIANO_L3_ROOT}/tests/check_siano_l3_sources.sh ${SIANO_L3_REPO_ROOT})
     if(SIANO_L3_CORE_SOURCE_DIR)
-        foreach(scenario IN ITEMS cold warm tune pid close quality owner_queue)
+        foreach(scenario IN ITEMS cold warm tune pid close quality owner_queue inflight)
             add_test(NAME siano_l3_replay_${scenario}
                 COMMAND siano_l3_replay ${scenario})
         endforeach()
