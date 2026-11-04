@@ -175,8 +175,22 @@ int main(int argc, char **argv)
         return 1;
     }
     siano_l3_adapter *adapter = siano_l3_libusb_session_adapter(session);
+#ifdef SIANO_L3_SPLIT_API
+    const dtv_l3_usb_provider *usb_provider =
+        siano_l3_adapter_usb_provider(adapter);
+    const dtv_l3_product_adapter *product_adapter =
+        siano_l3_adapter_product_adapter(adapter);
+    if (usb_provider == nullptr || product_adapter == nullptr) {
+        std::fprintf(stderr, "split provider view unavailable\n");
+        siano_l3_libusb_session_close(session);
+        return 1;
+    }
+    dtv_l3_open_result opened =
+        dtv_l3_open_ex(usb_provider, product_adapter, 1U);
+#else
     const dtv_l3_provider *provider = siano_l3_adapter_provider(adapter);
     dtv_l3_open_result opened = dtv_l3_open(provider, 1U);
+#endif
     dtv_l3_op_result open_result{};
     if (opened.result != DTV_L3_ACCEPTED || opened.owner == nullptr ||
         opened.op == nullptr || !wait_open(opened.op, &open_result)) {
