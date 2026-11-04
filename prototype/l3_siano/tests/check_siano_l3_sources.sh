@@ -13,6 +13,7 @@ ${here}/siano-l3-test-host.h
 ${here}/siano-l3-test-host.cpp
 ${here}/test_siano_l3_replay.c
 ${here}/test_siano_l3_split.c
+${here}/test_l3_owner_init_fixture.c
 "
 for source in $sources; do
     if ! head -n 1 "$source" | grep -q 'SPDX-License-Identifier: GPL-2.0-or-later'; then

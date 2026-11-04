@@ -532,6 +532,108 @@ static int scenario_close(void)
     return 1;
 }
 
+
+static int scenario_owner_queue(void)
+{
+    siano_l3_test_host *host = NULL;
+    siano_l3_adapter *adapter = NULL;
+    dtv_l3_context *owner = NULL;
+    dtv_l3_lease *lease = NULL;
+    dtv_l3_stream *stream = NULL;
+    siano_l3_options options;
+    siano_l3_stats stats;
+    dtv_l3_stream_status stream_status;
+    uint8_t packets[20U * MAX_PACKET];
+    uint8_t received[4U * MAX_PACKET];
+    char error[128] = {0};
+    size_t index;
+    unsigned int attempt;
+
+    memset(&options, 0, sizeof(options));
+    if (!siano_l3_test_host_create(SIANO_L3_FIXTURE_DIR "/warm_tune.jsonl",
+                                   &host, error, sizeof(error))) {
+        return 0;
+    }
+    if (!open_owner(host, &options, &adapter, &owner) ||
+        !arm_stream(owner, &lease, &stream)) {
+        fprintf(stderr, "owner_queue arm failed\n");
+        return 0;
+    }
+    for (index = 0; index < 20U; ++index) {
+        fill_packet(packets + index * MAX_PACKET, 0x0200U,
+                    (uint8_t)index, 0);
+    }
+    if (!siano_l3_test_host_feed_ts(host, packets, sizeof(packets))) {
+        return 0;
+    }
+    memset(&stream_status, 0, sizeof(stream_status));
+    for (attempt = 0; attempt < 1000000U; ++attempt) {
+        if ( dtv_l3_stream_status_get(stream, &stream_status) != DTV_L3_OK) {
+            return 0;
+        }
+        if (stream_status.queued_packets +
+                stream_status.dropped_overflow_packets >= 20U) {
+            break;
+        }
+        sched_yield();
+    }
+    if (attempt == 1000000U ||
+        siano_l3_adapter_stats(adapter, &stats) != DTV_L3_OK) {
+        fprintf(stderr, "owner_queue status timeout\n");
+        return 0;
+    }
+    const dtv_l3_stream_status initial_status = stream_status;
+    if (stats.ts_messages != 1U || stats.ts_packets != 20U ||
+        stats.ts_delivered_packets != 20U ||
+        stats.ts_continuity_errors != 0U ||
+        stream_status.queued_packets != 4U ||
+        stream_status.dropped_overflow_packets != 16U ||
+        stream_status.staged_bytes != 0U) {
+        fprintf(stderr,
+                "owner_queue mismatch messages=%llu raw=%llu delivered=%llu "
+                "cc=%llu queued=%llu dropped=%llu staged=%llu\n",
+                (unsigned long long)stats.ts_messages,
+                (unsigned long long)stats.ts_packets,
+                (unsigned long long)stats.ts_delivered_packets,
+                (unsigned long long)stats.ts_continuity_errors,
+                (unsigned long long)stream_status.queued_packets,
+                (unsigned long long)stream_status.dropped_overflow_packets,
+                (unsigned long long)stream_status.staged_bytes);
+        return 0;
+    }
+    for (index = 0; index < 4U; ++index) {
+        size_t read = 0;
+        dtv_l3_read_state state = DTV_L3_READ_WAIT;
+        if (dtv_l3_stream_read_ts(stream, received + index * MAX_PACKET,
+                                  MAX_PACKET, &read, &state) != DTV_L3_OK ||
+            state != DTV_L3_READ_DATA || read != MAX_PACKET ||
+            memcmp(received + index * MAX_PACKET,
+                   packets + index * MAX_PACKET, MAX_PACKET) != 0) {
+            fprintf(stderr, "owner_queue read[%zu] failed\n", index);
+            return 0;
+        }
+    }
+    if (dtv_l3_stream_status_get(stream, &stream_status) != DTV_L3_OK ||
+        stream_status.queued_packets != 0U) {
+        return 0;
+    }
+    if (!finish_stream(stream) || dtv_l3_lease_release(lease) != DTV_L3_OK ||
+        !close_owner(owner, 1)) {
+        return 0;
+    }
+    printf("owner_queue measured: raw=%llu delivered_to_owner=%llu raw_cc=%llu "
+           "queued=%llu dropped=%llu staged=%llu\n",
+           (unsigned long long)stats.ts_packets,
+           (unsigned long long)stats.ts_delivered_packets,
+           (unsigned long long)stats.ts_continuity_errors,
+           (unsigned long long)initial_status.queued_packets,
+           (unsigned long long)initial_status.dropped_overflow_packets,
+           (unsigned long long)initial_status.staged_bytes);
+    siano_l3_adapter_destroy(adapter);
+    siano_l3_test_host_destroy(host);
+    return 1;
+}
+
 static int scenario_quality(void)
 {
     siano_l3_test_host *host = NULL;
@@ -598,6 +700,8 @@ int main(int argc, char **argv)
         ok = scenario_close();
     } else if (strcmp(argv[1], "quality") == 0) {
         ok = scenario_quality();
+    } else if (strcmp(argv[1], "owner_queue") == 0) {
+        ok = scenario_owner_queue();
     } else {
         fprintf(stderr, "unknown scenario %s\n", argv[1]);
         return 2;
