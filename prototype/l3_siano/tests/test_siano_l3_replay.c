@@ -15,6 +15,9 @@
 #define COLD_IMAGE_SIZE (12U + 85828U)
 #define MAX_PACKET 188U
 #define READ_PACKETS 64U
+#ifndef SIANO_L3_OWNER_QUEUE_EXPECT
+#define SIANO_L3_OWNER_QUEUE_EXPECT 4U
+#endif
 
 static uint8_t g_firmware[COLD_IMAGE_SIZE];
 
@@ -583,15 +586,19 @@ static int scenario_owner_queue(void)
         return 0;
     }
     const dtv_l3_stream_status initial_status = stream_status;
+    const size_t expect_queued = (size_t)SIANO_L3_OWNER_QUEUE_EXPECT;
+    const size_t expect_dropped = 20U - expect_queued;
     if (stats.ts_messages != 1U || stats.ts_packets != 20U ||
         stats.ts_delivered_packets != 20U ||
         stats.ts_continuity_errors != 0U ||
-        stream_status.queued_packets != 4U ||
-        stream_status.dropped_overflow_packets != 16U ||
+        stream_status.queued_packets != expect_queued ||
+        stream_status.dropped_overflow_packets != expect_dropped ||
         stream_status.staged_bytes != 0U) {
         fprintf(stderr,
-                "owner_queue mismatch messages=%llu raw=%llu delivered=%llu "
-                "cc=%llu queued=%llu dropped=%llu staged=%llu\n",
+                "owner_queue mismatch expect_queued=%zu expect_dropped=%zu "
+                "messages=%llu raw=%llu delivered=%llu cc=%llu queued=%llu "
+                "dropped=%llu staged=%llu\n",
+                expect_queued, expect_dropped,
                 (unsigned long long)stats.ts_messages,
                 (unsigned long long)stats.ts_packets,
                 (unsigned long long)stats.ts_delivered_packets,

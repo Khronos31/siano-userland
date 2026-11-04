@@ -20,6 +20,8 @@ option(SIANO_L3_SPLIT_INIT_HOOKS "Compile the G1/G2 product bind/initialize hook
 option(SIANO_L3_HAS_CATALOG "Compile the capability catalog view" OFF)
 option(SIANO_L3_OWNER_INIT_FIXTURE "Build the Core initialize-transfer fixture" OFF)
 option(SIANO_L3_FACTORY "Compile the factory/grants/manifest bridge" OFF)
+set(SIANO_L3_OWNER_QUEUE_EXPECT 4 CACHE STRING
+    "Expected owner stream queue depth for the 20-packet owner_queue fixture")
 
 if(NOT SIANO_L3_CORE_INCLUDE_DIR)
     message(FATAL_ERROR "Set SIANO_L3_CORE_INCLUDE_DIR to the Core L3 include directory")
