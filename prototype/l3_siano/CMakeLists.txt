@@ -64,18 +64,31 @@ endif()
 set(SIANO_L3_TEST_TARGETS siano_l3 siano_l3_test_host)
 
 if(SIANO_L3_ENABLE_LIBUSB)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(SIANO_L3_LIBUSB REQUIRED libusb-1.0)
     add_library(siano_l3_libusb STATIC siano-l3-libusb.cpp)
     target_include_directories(siano_l3_libusb PRIVATE
         ${SIANO_L3_ROOT}
         ${SIANO_L3_CORE_INCLUDE_DIR})
-    target_include_directories(siano_l3_libusb SYSTEM PRIVATE
-        ${SIANO_L3_LIBUSB_INCLUDE_DIRS})
     target_compile_features(siano_l3_libusb PRIVATE cxx_std_17)
-    target_compile_options(siano_l3_libusb PRIVATE ${SIANO_L3_LIBUSB_CFLAGS_OTHER})
-    target_link_libraries(siano_l3_libusb PUBLIC
-        siano_l3 ${SIANO_L3_LIBUSB_LIBRARIES} Threads::Threads)
+    if(WIN32)
+        if(NOT LIBUSB_INCLUDE_DIR)
+            find_path(LIBUSB_INCLUDE_DIR libusb.h REQUIRED)
+        endif()
+        if(NOT LIBUSB_LIBRARY)
+            find_library(LIBUSB_LIBRARY NAMES usb-1.0 libusb-1.0 REQUIRED)
+        endif()
+        target_include_directories(siano_l3_libusb SYSTEM PRIVATE
+            ${LIBUSB_INCLUDE_DIR})
+        target_link_libraries(siano_l3_libusb PUBLIC
+            siano_l3 ${LIBUSB_LIBRARY} Threads::Threads)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SIANO_L3_LIBUSB REQUIRED libusb-1.0)
+        target_include_directories(siano_l3_libusb SYSTEM PRIVATE
+            ${SIANO_L3_LIBUSB_INCLUDE_DIRS})
+        target_compile_options(siano_l3_libusb PRIVATE ${SIANO_L3_LIBUSB_CFLAGS_OTHER})
+        target_link_libraries(siano_l3_libusb PUBLIC
+            siano_l3 ${SIANO_L3_LIBUSB_LIBRARIES} Threads::Threads)
+    endif()
     set_target_properties(siano_l3_libusb PROPERTIES CXX_EXTENSIONS OFF)
     siano_l3_warnings(siano_l3_libusb)
     list(APPEND SIANO_L3_TEST_TARGETS siano_l3_libusb)
