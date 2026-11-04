@@ -289,6 +289,24 @@ if(SIANO_BUILD_L3_DAEMON)
         dtv::host_tuner dtv::host_workers dtv::host_authority_owner
         dtv::host_authority_bridge dtv::host_ts
         Threads::Threads)
+
+    add_executable(l3_assembly_offline tests/l3_assembly_offline.cpp
+        siano-enclosure.cpp)
+    target_compile_features(l3_assembly_offline PRIVATE cxx_std_17)
+    target_compile_definitions(l3_assembly_offline PRIVATE
+        SIANO_L3_DAEMON
+        DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}")
+    target_include_directories(l3_assembly_offline PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${DTV_CORE_SOURCE}/adapters/host_daemon/include
+        ${SIANO_PX4_ROOT}/include
+        ${SIANO_PX4_ROOT}/tools)
+    target_link_libraries(l3_assembly_offline PRIVATE
+        siano_libusb siano_px4_runtime dtv::json dtv::identity dtv::wire
+        dtv::control dtv::host_facade dtv::host_runtime
+        dtv::host_listener_context dtv::host_tuner dtv::host_workers
+        dtv::host_authority_owner dtv::host_authority_bridge dtv::host_ts
+        Threads::Threads)
 endif()
 
 if(WIN32 AND BUILD_TESTING)
