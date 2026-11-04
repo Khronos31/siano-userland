@@ -127,6 +127,12 @@ const siano_l3_port* siano_l3_libusb_session_port(siano_l3_libusb_session* sessi
     return session == nullptr ? nullptr : &session->port;
 }
 
+void siano_l3_libusb_session_end_initialization_trace(
+    siano_l3_libusb_session* session)
+{
+    (void)session;
+}
+
 siano_l3_adapter* siano_l3_libusb_session_adapter(siano_l3_libusb_session* session)
 {
     return session == nullptr ? nullptr : session->adapter;
