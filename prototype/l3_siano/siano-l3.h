@@ -40,6 +40,12 @@ typedef struct siano_l3_port {
     uint8_t out_endpoint;
     uint8_t reserved;
     uint32_t response_alignment;
+    uint8_t bus;
+    uint8_t address;
+    uint8_t port_count;
+    uint8_t reserved2;
+    uint8_t ports[8];
+    uint8_t reserved3[4];
 } siano_l3_port;
 
 typedef enum siano_l3_boot_mode {
@@ -65,6 +71,9 @@ typedef struct siano_l3_options {
     uint32_t stats_poll_ms;
     /* Number of simultaneous IN transfers; zero selects one. */
     uint32_t in_flight;
+    /* Internal daemon PID list; zero uses pid/default catch-all. */
+    uint32_t pid_count;
+    uint16_t pids[64];
 } siano_l3_options;
 
 /*

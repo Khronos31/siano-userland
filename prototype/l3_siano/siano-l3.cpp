@@ -209,6 +209,21 @@ uint32_t target_pid(const siano_l3_adapter *adapter)
     return adapter->options.pid == 0 ? SIANO_L3_DEFAULT_PID : adapter->options.pid;
 }
 
+bool pid_allowed(const siano_l3_adapter *adapter, uint16_t pid)
+{
+    if (adapter->options.pid_count == 0U) {
+        return pid == target_pid(adapter);
+    }
+    const uint32_t count =
+        adapter->options.pid_count > 64U ? 64U : adapter->options.pid_count;
+    for (uint32_t index = 0; index < count; ++index) {
+        if (adapter->options.pids[index] == pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool software_filter_enabled(const siano_l3_adapter *adapter)
 {
     if (adapter->options.software_filter == SIANO_L3_FILTER_FORCE) {
@@ -217,7 +232,8 @@ bool software_filter_enabled(const siano_l3_adapter *adapter)
     if (adapter->options.software_filter == SIANO_L3_FILTER_DISABLE) {
         return false;
     }
-    return target_pid(adapter) != SIANO_L3_DEFAULT_PID;
+    return adapter->options.pid_count != 0U ||
+           target_pid(adapter) != SIANO_L3_DEFAULT_PID;
 }
 
 bool port_supported(const siano_l3_port *port)
@@ -562,7 +578,7 @@ void handle_ts(siano_l3_adapter *adapter, const uint8_t *payload, size_t size)
         }
         const uint16_t pid = static_cast<uint16_t>(
             (static_cast<uint16_t>(packet[1] & 0x1fU) << 8) | packet[2]);
-        if (software_filter_enabled(adapter) && pid != target_pid(adapter)) {
+        if (software_filter_enabled(adapter) && !pid_allowed(adapter, pid)) {
             ++adapter->ts_filtered_packets;
             position += 188U;
             continue;
@@ -1384,11 +1400,25 @@ dtv_l3_result bridge_start_cb(void *provider_context,
             return DTV_L3_OK;
         }
     }
-    uint8_t pid[4];
-    sms_put_le32(pid, target_pid(adapter));
-    dtv_l3_result result = control_request(
-        adapter, MSG_SMS_ADD_PID_FILTER_REQ, pid, sizeof(pid), 0U,
-        adapter->options.control_timeout_ms, nullptr);
+    dtv_l3_result result = DTV_L3_OK;
+    const uint32_t count = adapter->options.pid_count == 0U
+                               ? 1U
+                               : (adapter->options.pid_count > 64U
+                                      ? 64U
+                                      : adapter->options.pid_count);
+    for (uint32_t index = 0; index < count; ++index) {
+        uint8_t pid[4];
+        const uint16_t value = adapter->options.pid_count == 0U
+                                   ? static_cast<uint16_t>(target_pid(adapter))
+                                   : adapter->options.pids[index];
+        sms_put_le32(pid, value);
+        result = control_request(adapter, MSG_SMS_ADD_PID_FILTER_REQ, pid,
+                                 sizeof(pid), 0U,
+                                 adapter->options.control_timeout_ms, nullptr);
+        if (result != DTV_L3_OK) {
+            break;
+        }
+    }
     if (result == DTV_L3_OK) {
         std::lock_guard<std::mutex> lock(adapter->state_mutex);
         adapter->pid_sent = true;

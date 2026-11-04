@@ -29,6 +29,7 @@ struct LibusbHost {
     libusb_device_handle *handle = nullptr;
     std::string error;
     bool claimed = false;
+    bool preopened = false;
     bool closing = false;
     std::thread event_thread;
     std::mutex mutex;
@@ -107,6 +108,19 @@ bool read_port(libusb_device *device, siano_l3_port *port,
     port->in_endpoint = 0U;
     port->out_endpoint = 0U;
     port->response_alignment = SIANO_L3_DEFAULT_RESPONSE_ALIGNMENT;
+    port->bus = libusb_get_bus_number(device);
+    port->address = libusb_get_device_address(device);
+    port->port_count = 0U;
+    {
+        uint8_t ports[8] = {0};
+        const int count = libusb_get_port_numbers(device, ports, sizeof(ports));
+        if (count > 0 && count <= static_cast<int>(sizeof(ports))) {
+            port->port_count = static_cast<uint8_t>(count);
+            for (int index = 0; index < count; ++index) {
+                port->ports[index] = ports[index];
+            }
+        }
+    }
     for (uint8_t interface_index = 0;
          interface_index < config->bNumInterfaces && !found;
          ++interface_index) {
@@ -216,9 +230,11 @@ dtv_l3_claim_result host_claim(void *context, dtv_l3_provider_binding *binding,
     if (claim_index != 0U || host->handle != nullptr) {
         return dtv_l3_claim_result{DTV_L3_FAILED, DTV_L3_CLAIM_NONE};
     }
-    if (libusb_open(host->device, &host->handle) != 0) {
-        host->handle = nullptr;
-        return dtv_l3_claim_result{DTV_L3_DISCONNECTED, DTV_L3_CLAIM_NONE};
+    if (!host->preopened) {
+        if (libusb_open(host->device, &host->handle) != 0) {
+            host->handle = nullptr;
+            return dtv_l3_claim_result{DTV_L3_DISCONNECTED, DTV_L3_CLAIM_NONE};
+        }
     }
     if (libusb_claim_interface(host->handle, host->interface_number) != 0) {
         libusb_close(host->handle);
@@ -463,6 +479,156 @@ dtv_l3_result siano_l3_libusb_session_open(
     }
     *session_out = session;
     return DTV_L3_OK;
+}
+
+
+dtv_l3_result siano_l3_libusb_session_open_fd(
+    int fd, const siano_l3_firmware *firmware, const siano_l3_options *options,
+    siano_l3_libusb_session **session_out, char *error, size_t error_size)
+{
+    if (session_out == nullptr || fd < 0) {
+        return DTV_L3_INVALID;
+    }
+    *session_out = nullptr;
+    auto *session = new (std::nothrow) siano_l3_libusb_session();
+    if (session == nullptr) {
+        return DTV_L3_FAILED;
+    }
+    if (libusb_init(&session->host.context) != 0) {
+        delete session;
+        return DTV_L3_FAILED;
+    }
+    if (libusb_wrap_sys_device(session->host.context,
+                               static_cast<intptr_t>(fd),
+                               &session->host.handle) != 0 ||
+        session->host.handle == nullptr) {
+        if (error != nullptr && error_size != 0U) {
+            std::snprintf(error, error_size, "cannot wrap USB fd");
+        }
+        libusb_exit(session->host.context);
+        delete session;
+        return DTV_L3_FAILED;
+    }
+    session->host.preopened = true;
+    session->host.device = libusb_ref_device(
+        libusb_get_device(session->host.handle));
+    std::string port_error;
+    if (session->host.device == nullptr ||
+        !read_port(session->host.device, &session->port, &port_error)) {
+        if (error != nullptr && error_size != 0U) {
+            std::snprintf(error, error_size, "%s", port_error.c_str());
+        }
+        if (session->host.handle != nullptr) {
+            libusb_close(session->host.handle);
+        }
+        if (session->host.device != nullptr) {
+            libusb_unref_device(session->host.device);
+        }
+        libusb_exit(session->host.context);
+        delete session;
+        return DTV_L3_UNSUPPORTED;
+    }
+    session->host.interface_number = session->port.interface_number;
+    session->host.in_endpoint = session->port.in_endpoint;
+    session->host.out_endpoint = session->port.out_endpoint;
+    session->host.response_alignment = session->port.response_alignment;
+    session->host.provider.provider_context = &session->host;
+    session->host.provider.claim = host_claim;
+    session->host.provider.release_claim = host_release_claim;
+    session->host.provider.submit = host_submit;
+    session->host.provider.cancel = host_cancel;
+    session->host.provider.cancel_scope = DTV_L3_CANCEL_SCOPE_PIPE;
+    const dtv_l3_result result = siano_l3_adapter_create(
+        &session->host.provider, &session->port, firmware, options,
+        &session->adapter);
+    if (result != DTV_L3_OK) {
+        libusb_close(session->host.handle);
+        libusb_unref_device(session->host.device);
+        libusb_exit(session->host.context);
+        delete session;
+        return result;
+    }
+    *session_out = session;
+    return DTV_L3_OK;
+}
+
+dtv_l3_result siano_l3_libusb_find_selector(
+    const struct siano_device_selector *selector, const char *selector_text,
+    unsigned *index_out, char *error, size_t error_size)
+{
+    (void)selector_text;
+    if (selector == nullptr || index_out == nullptr) {
+        return DTV_L3_INVALID;
+    }
+    libusb_context *context = nullptr;
+    if (libusb_init(&context) != 0) {
+        return DTV_L3_FAILED;
+    }
+    libusb_device **list = nullptr;
+    const ssize_t count = libusb_get_device_list(context, &list);
+    unsigned matched = 0U;
+    unsigned selected = 0U;
+    bool found = false;
+    if (count >= 0) {
+        for (ssize_t raw = 0; raw < count; ++raw) {
+            struct libusb_device_descriptor descriptor;
+            if (libusb_get_device_descriptor(list[raw], &descriptor) != 0 ||
+                !known_id(descriptor.idVendor, descriptor.idProduct)) {
+                continue;
+            }
+            siano_l3_port port{};
+            std::string port_error;
+            if (!read_port(list[raw], &port, &port_error)) {
+                continue;
+            }
+            bool matches = false;
+            switch (selector->kind) {
+            case SIANO_DEVICE_SELECTOR_INDEX:
+                matches = selector->index == matched;
+                break;
+            case SIANO_DEVICE_SELECTOR_BUS_ADDRESS:
+                matches = selector->bus == port.bus &&
+                          selector->address == port.address;
+                break;
+            case SIANO_DEVICE_SELECTOR_PORT:
+                matches = selector->bus == port.bus &&
+                          selector->port_count == port.port_count;
+                if (matches) {
+                    for (unsigned i = 0; i < selector->port_count; ++i) {
+                        if (selector->ports[i] != port.ports[i]) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+            if (matches) {
+                selected = matched;
+                found = true;
+                break;
+            }
+            ++matched;
+        }
+        libusb_free_device_list(list, 1);
+    }
+    libusb_exit(context);
+    if (!found) {
+        if (error != nullptr && error_size != 0U) {
+            std::snprintf(error, error_size, "no matching device");
+        }
+        return DTV_L3_UNSUPPORTED;
+    }
+    *index_out = selected;
+    return DTV_L3_OK;
+}
+
+const siano_l3_port *siano_l3_libusb_session_port(
+    siano_l3_libusb_session *session)
+{
+    return session == nullptr ? nullptr : &session->port;
 }
 
 siano_l3_adapter *siano_l3_libusb_session_adapter(

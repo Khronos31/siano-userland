@@ -8,6 +8,8 @@ ${here}/../siano-l3.h
 ${here}/../siano-l3.cpp
 ${here}/../siano-l3-libusb.h
 ${here}/../siano-l3-libusb.cpp
+${here}/../../../siano-l3-family.h
+${here}/../../../siano-l3-family.cpp
 ${here}/../tools/siano-l3-probe.cpp
 ${here}/siano-l3-test-host.h
 ${here}/siano-l3-test-host.cpp

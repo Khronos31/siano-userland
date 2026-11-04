@@ -74,6 +74,7 @@ bool copy_numbers(
 
 }  // namespace
 
+#ifndef SIANO_L3_DAEMON
 px4::userland::Result<SianoFacts> resolve_rio_facts(
     libusb_context* usb, const siano_device_selector& selector,
     const std::string& selector_text) noexcept
@@ -97,6 +98,8 @@ px4::userland::Result<SianoFacts> resolve_rio_facts(
     for (std::size_t i = 0U; i < raw.port_count && i < 8U; ++i) facts.ports[i] = raw.ports[i];
     return Result<SianoFacts>::success(facts);
 }
+
+#endif
 
 px4::userland::Result<dtv::userland::identity::ResolvedIdentity> siano_identity(
     const SianoFacts& facts) noexcept
@@ -195,6 +198,7 @@ dtv::userland::Result<void> build_siano_control_context(
     return Result<void>::success();
 }
 
+#ifndef SIANO_L3_DAEMON
 px4::userland::Result<SianoAssembly> assemble_siano_context(
     const SianoRuntimeConfig& config, const std::string& requested_instance,
     const char* runtime_directory, const dtv::userland::wire::Epoch& epoch,
@@ -386,6 +390,8 @@ px4::userland::Result<SianoAssembly> assemble_siano_context(
     if (!published) { std::fprintf(stderr, "assemble: publish %s\n", dtv::userland::error_string(published.error())); return Result<SianoAssembly>::failure(published.error()); }
     return Result<SianoAssembly>::success(std::move(assembly));
 }
+
+#endif
 
 std::string describe_assembly_diagnostic(const AssemblyDiagnostic& diagnostic)
 {
