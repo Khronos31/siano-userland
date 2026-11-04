@@ -547,7 +547,7 @@ static int scenario_owner_queue(void)
     siano_l3_stats stats;
     dtv_l3_stream_status stream_status;
     uint8_t packets[20U * MAX_PACKET];
-    uint8_t received[4U * MAX_PACKET];
+    uint8_t received[20U * MAX_PACKET];
     char error[128] = {0};
     size_t index;
     unsigned int attempt;
@@ -571,7 +571,7 @@ static int scenario_owner_queue(void)
     }
     memset(&stream_status, 0, sizeof(stream_status));
     for (attempt = 0; attempt < 1000000U; ++attempt) {
-        if ( dtv_l3_stream_status_get(stream, &stream_status) != DTV_L3_OK) {
+        if (dtv_l3_stream_status_get(stream, &stream_status) != DTV_L3_OK) {
             return 0;
         }
         if (stream_status.queued_packets +
@@ -608,7 +608,7 @@ static int scenario_owner_queue(void)
                 (unsigned long long)stream_status.staged_bytes);
         return 0;
     }
-    for (index = 0; index < 4U; ++index) {
+    for (index = 0; index < expect_queued; ++index) {
         size_t read = 0;
         dtv_l3_read_state state = DTV_L3_READ_WAIT;
         if (dtv_l3_stream_read_ts(stream, received + index * MAX_PACKET,
@@ -624,8 +624,16 @@ static int scenario_owner_queue(void)
         stream_status.queued_packets != 0U) {
         return 0;
     }
-    if (!finish_stream(stream) || dtv_l3_lease_release(lease) != DTV_L3_OK ||
-        !close_owner(owner, 1)) {
+    if (!finish_stream(stream)) {
+        fprintf(stderr, "owner_queue finish_stream failed\n");
+        return 0;
+    }
+    if (dtv_l3_lease_release(lease) != DTV_L3_OK) {
+        fprintf(stderr, "owner_queue lease_release failed\n");
+        return 0;
+    }
+    if (!close_owner(owner, 1)) {
+        fprintf(stderr, "owner_queue close failed\n");
         return 0;
     }
     printf("owner_queue measured: raw=%llu delivered_to_owner=%llu raw_cc=%llu "

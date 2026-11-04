@@ -180,7 +180,8 @@ if(SIANO_L3_CORE_SOURCE_DIR)
         ${SIANO_L3_ROOT}/tests
         ${SIANO_L3_CORE_SOURCE_DIR}/include)
     target_compile_definitions(siano_l3_replay PRIVATE
-        SIANO_L3_FIXTURE_DIR="${SIANO_L3_ROOT}/tests/fixtures")
+        SIANO_L3_FIXTURE_DIR="${SIANO_L3_ROOT}/tests/fixtures"
+        SIANO_L3_OWNER_QUEUE_EXPECT=${SIANO_L3_OWNER_QUEUE_EXPECT})
     target_link_libraries(siano_l3_replay PRIVATE
         siano_l3 siano_l3_test_host siano_l3_core_owner Threads::Threads)
     list(APPEND SIANO_L3_TEST_TARGETS siano_l3_core_owner siano_l3_replay)
