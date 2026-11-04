@@ -296,24 +296,56 @@ void clear_response(siano_l3_adapter *adapter, uint16_t type)
     slot.data.clear();
 }
 
+dtv_l3_result ensure_owner_in_transfer(siano_l3_adapter *adapter);
+
 dtv_l3_result wait_response(siano_l3_adapter *adapter, uint16_t type,
                             std::vector<uint8_t> *out, uint32_t timeout_ms)
 {
-    std::unique_lock<std::mutex> lock(adapter->response_mutex);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
     const auto ready = [adapter, type] {
         return adapter->responses[type].valid;
     };
-    if (!adapter->response_condition.wait_for(
-            lock, std::chrono::milliseconds(timeout_ms), ready)) {
-        return DTV_L3_TIMEOUT;
+    while (true) {
+        std::unique_lock<std::mutex> lock(adapter->response_mutex);
+        if (ready()) {
+            ResponseSlot &slot = adapter->responses[type];
+            if (out != nullptr) {
+                *out = slot.data;
+            }
+            slot.valid = false;
+            slot.data.clear();
+            return DTV_L3_OK;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return DTV_L3_TIMEOUT;
+        }
+        lock.unlock();
+        bool initialize_owner_io = false;
+        {
+            std::lock_guard<std::mutex> state_lock(adapter->state_mutex);
+            initialize_owner_io = adapter->owner != nullptr &&
+                                  adapter->use_owner_io && !adapter->ready;
+        }
+        const dtv_l3_result input_result = ensure_owner_in_transfer(adapter);
+        if (input_result != DTV_L3_OK) {
+            return input_result;
+        }
+        lock.lock();
+        if (ready()) {
+            continue;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return DTV_L3_TIMEOUT;
+        }
+        const auto wake_at = initialize_owner_io
+                                 ? std::min(deadline,
+                                            now + std::chrono::milliseconds(10))
+                                 : deadline;
+        adapter->response_condition.wait_until(
+            lock, wake_at, ready);
     }
-    ResponseSlot &slot = adapter->responses[type];
-    if (out != nullptr) {
-        *out = slot.data;
-    }
-    slot.valid = false;
-    slot.data.clear();
-    return DTV_L3_OK;
 }
 
 void out_complete(dtv_l3_provider_binding *binding, uint64_t transfer_id,
@@ -1089,6 +1121,34 @@ dtv_l3_result start_owner_in_transfer(siano_l3_adapter *adapter,
     return result;
 }
 
+dtv_l3_result ensure_owner_in_transfer(siano_l3_adapter *adapter)
+{
+    bool initialize_owner_io = false;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        initialize_owner_io = adapter->owner != nullptr &&
+                              adapter->use_owner_io && !adapter->ready;
+    }
+    if (!initialize_owner_io) {
+        return DTV_L3_OK;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        if (adapter->closing) {
+            return DTV_L3_CLOSING;
+        }
+        if (adapter->owner_op != nullptr) {
+            return DTV_L3_OK;
+        }
+    }
+    dtv_l3_op *op = nullptr;
+    const dtv_l3_result result = start_owner_in_transfer(adapter, &op);
+    if (result == DTV_L3_ACCEPTED && op != nullptr) {
+        return DTV_L3_OK;
+    }
+    return result == DTV_L3_ACCEPTED ? DTV_L3_FAILED : result;
+}
+
 void owner_in_loop(siano_l3_adapter *adapter)
 {
     while (true) {
@@ -1103,23 +1163,33 @@ void owner_in_loop(siano_l3_adapter *adapter)
             break;
         }
         dtv_l3_context *owner = nullptr;
+        bool ready = false;
         {
             std::lock_guard<std::mutex> lock(adapter->state_mutex);
             owner = adapter->owner;
+            ready = adapter->ready;
         }
         if (owner == nullptr) {
             break;
         }
         dtv_l3_result result = DTV_L3_ACCEPTED;
-        if (!closing && op == nullptr) {
+        if (!closing && op == nullptr && ready) {
             result = start_owner_in_transfer(adapter, &op);
         }
         if (result != DTV_L3_ACCEPTED || op == nullptr) {
-            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            std::unique_lock<std::mutex> lock(adapter->in_mutex);
             if (adapter->closing) {
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (!ready) {
+                adapter->in_condition.wait_for(
+                    lock, std::chrono::milliseconds(10), [adapter] {
+                        return adapter->closing || adapter->owner_op != nullptr;
+                    });
+            } else {
+                lock.unlock();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             continue;
         }
         bool initialization_trace = false;
@@ -2313,9 +2383,6 @@ dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
         if (result != DTV_L3_ACCEPTED || op == nullptr) {
             return result == DTV_L3_ACCEPTED ? DTV_L3_FAILED : result;
         }
-        std::lock_guard<std::mutex> lock(adapter->in_mutex);
-        adapter->owner_op = op;
-        adapter->in_condition.notify_all();
     }
     start_reader(adapter);
     return start_product(adapter);

@@ -32,15 +32,21 @@ def wait_ready(process):
         reader = threading.Thread(target=read_line, daemon=True)
         reader.start()
         try:
-            line = lines.get(timeout=10).decode(
-                "utf-8", errors="replace").rstrip()
+            raw_line = lines.get(timeout=10)
         except queue.Empty as error:
             raise TimeoutError(
                 "sianod_l3_offline did not become ready\n" +
                 "\n".join(diagnostics)) from error
+        if not raw_line:
+            raise RuntimeError(
+                "sianod_l3_offline stderr closed before ready\n" +
+                "\n".join(diagnostics))
+        line = raw_line.decode("utf-8", errors="replace").rstrip()
         if line.startswith("sianod ready: endpoint="):
             return diagnostics
         diagnostics.append(line)
+        if line.startswith("FAKE_STATS "):
+            continue
         if not line.startswith("siano-init-trace "):
             raise RuntimeError(
                 f"unexpected daemon startup: {line!r}\n" +
@@ -88,19 +94,28 @@ def main():
         except Exception as error:
             failure = error
         finally:
-            if server.poll() is None:
-                if os.name == "nt":
-                    server.stdin.close()
-                    server.stdin = None
-                else:
-                    server.send_signal(signal.SIGTERM)
-            try:
-                _, stderr = server.communicate(timeout=15)
-            except subprocess.TimeoutExpired:
-                server.kill()
-                _, stderr = server.communicate(timeout=5)
-                failure = failure or RuntimeError(
-                    "sianod_l3_offline did not shut down")
+            communicated = False
+            if server.poll() is None and failure is not None:
+                try:
+                    _, stderr = server.communicate(timeout=1)
+                    communicated = True
+                except subprocess.TimeoutExpired:
+                    pass
+            if not communicated:
+                if server.poll() is None:
+                    if os.name == "nt":
+                        if server.stdin is not None:
+                            server.stdin.close()
+                            server.stdin = None
+                    else:
+                        server.send_signal(signal.SIGTERM)
+                try:
+                    _, stderr = server.communicate(timeout=15)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    _, stderr = server.communicate(timeout=5)
+                    failure = failure or RuntimeError(
+                        "sianod_l3_offline did not shut down")
         diagnostics = "\n".join(
             startup_diagnostics +
             stderr.decode("utf-8", errors="replace").splitlines())
