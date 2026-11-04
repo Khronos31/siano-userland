@@ -118,6 +118,9 @@ typedef struct siano_l3_stats {
     uint64_t in_completions;
     uint64_t owner_in_submits;
     uint64_t owner_in_completions;
+    uint64_t owner_out_submits;
+    uint64_t owner_out_completions;
+    uint64_t direct_usb_submits;
     uint32_t in_flight_max;
     uint32_t reserved_in;
 } siano_l3_stats;

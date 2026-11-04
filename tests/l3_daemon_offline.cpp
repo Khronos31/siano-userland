@@ -102,6 +102,9 @@ int main(int argc, char** argv)
     if (child < 0 || waitpid(child, &status, 0) != child) status = -1;
     const int client_exit = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
     siano_l3_offline_diagnostics();
+    siano_l3_stats stats{};
+    const bool have_stats = siano_l3_offline_adapter() != nullptr &&
+        siano_l3_adapter_stats(siano_l3_offline_adapter(), &stats) == DTV_L3_OK;
     stop.store(true);
     poller.join();
     const auto closed = context.close(dtv::userland::Timeout{5000U});
@@ -113,18 +116,25 @@ int main(int argc, char** argv)
         size = static_cast<std::uint64_t>(std::ftell(file));
         std::fclose(file);
     }
-    siano_l3_stats stats{};
-    const bool have_stats = siano_l3_offline_adapter() != nullptr &&
-        siano_l3_adapter_stats(siano_l3_offline_adapter(), &stats) == DTV_L3_OK;
     std::printf("CLIENT_EXIT=%d\n", client_exit);
     std::printf("CLOSE=%s\n", closed ? "OK" : "FAILED");
     std::printf("TS_SIZE=%llu\n", static_cast<unsigned long long>(size));
     if (have_stats) {
-        std::printf("OWNER_SUB=%llu\n", static_cast<unsigned long long>(stats.owner_in_submits));
-        std::printf("OWNER_COMP=%llu\n", static_cast<unsigned long long>(stats.owner_in_completions));
+        std::printf("OWNER_IN_SUB=%llu\n", static_cast<unsigned long long>(stats.owner_in_submits));
+        std::printf("OWNER_IN_COMP=%llu\n", static_cast<unsigned long long>(stats.owner_in_completions));
+        std::printf("OWNER_OUT_SUB=%llu\n", static_cast<unsigned long long>(stats.owner_out_submits));
+        std::printf("OWNER_OUT_COMP=%llu\n", static_cast<unsigned long long>(stats.owner_out_completions));
+        std::printf("DIRECT_USB_SUB=%llu\n", static_cast<unsigned long long>(stats.direct_usb_submits));
         std::printf("TS_PACKETS=%llu\n", static_cast<unsigned long long>(stats.ts_packets));
         std::printf("TS_TEI=%llu\n", static_cast<unsigned long long>(stats.ts_tei_errors));
         std::printf("TS_CC=%llu\n", static_cast<unsigned long long>(stats.ts_continuity_errors));
     }
-    return client_exit == 0 && size > 0U && closed ? 0 : 1;
+    return client_exit == 0 && size > 0U && closed && have_stats &&
+                   stats.owner_in_submits > 0U &&
+                   stats.owner_in_completions > 0U &&
+                   stats.owner_out_submits > 0U &&
+                   stats.owner_out_completions > 0U &&
+                   stats.direct_usb_submits == 0U
+               ? 0
+               : 1;
 }

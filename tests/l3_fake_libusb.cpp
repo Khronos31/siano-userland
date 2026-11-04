@@ -20,6 +20,7 @@ constexpr uint16_t kFixturePort[] = {1U, 2U};
 siano_l3_adapter* g_adapter = nullptr;
 siano_l3_test_host* g_host = nullptr;
 siano_l3_port g_port{};
+bool g_diagnostics_emitted = false;
 
 void fill_packet(uint8_t* packet, uint8_t cc)
 {
@@ -42,6 +43,8 @@ struct siano_l3_libusb_session {
 
 extern "C" {
 
+void siano_l3_offline_diagnostics(void);
+
 size_t siano_l3_libusb_device_count(void) { return 1U; }
 
 int siano_l3_libusb_port(unsigned index, siano_l3_port* port)
@@ -57,6 +60,7 @@ dtv_l3_result siano_l3_libusb_session_open(
     char* error, size_t error_size)
 {
     if (index != 0U || session_out == nullptr) return DTV_L3_UNSUPPORTED;
+    g_diagnostics_emitted = false;
     const char* fixture = std::getenv("SIANO_L3_OFFLINE_FIXTURE");
     if (fixture == nullptr) fixture = SIANO_L3_OFFLINE_FIXTURE_DEFAULT;
     if (!siano_l3_test_host_create(fixture, &g_host, error, error_size))
@@ -133,6 +137,7 @@ void siano_l3_libusb_session_close(siano_l3_libusb_session* session)
     if (session == nullptr) return;
     session->stop.store(true);
     if (session->feeder.joinable()) session->feeder.join();
+    siano_l3_offline_diagnostics();
     siano_l3_adapter_destroy(session->adapter);
     if (g_adapter == session->adapter) g_adapter = nullptr;
     siano_l3_test_host_destroy(session->host);
@@ -144,20 +149,26 @@ siano_l3_adapter* siano_l3_offline_adapter(void) { return g_adapter; }
 
 void siano_l3_offline_diagnostics(void)
 {
+    if (g_diagnostics_emitted) return;
+    g_diagnostics_emitted = true;
     if (g_adapter != nullptr) {
         siano_l3_stats stats{};
         if (siano_l3_adapter_stats(g_adapter, &stats) == DTV_L3_OK) {
             std::fprintf(stderr,
                          "FAKE_STATS last=%d boot=%u version=%u fw=%u pid=%u "
-                         "signal=%u tsmsg=%llu tspkt=%llu owner_sub=%llu "
-                         "owner_comp=%llu\n",
+                         "signal=%u tsmsg=%llu tspkt=%llu owner_in_sub=%llu "
+                         "owner_in_comp=%llu owner_out_sub=%llu "
+                         "owner_out_comp=%llu direct_sub=%llu\n",
                          (int)stats.last_error, stats.boot_mode,
                          stats.version_length, stats.firmware_downloaded,
                          stats.pid_filter_sent, stats.signal_detected,
                          (unsigned long long)stats.ts_messages,
                          (unsigned long long)stats.ts_packets,
                          (unsigned long long)stats.owner_in_submits,
-                         (unsigned long long)stats.owner_in_completions);
+                         (unsigned long long)stats.owner_in_completions,
+                         (unsigned long long)stats.owner_out_submits,
+                         (unsigned long long)stats.owner_out_completions,
+                         (unsigned long long)stats.direct_usb_submits);
         }
     }
     if (g_host != nullptr) {

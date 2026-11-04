@@ -116,6 +116,9 @@ struct siano_l3_adapter {
     uint64_t in_completions = 0;
     uint64_t owner_in_submits = 0;
     uint64_t owner_in_completions = 0;
+    uint64_t owner_out_submits = 0;
+    uint64_t owner_out_completions = 0;
+    uint64_t direct_usb_submits = 0;
     dtv_l3_context *owner = nullptr;
     dtv_l3_op *owner_op = nullptr;
     bool use_owner_io = false;
@@ -336,6 +339,52 @@ void abandon_pending(siano_l3_adapter *adapter,
     adapter->abandoned.push_back(pending);
 }
 
+dtv_l3_result submit_owner_transfer(siano_l3_adapter *adapter,
+                                    const dtv_l3_transfer_request *request)
+{
+    dtv_l3_context *owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        owner = adapter->owner;
+    }
+    if (owner == nullptr) {
+        return DTV_L3_FAILED;
+    }
+
+    dtv_l3_op *op = nullptr;
+    dtv_l3_result result = dtv_l3_transfer_start(owner, request, &op);
+    if (result != DTV_L3_ACCEPTED || op == nullptr) {
+        return result == DTV_L3_ACCEPTED ? DTV_L3_FAILED : result;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        ++adapter->owner_out_submits;
+    }
+
+    result = dtv_l3_op_wait(op, request->timeout_ms + 1000U);
+    if (result == DTV_L3_WAIT_TIMEOUT) {
+        (void)dtv_l3_op_cancel(op);
+        result = dtv_l3_op_wait(op, 1000U);
+    }
+    dtv_l3_op_result op_result{};
+    if (result == DTV_L3_OK && dtv_l3_op_poll(op, &op_result) == DTV_L3_OK &&
+        (op_result.state == DTV_L3_OP_DONE ||
+         op_result.state == DTV_L3_OP_FAILED)) {
+        result = op_result.result;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            ++adapter->owner_out_completions;
+        }
+    } else if (result == DTV_L3_OK) {
+        result = DTV_L3_FAILED;
+    }
+    const dtv_l3_result released = dtv_l3_op_release(op);
+    if (result == DTV_L3_OK && released != DTV_L3_OK) {
+        result = released;
+    }
+    return result;
+}
+
 dtv_l3_result submit_message(siano_l3_adapter *adapter, uint16_t type,
                              const uint8_t *payload, size_t payload_len,
                              uint32_t timeout_ms)
@@ -361,6 +410,19 @@ dtv_l3_result submit_message(siano_l3_adapter *adapter, uint16_t type,
     request.out_size = pending->message.size();
     request.claim_index = 0U;
     const uint64_t id = allocate_internal_id(adapter);
+
+    dtv_l3_context *owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        owner = adapter->owner;
+    }
+    if (owner != nullptr) {
+        return submit_owner_transfer(adapter, &request);
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        ++adapter->direct_usb_submits;
+    }
 
     dtv_l3_result result = adapter->host.submit(
         adapter->host.provider_context, binding, id, &request, out_complete,
@@ -708,6 +770,10 @@ void in_loop(siano_l3_adapter *adapter)
         request.timeout_ms = kInTransferTimeoutMs;
         request.in_capacity = adapter->in_buffer.size();
         request.claim_index = 0U;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            ++adapter->direct_usb_submits;
+        }
         dtv_l3_result submitted = adapter->host.submit(
             adapter->host.provider_context, binding, id, &request, in_complete,
             adapter);
@@ -815,6 +881,10 @@ dtv_l3_result submit_in_slot(siano_l3_adapter *adapter,
     request.timeout_ms = kInTransferTimeoutMs;
     request.in_capacity = adapter->in_buffer.size();
     request.claim_index = 0U;
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        ++adapter->direct_usb_submits;
+    }
     dtv_l3_result submitted = adapter->host.submit(
         adapter->host.provider_context, binding, id, &request,
         in_slot_complete, slot);
@@ -1986,6 +2056,9 @@ dtv_l3_result siano_l3_adapter_stats(siano_l3_adapter *adapter,
         stats->in_completions = adapter->in_completions;
         stats->owner_in_submits = adapter->owner_in_submits;
         stats->owner_in_completions = adapter->owner_in_completions;
+        stats->owner_out_submits = adapter->owner_out_submits;
+        stats->owner_out_completions = adapter->owner_out_completions;
+        stats->direct_usb_submits = adapter->direct_usb_submits;
         stats->in_flight_max = adapter->in_flight_max;
     }
     return DTV_L3_OK;
@@ -2103,6 +2176,9 @@ dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
         adapter->supported_protocols = 0U;
         adapter->firmware_id = 0U;
         adapter->last_error = DTV_L3_OK;
+#ifdef SIANO_L3_SPLIT_INIT_HOOKS
+        adapter->use_owner_io = adapter->owner != nullptr;
+#endif
     }
     start_reader(adapter);
     return start_product(adapter);
