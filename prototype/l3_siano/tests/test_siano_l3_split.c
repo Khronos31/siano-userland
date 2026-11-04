@@ -129,6 +129,15 @@ int main(void)
             return 1;
         }
     }
+    {
+        siano_l3_stats stats;
+        if (siano_l3_adapter_stats(adapter, &stats) != DTV_L3_OK ||
+            stats.owner_in_submits == 0U ||
+            stats.ts_packets < PACKETS) {
+            fprintf(stderr, "split owner IN path not used\n");
+            return 1;
+        }
+    }
     if (dtv_l3_stream_stop(stream, 0U) != DTV_L3_OK) {
         return 1;
     }
@@ -171,6 +180,7 @@ int main(void)
     if (index == 2000000U || close_status.physical_quiesced == 0U) {
         return 1;
     }
+    siano_l3_adapter_stop(adapter);
     for (index = 0; index < 2000000U && released == DTV_L3_BUSY; ++index) {
         released = dtv_l3_context_release(opened.owner);
         sched_yield();

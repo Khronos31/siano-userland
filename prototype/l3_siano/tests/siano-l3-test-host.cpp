@@ -33,6 +33,7 @@ struct FixtureEvent {
 struct PendingIn {
     bool active = false;
     uint64_t id = 0;
+    dtv_l3_provider_binding *binding = nullptr;
     uint8_t *buffer = nullptr;
     size_t capacity = 0;
     dtv_l3_transfer_complete_fn complete = nullptr;
@@ -222,7 +223,8 @@ void deliver_in(siano_l3_test_host *host)
     completion.actual_length = copied;
     completion.actual_length_known = 1U;
     if (pending.complete != nullptr) {
-        pending.complete(nullptr, pending.id, &completion, pending.context);
+        pending.complete(pending.binding, pending.id, &completion,
+                         pending.context);
     }
 }
 
@@ -264,7 +266,7 @@ dtv_l3_release_result test_release_claim(void *context,
             completion.size = 0;
             completion.actual_length = 0;
             completion.actual_length_known = 1U;
-            entry.complete(nullptr, entry.id, &completion, entry.context);
+            entry.complete(entry.binding, entry.id, &completion, entry.context);
         }
     }
     return dtv_l3_release_result{DTV_L3_RELEASE_QUIESCED, DTV_L3_CLAIM_NONE,
@@ -305,6 +307,7 @@ dtv_l3_result test_submit(void *context, dtv_l3_provider_binding *binding,
             PendingIn &entry = host->pending[slot];
             entry.active = true;
             entry.id = transfer_id;
+            entry.binding = binding;
             entry.buffer = host->in_buffers[slot].data();
             entry.capacity = request->in_capacity;
             entry.complete = complete;
@@ -391,7 +394,8 @@ dtv_l3_result test_cancel(void *context, dtv_l3_provider_binding *binding,
         completion.size = 0;
         completion.actual_length = 0;
         completion.actual_length_known = 1U;
-        pending.complete(nullptr, pending.id, &completion, pending.context);
+        pending.complete(pending.binding, pending.id, &completion,
+                         pending.context);
     }
     return DTV_L3_OK;
 }

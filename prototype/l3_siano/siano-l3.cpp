@@ -114,6 +114,11 @@ struct siano_l3_adapter {
     uint32_t in_flight_max = 0;
     uint64_t in_submits = 0;
     uint64_t in_completions = 0;
+    uint64_t owner_in_submits = 0;
+    uint64_t owner_in_completions = 0;
+    dtv_l3_context *owner = nullptr;
+    dtv_l3_op *owner_op = nullptr;
+    bool use_owner_io = false;
     std::array<uint8_t, SIANO_L3_USB2_BUFFER_SIZE> in_buffer{};
 
     std::mutex state_mutex;
@@ -909,16 +914,120 @@ void in_loop_multi(siano_l3_adapter *adapter)
     }
 }
 
+void owner_in_loop(siano_l3_adapter *adapter)
+{
+    while (true) {
+        dtv_l3_context *owner = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            if (adapter->closing) {
+                break;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(adapter->state_mutex);
+            owner = adapter->owner;
+        }
+        if (owner == nullptr) {
+            break;
+        }
+        dtv_l3_transfer_request request{};
+        request.kind = DTV_L3_TRANSFER_BULK;
+        request.endpoint = adapter->port.in_endpoint;
+        request.timeout_ms = kInTransferTimeoutMs;
+        request.in_capacity = adapter->in_buffer.size();
+        request.claim_index = 0U;
+        dtv_l3_op *op = nullptr;
+        dtv_l3_result result = dtv_l3_transfer_start(owner, &request, &op);
+        if (result != DTV_L3_ACCEPTED || op == nullptr) {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            if (adapter->closing) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            ++adapter->owner_in_submits;
+            adapter->owner_op = op;
+            adapter->in_condition.notify_all();
+            if (adapter->closing) {
+                adapter->owner_op = nullptr;
+            }
+        }
+        result = dtv_l3_op_wait(op, kInTransferTimeoutMs + 1000U);
+        if (result == DTV_L3_WAIT_TIMEOUT) {
+            (void)dtv_l3_op_cancel(op);
+            (void)dtv_l3_op_wait(op, 1000U);
+        }
+        bool closing = false;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            closing = adapter->closing;
+        }
+        dtv_l3_op_result op_result{};
+        if (dtv_l3_op_poll(op, &op_result) == DTV_L3_OK &&
+            op_result.state == DTV_L3_OP_DONE &&
+            op_result.result == DTV_L3_OK && op_result.data != nullptr &&
+            op_result.data_size != 0U) {
+            route_message(adapter, op_result.data, op_result.data_size);
+        }
+        (void)dtv_l3_op_release(op);
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            adapter->owner_op = nullptr;
+            ++adapter->owner_in_completions;
+            adapter->in_condition.notify_all();
+        }
+        if (closing) {
+            break;
+        }
+    }
+}
+
+void stop_owner_in(siano_l3_adapter *adapter)
+{
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        if (!adapter->use_owner_io) {
+            return;
+        }
+    }
+    dtv_l3_op *op = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        adapter->closing = true;
+        op = adapter->owner_op;
+        adapter->in_condition.notify_all();
+    }
+    if (op != nullptr) {
+        (void)dtv_l3_op_cancel(op);
+    }
+    if (adapter->in_thread.joinable()) {
+        adapter->in_thread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        adapter->owner_op = nullptr;
+        adapter->closing = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->use_owner_io = false;
+    }
+}
+
 void stop_reader(siano_l3_adapter *adapter)
 {
     uint64_t id = 0;
-    bool outstanding = false;
     std::vector<uint64_t> ids;
+    dtv_l3_op *owner_op = nullptr;
     {
         std::lock_guard<std::mutex> lock(adapter->in_mutex);
         adapter->closing = true;
         id = adapter->in_transfer_id;
-        outstanding = adapter->in_outstanding;
+        owner_op = adapter->owner_op;
         for (const InSlot &slot : adapter->in_slots) {
             if (slot.active && slot.id != 0U) {
                 ids.push_back(slot.id);
@@ -926,9 +1035,12 @@ void stop_reader(siano_l3_adapter *adapter)
         }
         adapter->in_condition.notify_all();
     }
+    if (owner_op != nullptr) {
+        (void)dtv_l3_op_cancel(owner_op);
+    }
     dtv_l3_provider_binding *binding = current_binding(adapter);
     if (binding != nullptr) {
-        if (outstanding && id != 0U) {
+        if (id != 0U) {
             (void)adapter->host.cancel(adapter->host.provider_context, binding,
                                        id);
         }
@@ -979,6 +1091,69 @@ void stats_loop(siano_l3_adapter *adapter)
     }
 }
 
+void switch_to_owner_in(siano_l3_adapter *adapter)
+{
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        if (adapter->owner == nullptr || adapter->use_owner_io) {
+            return;
+        }
+    }
+    uint64_t id = 0;
+    std::vector<uint64_t> ids;
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        adapter->closing = true;
+        id = adapter->in_transfer_id;
+        for (const InSlot &slot : adapter->in_slots) {
+            if (slot.active && slot.id != 0U) {
+                ids.push_back(slot.id);
+            }
+        }
+        adapter->in_condition.notify_all();
+    }
+    dtv_l3_provider_binding *binding = current_binding(adapter);
+    if (binding != nullptr) {
+        if (id != 0U) {
+            (void)adapter->host.cancel(adapter->host.provider_context, binding,
+                                       id);
+        }
+        for (uint64_t slot_id : ids) {
+            (void)adapter->host.cancel(adapter->host.provider_context, binding,
+                                       slot_id);
+        }
+    }
+    if (adapter->in_thread.joinable()) {
+        adapter->in_thread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        adapter->in_slots.clear();
+        adapter->in_done_queue.clear();
+        adapter->in_complete = false;
+        adapter->in_outstanding = false;
+        adapter->closing = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->use_owner_io = true;
+    }
+    dtv_l3_context *owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        owner = adapter->owner;
+    }
+    if (owner != nullptr && !adapter->in_thread.joinable()) {
+        adapter->in_thread = std::thread(owner_in_loop, adapter);
+        std::unique_lock<std::mutex> lock(adapter->in_mutex);
+        adapter->in_condition.wait_for(
+            lock, std::chrono::milliseconds(500),
+            [adapter] {
+                return adapter->closing || adapter->owner_in_submits != 0U;
+            });
+    }
+}
+
 void start_reader(siano_l3_adapter *adapter)
 {
     {
@@ -988,7 +1163,14 @@ void start_reader(siano_l3_adapter *adapter)
         adapter->in_outstanding = false;
     }
     if (!adapter->in_thread.joinable()) {
-        if (adapter->options.in_flight > 1U) {
+        bool use_owner = false;
+        {
+            std::lock_guard<std::mutex> lock(adapter->state_mutex);
+            use_owner = adapter->owner != nullptr && adapter->use_owner_io;
+        }
+        if (use_owner) {
+            adapter->in_thread = std::thread(owner_in_loop, adapter);
+        } else if (adapter->options.in_flight > 1U) {
             adapter->in_thread = std::thread(in_loop_multi, adapter);
         } else {
             adapter->in_thread = std::thread(in_loop, adapter);
@@ -1190,6 +1372,10 @@ dtv_l3_result bridge_start_cb(void *provider_context,
         if (!adapter->ready || !adapter->tuned) {
             return DTV_L3_FAILED;
         }
+    }
+    switch_to_owner_in(adapter);
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
         adapter->streaming = true;
     }
     {
@@ -1219,8 +1405,11 @@ dtv_l3_result bridge_stop_cb(void *provider_context,
     if (bridge_id != 0U) {
         return DTV_L3_UNSUPPORTED;
     }
-    std::lock_guard<std::mutex> lock(adapter->state_mutex);
-    adapter->streaming = false;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->streaming = false;
+    }
+    stop_owner_in(adapter);
     return DTV_L3_OK;
 }
 
@@ -1710,6 +1899,8 @@ void siano_l3_adapter_stop(siano_l3_adapter *adapter)
         adapter->tuned = false;
         adapter->streaming = false;
         adapter->binding = nullptr;
+        adapter->owner = nullptr;
+        adapter->use_owner_io = false;
     }
 }
 
@@ -1763,6 +1954,8 @@ dtv_l3_result siano_l3_adapter_stats(siano_l3_adapter *adapter,
         std::lock_guard<std::mutex> lock(adapter->in_mutex);
         stats->in_submits = adapter->in_submits;
         stats->in_completions = adapter->in_completions;
+        stats->owner_in_submits = adapter->owner_in_submits;
+        stats->owner_in_completions = adapter->owner_in_completions;
         stats->in_flight_max = adapter->in_flight_max;
     }
     return DTV_L3_OK;
@@ -1830,8 +2023,9 @@ dtv_l3_result split_usb_cancel(void *provider_context,
 #ifdef SIANO_L3_SPLIT_INIT_HOOKS
 dtv_l3_result split_bind_cb(void *provider_context, dtv_l3_context *owner)
 {
-    (void)provider_context;
-    (void)owner;
+    auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
+    std::lock_guard<std::mutex> lock(adapter->state_mutex);
+    adapter->owner = owner;
     return DTV_L3_OK;
 }
 
@@ -1839,7 +2033,10 @@ dtv_l3_result split_initialize_cb(void *provider_context,
                                   dtv_l3_context *owner)
 {
     auto *adapter = static_cast<siano_l3_adapter *>(provider_context);
-    (void)owner;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        adapter->owner = owner;
+    }
     dtv_l3_provider_binding *binding = nullptr;
     {
         std::lock_guard<std::mutex> lock(adapter->state_mutex);
