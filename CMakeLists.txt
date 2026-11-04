@@ -3,6 +3,8 @@ project(siano_public_runtime LANGUAGES C CXX)
 
 include(FetchContent)
 option(BUILD_TESTING "Build the existing Siano proofs" ON)
+option(SIANO_BUILD_L3_ADAPTER
+    "Build the independent L3 Siano adapter prototype target" OFF)
 set(SIANO_LINK_MAP_DIR "" CACHE PATH "Optional per-program link map output directory")
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SIANO_PRODUCT_VERSION_LINES)
@@ -123,6 +125,10 @@ set(DTV_USERLAND_HOST_CTL_FACADE_INCLUDE_DIRS "${SIANO_PX4_ROOT}/include"
     CACHE STRING "Private host facade include directories for the GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_TESTING OFF CACHE BOOL "Build core tests" FORCE)
 add_subdirectory(${DTV_CORE_SOURCE} core)
+
+if(SIANO_BUILD_L3_ADAPTER)
+    add_subdirectory(prototype/l3_siano)
+endif()
 
 find_package(Threads REQUIRED)
 add_library(siano_libusb INTERFACE)

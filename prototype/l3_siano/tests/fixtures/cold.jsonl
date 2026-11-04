@@ -1,0 +1,13 @@
+{"dir":"out","type":668,"len":8,"note":"GET_VERSION_EX_REQ"}
+{"dir":"in","type":669,"len":100,"set_offset":13,"set_byte":0,"note":"cold ROM advertisement"}
+{"dir":"out","type":660,"len":252,"count":357,"note":"DATA_DOWNLOAD 240-byte chunks"}
+{"dir":"out","type":660,"len":172,"note":"DATA_DOWNLOAD final 160-byte chunk"}
+{"dir":"in","type":661,"len":12,"count":358,"note":"DATA_DOWNLOAD_RES"}
+{"dir":"out","type":662,"len":20,"note":"DATA_VALIDITY_REQ"}
+{"dir":"in","type":663,"len":12,"note":"DATA_VALIDITY_RES"}
+{"dir":"out","type":664,"len":28,"note":"SWDOWNLOAD_TRIGGER_REQ"}
+{"dir":"in","type":665,"len":12,"note":"SWDOWNLOAD_TRIGGER_RES"}
+{"dir":"out","type":668,"len":8,"note":"version re-probe"}
+{"dir":"in","type":669,"len":100,"set_offset":13,"set_byte":0}
+{"dir":"out","type":578,"len":12,"note":"INIT_DEVICE_REQ"}
+{"dir":"in","type":579,"len":12,"note":"INIT_DEVICE_RES"}
