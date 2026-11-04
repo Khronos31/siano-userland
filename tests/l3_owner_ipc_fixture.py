@@ -65,6 +65,7 @@ def main():
         output = root / "capture.ts"
         runtime = root / "runtime"
         write_firmware(firmware)
+        runtime.mkdir(mode=0o700)
         env = os.environ.copy()
         env["SIANO_L3_OFFLINE_FIXTURE"] = str(fixture)
         args = [str(daemon), "--device", "usb:5-1.2", "--firmware",
