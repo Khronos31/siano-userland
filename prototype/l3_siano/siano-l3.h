@@ -125,6 +125,21 @@ const dtv_l3_provider *siano_l3_adapter_provider(siano_l3_adapter *adapter);
  * caller opens with dtv_l3_open_ex() and must call siano_l3_adapter_stop()
  * after context_release, or use a factory that destroys the adapter.
  */
+#ifdef SIANO_L3_FACTORY
+typedef struct siano_l3_factory siano_l3_factory;
+
+dtv_l3_result siano_l3_factory_create(const dtv_l3_provider *host,
+                                      const siano_l3_port *port,
+                                      const siano_l3_options *options,
+                                      siano_l3_factory **factory_out);
+void siano_l3_factory_destroy(siano_l3_factory *factory);
+const dtv_l3_usb_provider *siano_l3_factory_usb_provider(
+    siano_l3_factory *factory);
+const dtv_l3_factory *siano_l3_factory_core(siano_l3_factory *factory);
+void siano_l3_adapter_set_binding(siano_l3_adapter *adapter,
+                                  dtv_l3_provider_binding *binding);
+#endif
+
 #ifdef SIANO_L3_SPLIT_API
 dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
                                       dtv_l3_provider_binding *binding);

@@ -36,7 +36,8 @@ sanitizer build at a time. With a Core tree that has the split
 `dtv_l3_usb_provider` / `dtv_l3_product_adapter` candidate, also pass
 `-DSIANO_L3_SPLIT_API=ON` to build the `dtv_l3_open_ex` bridge test. Add
 `-DSIANO_L3_OWNER_INIT_FIXTURE=ON` with Core `01c9951` or later to build the
-owner-transfer-in-initialize fixture. Queue capacity is a Core candidate value; the replay
+owner-transfer-in-initialize fixture. Add `-DSIANO_L3_FACTORY=ON` for the
+`dtv_l3_open_with_args` factory/grants/FW-manifest bridge. Queue capacity is a Core candidate value; the replay
 test feeds four packets at a time so overflow backpressure is not mistaken for
 an adapter failure.
 

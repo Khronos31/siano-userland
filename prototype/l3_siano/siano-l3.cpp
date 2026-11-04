@@ -16,6 +16,8 @@ extern "C" {
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -142,7 +144,24 @@ struct siano_l3_adapter {
 
     std::mutex id_mutex;
     uint64_t next_internal_id = kInternalTransferId;
+#ifdef SIANO_L3_FACTORY
+    siano_l3_factory *factory_owner = nullptr;
+#endif
 };
+
+#ifdef SIANO_L3_FACTORY
+struct siano_l3_factory {
+    dtv_l3_provider host{};
+    siano_l3_port port{};
+    siano_l3_options options{};
+    std::mutex mutex;
+    dtv_l3_provider_binding *binding = nullptr;
+    siano_l3_adapter *adapter = nullptr;
+    std::vector<uint8_t> firmware_copy;
+    dtv_l3_usb_provider usb_view{};
+    dtv_l3_factory core_view{};
+};
+#endif
 
 namespace {
 
@@ -1090,6 +1109,319 @@ dtv_l3_result claim_cancel_cb(void *provider_context,
     return DTV_L3_UNSUPPORTED;
 }
 
+constexpr uint32_t kSha256Constants[64] = {
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
+    0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+    0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU,
+    0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U,
+    0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+    0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U,
+    0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U,
+    0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+    0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
+};
+
+uint32_t sha_rotr(uint32_t value, uint32_t count)
+{
+    return (value >> count) | (value << (32U - count));
+}
+
+void sha256_transform(uint32_t state[8], const uint8_t block[64])
+{
+    uint32_t words[64];
+    for (uint32_t index = 0; index < 16U; ++index) {
+        words[index] = (static_cast<uint32_t>(block[index * 4U]) << 24) |
+                       (static_cast<uint32_t>(block[index * 4U + 1U]) << 16) |
+                       (static_cast<uint32_t>(block[index * 4U + 2U]) << 8) |
+                       static_cast<uint32_t>(block[index * 4U + 3U]);
+    }
+    for (uint32_t index = 16; index < 64U; ++index) {
+        const uint32_t s0 = sha_rotr(words[index - 15U], 7U) ^
+                            sha_rotr(words[index - 15U], 18U) ^
+                            (words[index - 15U] >> 3U);
+        const uint32_t s1 = sha_rotr(words[index - 2U], 17U) ^
+                            sha_rotr(words[index - 2U], 19U) ^
+                            (words[index - 2U] >> 10U);
+        words[index] = words[index - 16U] + s0 + words[index - 7U] + s1;
+    }
+    uint32_t a = state[0];
+    uint32_t b = state[1];
+    uint32_t c = state[2];
+    uint32_t d = state[3];
+    uint32_t e = state[4];
+    uint32_t f = state[5];
+    uint32_t g = state[6];
+    uint32_t h = state[7];
+    for (uint32_t index = 0; index < 64U; ++index) {
+        const uint32_t s1 = sha_rotr(e, 6U) ^ sha_rotr(e, 11U) ^
+                            sha_rotr(e, 25U);
+        const uint32_t ch = (e & f) ^ (~e & g);
+        const uint32_t temp1 = h + s1 + ch + kSha256Constants[index] +
+                               words[index];
+        const uint32_t s0 = sha_rotr(a, 2U) ^ sha_rotr(a, 13U) ^
+                            sha_rotr(a, 22U);
+        const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        const uint32_t temp2 = s0 + maj;
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    state[5] += f;
+    state[6] += g;
+    state[7] += h;
+}
+
+void sha256_bytes(const uint8_t *data, size_t size, uint8_t digest[32])
+{
+    uint32_t state[8] = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+                         0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+    const size_t full = size / 64U;
+    for (size_t index = 0; index < full; ++index) {
+        sha256_transform(state, data + index * 64U);
+    }
+    uint8_t tail[128] = {0};
+    const size_t remainder = size % 64U;
+    std::memcpy(tail, data + full * 64U, remainder);
+    tail[remainder] = 0x80U;
+    const size_t tail_size = remainder < 56U ? 64U : 128U;
+    const uint64_t bit_length = static_cast<uint64_t>(size) * 8U;
+    for (uint32_t index = 0; index < 8U; ++index) {
+        tail[tail_size - 1U - index] =
+            static_cast<uint8_t>(bit_length >> (index * 8U));
+    }
+    for (size_t offset = 0; offset < tail_size; offset += 64U) {
+        sha256_transform(state, tail + offset);
+    }
+    for (uint32_t index = 0; index < 8U; ++index) {
+        digest[index * 4U] = static_cast<uint8_t>(state[index] >> 24U);
+        digest[index * 4U + 1U] = static_cast<uint8_t>(state[index] >> 16U);
+        digest[index * 4U + 2U] = static_cast<uint8_t>(state[index] >> 8U);
+        digest[index * 4U + 3U] = static_cast<uint8_t>(state[index]);
+    }
+}
+
+#ifdef SIANO_L3_FACTORY
+bool grant_matches(const dtv_l3_grant *grants, uint32_t count,
+                   const siano_l3_port *port)
+{
+    if (grants == nullptr || count == 0U) {
+        return false;
+    }
+    for (uint32_t index = 0; index < count; ++index) {
+        const dtv_l3_grant_descriptor *descriptor = grants[index].descriptor;
+        if (descriptor != nullptr && descriptor->vendor_id == port->vendor_id &&
+            descriptor->product_id == port->product_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool read_file(const char *path, std::vector<uint8_t> *bytes)
+{
+    if (path == nullptr) {
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    bytes->assign(std::istreambuf_iterator<char>(file),
+                  std::istreambuf_iterator<char>());
+    return !bytes->empty();
+}
+
+dtv_l3_result prepare_firmware(siano_l3_factory *factory,
+                               const dtv_l3_firmware *source,
+                               siano_l3_firmware *firmware)
+{
+    std::memset(firmware, 0, sizeof(*firmware));
+    factory->firmware_copy.clear();
+    if (source == nullptr || source->source == DTV_L3_FIRMWARE_NONE) {
+        return DTV_L3_OK;
+    }
+    const uint8_t *data = nullptr;
+    size_t size = 0;
+    switch (source->source) {
+    case DTV_L3_FIRMWARE_BYTES:
+        data = source->bytes;
+        size = source->size;
+        break;
+    case DTV_L3_FIRMWARE_PATH:
+        if (!read_file(source->path, &factory->firmware_copy)) {
+            return DTV_L3_FAILED;
+        }
+        data = factory->firmware_copy.data();
+        size = factory->firmware_copy.size();
+        break;
+    case DTV_L3_FIRMWARE_READ_CALLBACK:
+        if (source->read == nullptr ||
+            source->read(source->read_context, &data, &size) != DTV_L3_OK ||
+            data == nullptr || size == 0U) {
+            return DTV_L3_FAILED;
+        }
+        break;
+    default:
+        return DTV_L3_FAILED;
+    }
+    if (data == nullptr || size == 0U) {
+        return DTV_L3_FAILED;
+    }
+    if (source->source != DTV_L3_FIRMWARE_PATH) {
+        factory->firmware_copy.assign(data, data + size);
+    }
+    if (source->manifest != nullptr) {
+        if (source->manifest->length_bytes != 0U &&
+            source->manifest->length_bytes != size) {
+            return DTV_L3_FAILED;
+        }
+        if (source->manifest->sha256 != nullptr) {
+            uint8_t digest[32];
+            sha256_bytes(factory->firmware_copy.data(),
+                         factory->firmware_copy.size(), digest);
+            if (std::memcmp(digest, source->manifest->sha256, 32U) != 0) {
+                return DTV_L3_FAILED;
+            }
+        }
+    }
+    firmware->data = factory->firmware_copy.data();
+    firmware->size = factory->firmware_copy.size();
+    return DTV_L3_OK;
+}
+
+dtv_l3_claim_result factory_usb_claim(void *provider_context,
+                                       dtv_l3_provider_binding *binding,
+                                       uint32_t claim_index)
+{
+    auto *factory = static_cast<siano_l3_factory *>(provider_context);
+    {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        factory->binding = binding;
+        if (factory->adapter != nullptr) {
+            siano_l3_adapter_set_binding(factory->adapter, binding);
+        }
+    }
+    return factory->host.claim(factory->host.provider_context, binding,
+                               claim_index);
+}
+
+dtv_l3_release_result factory_usb_release_claim(
+    void *provider_context, dtv_l3_provider_binding *binding,
+    uint32_t claim_index)
+{
+    auto *factory = static_cast<siano_l3_factory *>(provider_context);
+    dtv_l3_release_result result = factory->host.release_claim(
+        factory->host.provider_context, binding, claim_index);
+    if (claim_index == 0U) {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        factory->binding = nullptr;
+    }
+    return result;
+}
+
+dtv_l3_result factory_usb_submit(
+    void *provider_context, dtv_l3_provider_binding *binding,
+    uint64_t transfer_id, const dtv_l3_transfer_request *request,
+    dtv_l3_transfer_complete_fn complete, void *callback_context)
+{
+    auto *factory = static_cast<siano_l3_factory *>(provider_context);
+    return factory->host.submit(factory->host.provider_context, binding,
+                                transfer_id, request, complete,
+                                callback_context);
+}
+
+dtv_l3_result factory_usb_cancel(void *provider_context,
+                                 dtv_l3_provider_binding *binding,
+                                 uint64_t transfer_id)
+{
+    auto *factory = static_cast<siano_l3_factory *>(provider_context);
+    return factory->host.cancel(factory->host.provider_context, binding,
+                                transfer_id);
+}
+
+dtv_l3_result factory_create(void *factory_context,
+                             const dtv_l3_open_args *args,
+                             const dtv_l3_product_adapter **adapter_out,
+                             uint32_t *claim_count_out,
+                             void **adapter_owner_out)
+{
+    auto *factory = static_cast<siano_l3_factory *>(factory_context);
+    if (factory == nullptr || args == nullptr || adapter_out == nullptr ||
+        claim_count_out == nullptr || adapter_owner_out == nullptr) {
+        return DTV_L3_INVALID;
+    }
+    {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        if (factory->adapter != nullptr) {
+            return DTV_L3_BUSY;
+        }
+    }
+    if (!grant_matches(args->grants, args->grant_count, &factory->port)) {
+        return DTV_L3_FAILED;
+    }
+    siano_l3_firmware firmware;
+    dtv_l3_result result = prepare_firmware(factory, args->firmware, &firmware);
+    if (result != DTV_L3_OK) {
+        return result;
+    }
+    siano_l3_adapter *adapter = nullptr;
+    result = siano_l3_adapter_create(&factory->host, &factory->port, &firmware,
+                                     &factory->options, &adapter);
+    if (result != DTV_L3_OK) {
+        return result;
+    }
+    const dtv_l3_product_adapter *product =
+        siano_l3_adapter_product_adapter(adapter);
+    if (product == nullptr) {
+        siano_l3_adapter_destroy(adapter);
+        return DTV_L3_FAILED;
+    }
+    adapter->factory_owner = factory;
+    {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        factory->adapter = adapter;
+    }
+    *adapter_out = product;
+    *claim_count_out = 1U;
+    *adapter_owner_out = adapter;
+    return DTV_L3_OK;
+}
+
+void factory_release(void *adapter_owner)
+{
+    if (adapter_owner == nullptr) {
+        return;
+    }
+    auto *adapter = static_cast<siano_l3_adapter *>(adapter_owner);
+    siano_l3_factory *factory = adapter->factory_owner;
+    if (factory != nullptr) {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        if (factory->adapter == adapter) {
+            factory->adapter = nullptr;
+        }
+        factory->binding = nullptr;
+    }
+    siano_l3_adapter_destroy(adapter);
+}
+#endif
+
 } // namespace
 
 extern "C" {
@@ -1398,6 +1730,83 @@ const dtv_l3_product_adapter *siano_l3_adapter_product_adapter(
     adapter->product_view.stream_attach = stream_attach_cb;
     adapter->product_view.stream_stop = stream_stop_cb;
     return &adapter->product_view;
+}
+#endif
+
+#ifdef SIANO_L3_FACTORY
+void siano_l3_adapter_set_binding(siano_l3_adapter *adapter,
+                                  dtv_l3_provider_binding *binding)
+{
+    if (adapter == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(adapter->state_mutex);
+    adapter->binding = binding;
+}
+
+dtv_l3_result siano_l3_factory_create(const dtv_l3_provider *host,
+                                      const siano_l3_port *port,
+                                      const siano_l3_options *options,
+                                      siano_l3_factory **factory_out)
+{
+    if (host == nullptr || port == nullptr || factory_out == nullptr ||
+        host->claim == nullptr || host->release_claim == nullptr ||
+        host->submit == nullptr || host->cancel == nullptr ||
+        !port_supported(port)) {
+        return DTV_L3_INVALID;
+    }
+    try {
+        auto *factory = new siano_l3_factory();
+        factory->host = *host;
+        factory->port = *port;
+        if (options != nullptr) {
+            factory->options = *options;
+        }
+        factory->usb_view.provider_context = factory;
+        factory->usb_view.claim = factory_usb_claim;
+        factory->usb_view.release_claim = factory_usb_release_claim;
+        factory->usb_view.submit = factory_usb_submit;
+        factory->usb_view.cancel = factory_usb_cancel;
+        factory->usb_view.claim_cancel = factory->host.claim_cancel;
+        factory->usb_view.cancel_scope = factory->host.cancel_scope;
+        factory->usb_view.logger = factory->host.logger;
+        factory->core_view.struct_size = sizeof(dtv_l3_factory);
+        factory->core_view.factory_context = factory;
+        factory->core_view.create = factory_create;
+        factory->core_view.release = factory_release;
+        *factory_out = factory;
+        return DTV_L3_OK;
+    } catch (...) {
+        return DTV_L3_FAILED;
+    }
+}
+
+void siano_l3_factory_destroy(siano_l3_factory *factory)
+{
+    if (factory == nullptr) {
+        return;
+    }
+    siano_l3_adapter *adapter = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(factory->mutex);
+        adapter = factory->adapter;
+        factory->adapter = nullptr;
+    }
+    if (adapter != nullptr) {
+        siano_l3_adapter_destroy(adapter);
+    }
+    delete factory;
+}
+
+const dtv_l3_usb_provider *siano_l3_factory_usb_provider(
+    siano_l3_factory *factory)
+{
+    return factory == nullptr ? nullptr : &factory->usb_view;
+}
+
+const dtv_l3_factory *siano_l3_factory_core(siano_l3_factory *factory)
+{
+    return factory == nullptr ? nullptr : &factory->core_view;
 }
 #endif
 

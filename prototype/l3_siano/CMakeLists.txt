@@ -19,6 +19,7 @@ option(SIANO_L3_SPLIT_API "Compile the split usb_provider/product_adapter bridge
 option(SIANO_L3_SPLIT_INIT_HOOKS "Compile the G1/G2 product bind/initialize hooks" OFF)
 option(SIANO_L3_HAS_CATALOG "Compile the capability catalog view" OFF)
 option(SIANO_L3_OWNER_INIT_FIXTURE "Build the Core initialize-transfer fixture" OFF)
+option(SIANO_L3_FACTORY "Compile the factory/grants/manifest bridge" OFF)
 
 if(NOT SIANO_L3_CORE_INCLUDE_DIR)
     message(FATAL_ERROR "Set SIANO_L3_CORE_INCLUDE_DIR to the Core L3 include directory")
@@ -54,6 +55,9 @@ if(SIANO_L3_SPLIT_API)
     endif()
     if(SIANO_L3_HAS_CATALOG)
         target_compile_definitions(siano_l3 PUBLIC SIANO_L3_HAS_CATALOG)
+    endif()
+    if(SIANO_L3_FACTORY)
+        target_compile_definitions(siano_l3 PUBLIC SIANO_L3_FACTORY)
     endif()
 endif()
 
@@ -138,6 +142,22 @@ if(SIANO_L3_CORE_SOURCE_DIR)
         list(APPEND SIANO_L3_TEST_TARGETS siano_l3_split)
     endif()
 
+    if(SIANO_L3_FACTORY AND SIANO_L3_SPLIT_API)
+        add_executable(siano_l3_factory tests/test_siano_l3_factory.c)
+        target_compile_features(siano_l3_factory PRIVATE c_std_11)
+        target_compile_options(siano_l3_factory PRIVATE
+            -Wall -Wextra -Werror -pedantic)
+        target_include_directories(siano_l3_factory PRIVATE
+            ${SIANO_L3_ROOT}
+            ${SIANO_L3_ROOT}/tests
+            ${SIANO_L3_CORE_SOURCE_DIR}/include)
+        target_compile_definitions(siano_l3_factory PRIVATE
+            SIANO_L3_FIXTURE_DIR="${SIANO_L3_ROOT}/tests/fixtures")
+        target_link_libraries(siano_l3_factory PRIVATE
+            siano_l3 siano_l3_test_host siano_l3_core_owner Threads::Threads)
+        list(APPEND SIANO_L3_TEST_TARGETS siano_l3_factory)
+    endif()
+
     if(SIANO_L3_OWNER_INIT_FIXTURE AND SIANO_L3_SPLIT_API)
         add_executable(siano_l3_owner_init tests/test_l3_owner_init_fixture.c)
         target_compile_features(siano_l3_owner_init PRIVATE c_std_11)
@@ -207,6 +227,9 @@ if(BUILD_TESTING)
         endif()
         if(TARGET siano_l3_owner_init)
             add_test(NAME siano_l3_owner_init COMMAND siano_l3_owner_init)
+        endif()
+        if(TARGET siano_l3_factory)
+            add_test(NAME siano_l3_factory COMMAND siano_l3_factory)
         endif()
     endif()
 endif()
