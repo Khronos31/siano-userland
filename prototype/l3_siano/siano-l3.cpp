@@ -1000,16 +1000,52 @@ void in_loop_multi(siano_l3_adapter *adapter)
     }
 }
 
+dtv_l3_result start_owner_in_transfer(siano_l3_adapter *adapter,
+                                      dtv_l3_op **out_op)
+{
+    if (out_op == nullptr) {
+        return DTV_L3_INVALID;
+    }
+    *out_op = nullptr;
+    dtv_l3_context *owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(adapter->state_mutex);
+        owner = adapter->owner;
+    }
+    if (owner == nullptr) {
+        return DTV_L3_FAILED;
+    }
+    dtv_l3_transfer_request request{};
+    request.kind = DTV_L3_TRANSFER_BULK;
+    request.endpoint = adapter->port.in_endpoint;
+    request.timeout_ms = kInTransferTimeoutMs;
+    request.in_capacity = adapter->in_buffer.size();
+    request.claim_index = 0U;
+    dtv_l3_result result = dtv_l3_transfer_start(owner, &request, out_op);
+    if (result == DTV_L3_ACCEPTED && *out_op != nullptr) {
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        ++adapter->owner_in_submits;
+    } else if (result == DTV_L3_ACCEPTED) {
+        result = DTV_L3_FAILED;
+    }
+    return result;
+}
+
 void owner_in_loop(siano_l3_adapter *adapter)
 {
     while (true) {
-        dtv_l3_context *owner = nullptr;
         {
             std::lock_guard<std::mutex> lock(adapter->in_mutex);
             if (adapter->closing) {
                 break;
             }
         }
+        dtv_l3_op *op = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(adapter->in_mutex);
+            op = adapter->owner_op;
+        }
+        dtv_l3_context *owner = nullptr;
         {
             std::lock_guard<std::mutex> lock(adapter->state_mutex);
             owner = adapter->owner;
@@ -1017,14 +1053,10 @@ void owner_in_loop(siano_l3_adapter *adapter)
         if (owner == nullptr) {
             break;
         }
-        dtv_l3_transfer_request request{};
-        request.kind = DTV_L3_TRANSFER_BULK;
-        request.endpoint = adapter->port.in_endpoint;
-        request.timeout_ms = kInTransferTimeoutMs;
-        request.in_capacity = adapter->in_buffer.size();
-        request.claim_index = 0U;
-        dtv_l3_op *op = nullptr;
-        dtv_l3_result result = dtv_l3_transfer_start(owner, &request, &op);
+        dtv_l3_result result = DTV_L3_ACCEPTED;
+        if (op == nullptr) {
+            result = start_owner_in_transfer(adapter, &op);
+        }
         if (result != DTV_L3_ACCEPTED || op == nullptr) {
             std::lock_guard<std::mutex> lock(adapter->in_mutex);
             if (adapter->closing) {
@@ -1035,7 +1067,6 @@ void owner_in_loop(siano_l3_adapter *adapter)
         }
         {
             std::lock_guard<std::mutex> lock(adapter->in_mutex);
-            ++adapter->owner_in_submits;
             adapter->owner_op = op;
             adapter->in_condition.notify_all();
             if (adapter->closing) {
@@ -2158,6 +2189,7 @@ dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
     if (adapter == nullptr || binding == nullptr) {
         return DTV_L3_INVALID;
     }
+    bool use_owner = false;
     {
         std::lock_guard<std::mutex> lock(adapter->state_mutex);
         if (adapter->ready && adapter->claimed) {
@@ -2179,6 +2211,17 @@ dtv_l3_result siano_l3_adapter_attach(siano_l3_adapter *adapter,
 #ifdef SIANO_L3_SPLIT_INIT_HOOKS
         adapter->use_owner_io = adapter->owner != nullptr;
 #endif
+        use_owner = adapter->owner != nullptr && adapter->use_owner_io;
+    }
+    if (use_owner) {
+        dtv_l3_op *op = nullptr;
+        const dtv_l3_result result = start_owner_in_transfer(adapter, &op);
+        if (result != DTV_L3_ACCEPTED || op == nullptr) {
+            return result == DTV_L3_ACCEPTED ? DTV_L3_FAILED : result;
+        }
+        std::lock_guard<std::mutex> lock(adapter->in_mutex);
+        adapter->owner_op = op;
+        adapter->in_condition.notify_all();
     }
     start_reader(adapter);
     return start_product(adapter);
