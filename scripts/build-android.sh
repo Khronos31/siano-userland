@@ -136,7 +136,7 @@ EOF
 chmod +x "$pc_wrap"
 
 if [ ! -f "$src/libusb-${libusb_ver}.tar.bz2" ]; then
-	curl -fsSL -o "$src/libusb-${libusb_ver}.tar.bz2" "$libusb_url"
+	curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 30 -o "$src/libusb-${libusb_ver}.tar.bz2" "$libusb_url"
 fi
 if command -v sha256sum >/dev/null 2>&1; then
 	actual=$(sha256sum "$src/libusb-${libusb_ver}.tar.bz2" | awk '{print $1}')
