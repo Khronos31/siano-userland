@@ -269,7 +269,7 @@ jobs:
         run: python scripts/package-source.py --prepare-dependencies --source-root .
       - name: Fetch pinned libusb source
         run: |
-          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 30 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
             https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
           echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
       - name: Package and audit
@@ -371,7 +371,7 @@ jobs:
           curl -fsSL --retry 2 -o "$RUNNER_TEMP/isdbt_rio.inp" \
             'https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp?id=e981caea6ed33c48d25b7dbf473327dbd01df163'
           echo '054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818  '"$RUNNER_TEMP/isdbt_rio.inp" | sha256sum -c -
-          curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 30 -o "$RUNNER_TEMP/libusb-1.0.30.tar.bz2" \
             https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2
           echo 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf  '"$RUNNER_TEMP/libusb-1.0.30.tar.bz2" | sha256sum -c -
           curl -fsSL --retry 2 -o "$RUNNER_TEMP/libusb-1.0.30.7z" \
