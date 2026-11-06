@@ -3,6 +3,10 @@ project(siano_public_runtime LANGUAGES C CXX)
 
 include(FetchContent)
 option(BUILD_TESTING "Build the existing Siano proofs" ON)
+option(SIANO_BUILD_L3_ADAPTER
+    "Build the independent L3 Siano adapter prototype target" OFF)
+option(SIANO_BUILD_L3_DAEMON
+    "Build the standard daemon with the independent L3 family" OFF)
 set(SIANO_LINK_MAP_DIR "" CACHE PATH "Optional per-program link map output directory")
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SIANO_PRODUCT_VERSION_LINES)
@@ -123,6 +127,21 @@ set(DTV_USERLAND_HOST_CTL_FACADE_INCLUDE_DIRS "${SIANO_PX4_ROOT}/include"
     CACHE STRING "Private host facade include directories for the GPL host control frontend" FORCE)
 set(DTV_USERLAND_BUILD_TESTING OFF CACHE BOOL "Build core tests" FORCE)
 add_subdirectory(${DTV_CORE_SOURCE} core)
+
+if(SIANO_BUILD_L3_DAEMON)
+    set(SIANO_L3_CORE_INCLUDE_DIR "" CACHE PATH
+        "Core L3 candidate include directory")
+    set(SIANO_L3_CORE_SOURCE_DIR "" CACHE PATH
+        "Core L3 owner prototype source directory")
+    set(SIANO_L3_SPLIT_API ON CACHE BOOL "" FORCE)
+    set(SIANO_L3_SPLIT_INIT_HOOKS ON CACHE BOOL "" FORCE)
+    set(SIANO_L3_HAS_CATALOG ON CACHE BOOL "" FORCE)
+    set(SIANO_L3_FACTORY ON CACHE BOOL "" FORCE)
+    set(SIANO_L3_ENABLE_LIBUSB ON CACHE BOOL "" FORCE)
+endif()
+if(SIANO_BUILD_L3_ADAPTER OR SIANO_BUILD_L3_DAEMON)
+    add_subdirectory(prototype/l3_siano)
+endif()
 
 find_package(Threads REQUIRED)
 add_library(siano_libusb INTERFACE)
@@ -246,6 +265,102 @@ add_executable(sianod sianod.cpp)
 target_compile_features(sianod PRIVATE cxx_std_17)
 target_compile_definitions(sianod PRIVATE SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}")
 target_link_libraries(sianod PRIVATE siano_runtime dtv::json siano_libusb)
+
+if(SIANO_BUILD_L3_DAEMON)
+    add_executable(sianod_l3
+        sianod.cpp
+        siano-enclosure.cpp
+        siano-l3-family.cpp
+        device-selector.c)
+    target_compile_features(sianod_l3 PRIVATE cxx_std_17)
+    target_compile_definitions(sianod_l3 PRIVATE
+        SIANO_L3_DAEMON
+        SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}"
+        DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}")
+    target_include_directories(sianod_l3 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${DTV_CORE_SOURCE}/adapters/host_daemon/include
+        ${SIANO_PX4_ROOT}/include
+        ${SIANO_PX4_ROOT}/tools)
+    target_link_libraries(sianod_l3 PRIVATE
+        siano_l3 siano_l3_libusb siano_l3_core_owner siano_libusb
+        siano_px4_runtime dtv::json dtv::identity dtv::wire dtv::control
+        dtv::host_facade dtv::host_runtime dtv::host_listener_context
+        dtv::host_tuner dtv::host_workers dtv::host_authority_owner
+        dtv::host_authority_bridge dtv::host_ts
+        Threads::Threads)
+
+    add_executable(l3_assembly_offline tests/l3_assembly_offline.cpp
+        siano-enclosure.cpp)
+    target_compile_features(l3_assembly_offline PRIVATE cxx_std_17)
+    target_compile_definitions(l3_assembly_offline PRIVATE
+        SIANO_L3_DAEMON
+        DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}")
+    target_include_directories(l3_assembly_offline PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${DTV_CORE_SOURCE}/adapters/host_daemon/include
+        ${SIANO_PX4_ROOT}/include
+        ${SIANO_PX4_ROOT}/tools)
+    target_link_libraries(l3_assembly_offline PRIVATE
+        siano_libusb siano_px4_runtime dtv::json dtv::identity dtv::wire
+        dtv::control dtv::host_facade dtv::host_runtime
+        dtv::host_listener_context dtv::host_tuner dtv::host_workers
+        dtv::host_authority_owner dtv::host_authority_bridge dtv::host_ts
+        Threads::Threads)
+
+    add_executable(sianod_l3_offline
+        sianod.cpp
+        siano-enclosure.cpp
+        siano-l3-family.cpp
+        device-selector.c
+        tests/l3_fake_libusb.cpp)
+    target_compile_features(sianod_l3_offline PRIVATE cxx_std_17)
+    target_compile_definitions(sianod_l3_offline PRIVATE
+        SIANO_L3_DAEMON
+        SIANO_RUNTIME_VERSION="${SIANO_RUNTIME_VERSION}"
+        DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}"
+        SIANO_L3_OFFLINE_FIXTURE_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano/tests/fixtures/warm_tune_stop.jsonl")
+    target_include_directories(sianod_l3_offline PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano/tests
+        ${DTV_CORE_SOURCE}/adapters/host_daemon/include
+        ${SIANO_PX4_ROOT}/include
+        ${SIANO_PX4_ROOT}/tools)
+    target_link_libraries(sianod_l3_offline PRIVATE
+        siano_l3 siano_l3_core_owner siano_l3_test_host siano_libusb
+        siano_px4_runtime dtv::json dtv::identity dtv::wire dtv::control
+        dtv::host_facade dtv::host_runtime dtv::host_listener_context
+        dtv::host_tuner dtv::host_workers dtv::host_authority_owner
+        dtv::host_authority_bridge dtv::host_ts Threads::Threads)
+
+    if(UNIX)
+        add_executable(l3_daemon_offline
+            tests/l3_daemon_offline.cpp
+            tests/l3_fake_libusb.cpp
+            siano-enclosure.cpp
+            siano-l3-family.cpp)
+        target_compile_features(l3_daemon_offline PRIVATE cxx_std_17)
+        target_compile_definitions(l3_daemon_offline PRIVATE
+            SIANO_L3_DAEMON
+            DTV_USERLAND_CORE_VERSION="${DTV_USERLAND_CORE_VERSION}"
+            SIANO_L3_OFFLINE_FIXTURE_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano/tests/fixtures/warm_tune_stop.jsonl")
+        target_include_directories(l3_daemon_offline PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano
+            ${CMAKE_CURRENT_SOURCE_DIR}/prototype/l3_siano/tests
+            ${DTV_CORE_SOURCE}/adapters/host_daemon/include
+            ${SIANO_PX4_ROOT}/include
+            ${SIANO_PX4_ROOT}/tools)
+        target_link_libraries(l3_daemon_offline PRIVATE
+            siano_l3 siano_l3_core_owner siano_l3_test_host siano_libusb
+            siano_px4_runtime dtv::json
+            dtv::identity dtv::wire dtv::control dtv::host_facade
+            dtv::host_runtime dtv::host_listener_context dtv::host_tuner
+            dtv::host_workers dtv::host_authority_owner
+            dtv::host_authority_bridge dtv::host_ts Threads::Threads)
+    endif()
+endif()
 
 if(WIN32 AND BUILD_TESTING)
     add_executable(sianod_windows_eof_fixture tests/windows_sianod_eof_fixture.cpp)

@@ -2,6 +2,9 @@
 // Siano public runtime daemon.  It assembles the canonical P runtime subset
 // over the accepted S adapter/Consumer with the same function the proof uses.
 #include "siano-enclosure.h"
+#ifdef SIANO_L3_DAEMON
+#include "siano-l3-family.h"
+#endif
 #include "siano-discovery.h"
 
 #ifdef _WIN32
@@ -544,9 +547,15 @@ int main(int argc, char** argv)
     }
 
     siano::runtime::AssemblyDiagnostic assembly_diagnostic{};
+#ifdef SIANO_L3_DAEMON
+    auto assembly = siano::runtime::assemble_siano_l3_context(
+        config, instance, runtime_directory.empty() ? nullptr : runtime_directory.c_str(),
+        epoch.value(), SIANO_RUNTIME_VERSION, &assembly_diagnostic);
+#else
     auto assembly = siano::runtime::assemble_siano_context(
         config, instance, runtime_directory.empty() ? nullptr : runtime_directory.c_str(),
         epoch.value(), SIANO_RUNTIME_VERSION, &assembly_diagnostic);
+#endif
     if (!assembly) {
         const std::string detail = siano::runtime::describe_assembly_diagnostic(
             assembly_diagnostic);
